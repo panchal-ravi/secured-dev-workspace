@@ -1,0 +1,20 @@
+[Unit]
+Description=HashiCorp Boundary controller+worker
+Requires=network-online.target
+After=network-online.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+User=boundary
+Group=boundary
+ExecStart=/usr/local/bin/boundary server -config /etc/boundary.d/boundary.hcl
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

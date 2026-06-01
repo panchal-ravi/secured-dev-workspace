@@ -1,0 +1,14 @@
+# Terraform state + working dirs (commit .terraform.lock.hcl)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Runtime-generated material (SSH key, DB-init admin credentials)
+generated/
+
+# Enterprise license (do not commit secrets)
+config/boundary_license.hclic
+
+# Packer
+ami/**/packer_cache/
