@@ -49,6 +49,42 @@ resource "aws_lb_target_group" "proxy" {
   }
 }
 
+resource "aws_lb_target_group" "nomad" {
+  name        = "${local.name}-nomad"
+  port        = 4646
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    protocol = "TCP"
+    port     = "4646"
+  }
+
+  tags = {
+    Name  = "${local.name}-nomad"
+    owner = var.owner
+  }
+}
+
+resource "aws_lb_target_group" "vault" {
+  name        = "${local.name}-vault"
+  port        = 8200
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    protocol = "TCP"
+    port     = "8200"
+  }
+
+  tags = {
+    Name  = "${local.name}-vault"
+    owner = var.owner
+  }
+}
+
 resource "aws_lb_target_group_attachment" "api" {
   target_group_arn = aws_lb_target_group.api.arn
   target_id        = aws_instance.this.id
@@ -59,6 +95,18 @@ resource "aws_lb_target_group_attachment" "proxy" {
   target_group_arn = aws_lb_target_group.proxy.arn
   target_id        = aws_instance.this.id
   port             = 9202
+}
+
+resource "aws_lb_target_group_attachment" "nomad" {
+  target_group_arn = aws_lb_target_group.nomad.arn
+  target_id        = aws_instance.this.id
+  port             = 4646
+}
+
+resource "aws_lb_target_group_attachment" "vault" {
+  target_group_arn = aws_lb_target_group.vault.arn
+  target_id        = aws_instance.this.id
+  port             = 8200
 }
 
 resource "aws_lb_listener" "api" {
@@ -80,5 +128,27 @@ resource "aws_lb_listener" "proxy" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.proxy.arn
+  }
+}
+
+resource "aws_lb_listener" "nomad" {
+  load_balancer_arn = aws_lb.this.arn
+  port              = 4646
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.nomad.arn
+  }
+}
+
+resource "aws_lb_listener" "vault" {
+  load_balancer_arn = aws_lb.this.arn
+  port              = 8200
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.vault.arn
   }
 }

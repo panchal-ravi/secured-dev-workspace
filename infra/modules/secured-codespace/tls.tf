@@ -28,3 +28,62 @@ resource "tls_self_signed_cert" "boundary" {
     "client_auth",
   ]
 }
+
+# Self-signed cert for the Vault API listener. Same TCP-passthrough NLB story as
+# the Boundary cert: Vault serves this end-to-end and clients skip-verify it.
+resource "tls_private_key" "vault" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "vault" {
+  private_key_pem = tls_private_key.vault.private_key_pem
+
+  dns_names    = ["localhost", aws_lb.this.dns_name]
+  ip_addresses = ["127.0.0.1"]
+
+  subject {
+    common_name         = aws_lb.this.dns_name
+    organization        = "Demo Organization"
+    organizational_unit = "Vault"
+  }
+
+  validity_period_hours = 43800
+
+  allowed_uses = [
+    "digital_signature",
+    "key_encipherment",
+    "server_auth",
+    "client_auth",
+  ]
+}
+
+# Self-signed cert for the Nomad HTTP+RPC API. Same TCP-passthrough NLB story as
+# the Boundary cert. The server.global.nomad / client.global.nomad SANs are
+# required by Nomad's RPC verify_server_hostname for the combined server<->client.
+resource "tls_private_key" "nomad" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "nomad" {
+  private_key_pem = tls_private_key.nomad.private_key_pem
+
+  dns_names    = ["localhost", "server.global.nomad", "client.global.nomad", aws_lb.this.dns_name]
+  ip_addresses = ["127.0.0.1"]
+
+  subject {
+    common_name         = aws_lb.this.dns_name
+    organization        = "Demo Organization"
+    organizational_unit = "Nomad"
+  }
+
+  validity_period_hours = 43800
+
+  allowed_uses = [
+    "digital_signature",
+    "key_encipherment",
+    "server_auth",
+    "client_auth",
+  ]
+}

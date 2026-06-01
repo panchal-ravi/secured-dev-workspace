@@ -1,0 +1,50 @@
+# Nomad all-in-one: a single combined server + client agent.
+# Written to /etc/nomad.d/nomad.hcl by the bootstrap script. The agent runs as
+# root (see config/nomad.service) so the client's docker/exec drivers work.
+region     = "global"
+datacenter = "dc1"
+name       = "nomad-allinone"
+data_dir   = "/opt/nomad/data"
+bind_addr  = "0.0.0.0"
+log_level  = "INFO"
+log_file   = "/var/log/nomad/nomad.log"
+
+server {
+  enabled          = true
+  bootstrap_expect = 1
+  license_path     = "/etc/nomad.d/license.hclic"
+}
+
+client {
+  enabled = true
+}
+
+acl {
+  enabled = true
+}
+
+ui {
+  enabled = true
+}
+
+ports {
+  http = 4646
+  rpc  = 4647
+  serf = 4648
+}
+
+# Self-signed cert that is its own CA. The NLB is a TCP pass-through, so Nomad
+# serves this cert end-to-end; clients skip-verify it (NOMAD_SKIP_VERIFY=true).
+# The cert carries the server.global.nomad / client.global.nomad SANs that
+# verify_server_hostname requires for RPC between the combined server and client.
+tls {
+  http = true
+  rpc  = true
+
+  ca_file   = "/etc/nomad.d/tls/nomad.crt"
+  cert_file = "/etc/nomad.d/tls/nomad.crt"
+  key_file  = "/etc/nomad.d/tls/nomad.key"
+
+  verify_server_hostname = true
+  verify_https_client    = false
+}

@@ -22,6 +22,18 @@ variable "boundary_version" {
   default     = "0.21.3+ent"
 }
 
+variable "nomad_version" {
+  description = "Nomad Enterprise version baked into the AMI (informational)"
+  type        = string
+  default     = "1.11.6+ent"
+}
+
+variable "vault_version" {
+  description = "Vault Enterprise version baked into the AMI (informational)"
+  type        = string
+  default     = "1.20.4+ent"
+}
+
 variable "boundary_admin_login_name" {
   description = "Login name for the initial Boundary admin account"
   type        = string
@@ -45,4 +57,39 @@ variable "boundary_project_name" {
   description = "Name of the project scope created under the org"
   type        = string
   default     = "primary-project"
+}
+
+# --- Identity layer: IBM Verify OIDC SSO (see identity.tf / modules/identity) ---
+
+variable "ibm_verify_tenant" {
+  description = "IBM Verify SaaS tenant hostname (no scheme), e.g. myorg.verify.ibm.com"
+  type        = string
+}
+
+variable "ibm_verify_api_client_id" {
+  description = <<-EOT
+    Client ID of the bootstrap IBM Verify API client used to manage applications.
+    Created once, manually, in the Verify console (Security -> API access).
+    Needs entitlements: manageAppAccessAdmin (manage applications) and
+    readAppConfigAndClientSecret (read the generated app client secret).
+  EOT
+  type        = string
+}
+
+variable "ibm_verify_api_client_secret" {
+  description = "Client secret of the bootstrap IBM Verify API client."
+  type        = string
+  sensitive   = true
+}
+
+variable "admin_group_name" {
+  description = "IBM Verify group whose members get ADMIN access in Boundary and Nomad."
+  type        = string
+  default     = "secured-codespace-admins"
+}
+
+variable "readonly_group_name" {
+  description = "IBM Verify group whose members get READ-ONLY access in Boundary and Nomad."
+  type        = string
+  default     = "secured-codespace-readonly"
 }

@@ -69,3 +69,49 @@ output "project_name" {
   description = "Name of the project scope"
   value       = var.boundary_project_name
 }
+
+# ---------------------------------------------------------------------------
+# Nomad (single combined server + client) connection details.
+# nomad-setup.json holds the ACL bootstrap management token (scp'd to ./generated).
+# ---------------------------------------------------------------------------
+output "nomad_addr" {
+  description = "Nomad HTTP API address (via the NLB)"
+  value       = "https://${aws_lb.this.dns_name}:4646"
+}
+
+output "nomad_ui_addr" {
+  description = "Nomad web UI address (via the NLB)"
+  value       = "https://${aws_lb.this.dns_name}:4646/ui"
+}
+
+output "nomad_management_token" {
+  description = "Nomad ACL bootstrap management token (SecretID)"
+  value       = try(jsondecode(data.local_file.nomad_setup.content).management_token, null)
+  sensitive   = true
+}
+
+output "nomad_token_accessor_id" {
+  description = "Accessor ID of the Nomad management token"
+  value       = try(jsondecode(data.local_file.nomad_setup.content).accessor_id, null)
+}
+
+# ---------------------------------------------------------------------------
+# Vault (single-node) connection details.
+# vault-setup.json holds the root token + Shamir unseal keys (scp'd to ./generated).
+# ---------------------------------------------------------------------------
+output "vault_addr" {
+  description = "Vault API address (via the NLB)"
+  value       = "https://${aws_lb.this.dns_name}:8200"
+}
+
+output "vault_root_token" {
+  description = "Vault initial root token"
+  value       = try(jsondecode(data.local_file.vault_setup.content).root_token, null)
+  sensitive   = true
+}
+
+output "vault_unseal_keys" {
+  description = "Vault Shamir unseal keys (base64)"
+  value       = try(jsondecode(data.local_file.vault_setup.content).unseal_keys, null)
+  sensitive   = true
+}

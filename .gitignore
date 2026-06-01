@@ -33,6 +33,12 @@ packer_cache/
 # ── Runtime-generated material (SSH keys, DB-init / setup credentials) ──
 generated/
 
+# ── Local working docs (plan + phase specs; not committed) ─────────────
+docs/
+
+# ── Throwaway verification harness (not part of the real stack) ────────
+infra/identity-test/
+
 # ── OS / editor cruft ──────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

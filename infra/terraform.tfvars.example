@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored (*.tfvars).
+
+# --- Base infrastructure ---
+owner            = "rp"
+region           = "ap-southeast-1"
+instance_type    = "t3.large"
+boundary_version = "0.21.3+ent"
+nomad_version    = "1.11.6+ent"
+
+# Initial Boundary admin + scopes (sensible defaults below).
+# NOTE: boundary_admin_password is sensitive — change it and never commit a real one.
+boundary_admin_login_name = "admin"
+boundary_admin_password   = "" # set locally; never commit
+boundary_org_name         = "primary-org"
+boundary_project_name     = "primary-project"
+
+# --- Identity layer: IBM Verify OIDC SSO ---
+# Required: with a single state, every plan/apply fetches a Verify token, so
+# these must be populated and the base instance must already be running.
+
+# IBM Verify SaaS tenant hostname (no scheme).
+ibm_verify_tenant = "myorg.verify.ibm.com"
+
+# Bootstrap API client created once in the Verify console (Security -> API access)
+# with entitlements: manageAppAccessAdmin + readAppConfigAndClientSecret.
+ibm_verify_api_client_id     = "00000000-0000-0000-0000-000000000000"
+ibm_verify_api_client_secret = "" # set locally; never commit
+
+# Optional: override the Verify group names that map to admin / readonly.
+# admin_group_name    = "secured-codespace-admins"
+# readonly_group_name = "secured-codespace-readonly"

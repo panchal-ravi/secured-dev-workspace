@@ -164,9 +164,151 @@ SETUP_JSON
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Signal readiness for the Terraform provisioner.
+# 6. Nomad: single combined server + client agent (TLS + ACLs). Runs as root
+#    (config/nomad.service has no User=) so the client's docker/exec drivers work.
+# ---------------------------------------------------------------------------
+mkdir -p /opt/nomad/data /etc/nomad.d/tls
+
+cat > /etc/nomad.d/nomad.hcl <<-'NOMAD_HCL'
+${nomad_config}
+NOMAD_HCL
+
+cat > /etc/nomad.d/tls/nomad.crt <<-'NOMAD_CRT'
+${nomad_crt}
+NOMAD_CRT
+
+cat > /etc/nomad.d/tls/nomad.key <<-'NOMAD_KEY'
+${nomad_key}
+NOMAD_KEY
+
+cat > /etc/nomad.d/license.hclic <<-'NOMAD_LICENSE'
+${nomad_license}
+NOMAD_LICENSE
+
+cat > /etc/systemd/system/nomad.service <<-'NOMAD_SERVICE'
+${nomad_service}
+NOMAD_SERVICE
+
+chmod 600 /etc/nomad.d/tls/nomad.key
+
+# Docker must be running for the client's docker driver to fingerprint.
+systemctl enable --now docker
+
+systemctl daemon-reload
+systemctl enable --now nomad
+
+# ---------------------------------------------------------------------------
+# 7. Bootstrap Nomad ACLs (once) and record the management token.
+# ---------------------------------------------------------------------------
+if [ ! -f /home/ubuntu/nomad-setup.json ]; then
+  export NOMAD_ADDR="https://127.0.0.1:4646"
+  export NOMAD_SKIP_VERIFY=true
+
+  echo "Waiting for the Nomad leader..."
+  nomad_ready=0
+  for _ in $(seq 1 60); do
+    if [ -n "$(curl -ksf https://127.0.0.1:4646/v1/status/leader || true)" ]; then nomad_ready=1; break; fi
+    sleep 5
+  done
+  [ "$nomad_ready" = "1" ] || { echo "Nomad did not elect a leader"; exit 1; }
+
+  # ACL bootstrap is one-time. Capture the token with xtrace off so it never
+  # reaches the bootstrap log (the JSON is captured, not printed to stdout).
+  set +x
+  BOOTSTRAP_JSON=$(/usr/local/bin/nomad acl bootstrap -json)
+  SECRET_ID=$(echo "$BOOTSTRAP_JSON" | jq -r '.SecretID')
+  ACCESSOR_ID=$(echo "$BOOTSTRAP_JSON" | jq -r '.AccessorID')
+  cat > /home/ubuntu/nomad-setup.json <<SETUP_JSON
+{
+  "management_token": "$SECRET_ID",
+  "accessor_id": "$ACCESSOR_ID"
+}
+SETUP_JSON
+  unset BOOTSTRAP_JSON SECRET_ID ACCESSOR_ID
+  set -x
+  chown ubuntu:ubuntu /home/ubuntu/nomad-setup.json
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Vault: single-node server (file storage, TLS). Runs as the vault user.
+# ---------------------------------------------------------------------------
+mkdir -p /etc/vault.d/tls /opt/vault/data
+
+cat > /etc/vault.d/vault.hcl <<-'VAULT_HCL'
+${vault_config}
+VAULT_HCL
+
+cat > /etc/vault.d/tls/vault.crt <<-'VAULT_CRT'
+${vault_crt}
+VAULT_CRT
+
+cat > /etc/vault.d/tls/vault.key <<-'VAULT_KEY'
+${vault_key}
+VAULT_KEY
+
+cat > /etc/vault.d/vault_license.hclic <<-'VAULT_LICENSE'
+${vault_license}
+VAULT_LICENSE
+
+cat > /etc/systemd/system/vault.service <<-'VAULT_SERVICE'
+${vault_service}
+VAULT_SERVICE
+
+chown -R vault:vault /etc/vault.d /opt/vault
+chmod 600 /etc/vault.d/tls/vault.key
+
+systemctl daemon-reload
+systemctl enable --now vault
+
+# ---------------------------------------------------------------------------
+# 9. Initialize + unseal Vault (once) and record the root token + unseal keys.
+# ---------------------------------------------------------------------------
+export VAULT_ADDR="https://127.0.0.1:8200"
+export VAULT_SKIP_VERIFY=true
+
+echo "Waiting for the Vault listener..."
+vault_ready=0
+for _ in $(seq 1 60); do
+  if curl -ksf https://127.0.0.1:8200/v1/sys/seal-status >/dev/null 2>&1; then vault_ready=1; break; fi
+  sleep 5
+done
+[ "$vault_ready" = "1" ] || { echo "Vault listener did not come up"; exit 1; }
+
+INITIALIZED=$(curl -ksf https://127.0.0.1:8200/v1/sys/seal-status | jq -r '.initialized')
+
+if [ "$INITIALIZED" = "false" ]; then
+  # First boot: initialize (Shamir 1/1 for this single-node demo), then unseal.
+  # Keep the keys/token off the xtrace log; they are captured, not printed.
+  set +x
+  INIT_JSON=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
+  UNSEAL_KEY=$(echo "$INIT_JSON" | jq -r '.unseal_keys_b64[0]')
+  ROOT_TOKEN=$(echo "$INIT_JSON" | jq -r '.root_token')
+  vault operator unseal "$UNSEAL_KEY" >/dev/null
+  cat > /home/ubuntu/vault-setup.json <<SETUP_JSON
+{
+  "root_token": "$ROOT_TOKEN",
+  "unseal_keys": ["$UNSEAL_KEY"]
+}
+SETUP_JSON
+  unset INIT_JSON UNSEAL_KEY ROOT_TOKEN
+  set -x
+  chown ubuntu:ubuntu /home/ubuntu/vault-setup.json
+elif [ -f /home/ubuntu/vault-setup.json ]; then
+  # Re-run on an already-initialized node: unseal from the saved key if sealed.
+  set +x
+  SEALED=$(curl -ksf https://127.0.0.1:8200/v1/sys/seal-status | jq -r '.sealed')
+  if [ "$SEALED" = "true" ]; then
+    UNSEAL_KEY=$(jq -r '.unseal_keys[0]' /home/ubuntu/vault-setup.json)
+    vault operator unseal "$UNSEAL_KEY" >/dev/null
+    unset UNSEAL_KEY
+  fi
+  set -x
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Signal readiness for the Terraform provisioner.
 # ---------------------------------------------------------------------------
 touch /home/ubuntu/.boundary-ready
 chown ubuntu:ubuntu /home/ubuntu/.boundary-ready
 
-echo "=== Boundary all-in-one bootstrap complete ==="
+echo "=== Boundary + Nomad all-in-one bootstrap complete ==="

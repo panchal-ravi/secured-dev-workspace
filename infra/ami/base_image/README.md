@@ -14,7 +14,7 @@ Builds an AWS AMI on top of the org base image `hc-base-ubuntu-2404-amd64-*`
   - Vault `1.20.4+ent` → `/etc/vault.d`, `/opt/vault`
 
 The resulting AMI is named `<owner>-boundary-enterprise-<timestamp>` and tagged
-with all four versions. The `modules/boundary-allinone` Terraform module looks it
+with all four versions. The `modules/secured-codespace` Terraform module looks it
 up by the name filter `<owner>-boundary-enterprise-*` (`owners = ["self"]`).
 
 ## Build

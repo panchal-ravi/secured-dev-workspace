@@ -55,6 +55,18 @@ data "cloudinit_config" "this" {
       admin_password   = var.boundary_admin_password
       org_name         = var.boundary_org_name
       project_name     = var.boundary_project_name
+
+      nomad_config  = file("${path.root}/config/nomad.hcl")
+      nomad_service = file("${path.root}/config/nomad.service")
+      nomad_crt     = tls_self_signed_cert.nomad.cert_pem
+      nomad_key     = tls_private_key.nomad.private_key_pem
+      nomad_license = var.nomad_license
+
+      vault_config  = file("${path.root}/config/vault.hcl")
+      vault_service = file("${path.root}/config/vault.service")
+      vault_crt     = tls_self_signed_cert.vault.cert_pem
+      vault_key     = tls_private_key.vault.private_key_pem
+      vault_license = var.vault_license
     })
   }
 }
@@ -66,7 +78,7 @@ resource "aws_instance" "this" {
   subnet_id                   = aws_subnet.public[0].id
   vpc_security_group_ids      = [aws_security_group.instance.id]
   associate_public_ip_address = true
-  user_data                   = data.cloudinit_config.this.rendered
+  user_data_base64            = data.cloudinit_config.this.rendered
 
   root_block_device {
     volume_size = var.root_volume_size
@@ -100,6 +112,26 @@ resource "aws_instance" "this" {
     EOT
   }
 
+  # Pull the Nomad ACL bootstrap output (management token) back to ./generated.
+  provisioner "local-exec" {
+    command = <<-EOT
+      scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i ${path.root}/generated/${local.ssh_key_filename} \
+        ubuntu@${self.public_ip}:/home/ubuntu/nomad-setup.json \
+        ${path.root}/generated/nomad-setup.json
+    EOT
+  }
+
+  # Pull the Vault init output (root token + unseal keys) back to ./generated.
+  provisioner "local-exec" {
+    command = <<-EOT
+      scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i ${path.root}/generated/${local.ssh_key_filename} \
+        ubuntu@${self.public_ip}:/home/ubuntu/vault-setup.json \
+        ${path.root}/generated/vault-setup.json
+    EOT
+  }
+
   connection {
     host        = self.public_ip
     user        = "ubuntu"
@@ -120,14 +152,28 @@ data "local_file" "boundary_setup" {
   depends_on = [aws_instance.this]
 }
 
-# Remove the generated setup file on destroy.
+# Read the scp'd Nomad ACL bootstrap output (management token) for the outputs.
+data "local_file" "nomad_setup" {
+  filename   = "${path.root}/generated/nomad-setup.json"
+  depends_on = [aws_instance.this]
+}
+
+# Read the scp'd Vault init output (root token + unseal keys) for the outputs.
+data "local_file" "vault_setup" {
+  filename   = "${path.root}/generated/vault-setup.json"
+  depends_on = [aws_instance.this]
+}
+
+# Remove the generated setup files on destroy.
 resource "null_resource" "cleanup_setup" {
   triggers = {
-    setup_path = "${path.root}/generated/boundary-setup.json"
+    boundary_setup_path = "${path.root}/generated/boundary-setup.json"
+    nomad_setup_path    = "${path.root}/generated/nomad-setup.json"
+    vault_setup_path    = "${path.root}/generated/vault-setup.json"
   }
 
   provisioner "local-exec" {
     when    = destroy
-    command = "rm -f ${self.triggers.setup_path} || true"
+    command = "rm -f ${self.triggers.boundary_setup_path} ${self.triggers.nomad_setup_path} ${self.triggers.vault_setup_path} || true"
   }
 }

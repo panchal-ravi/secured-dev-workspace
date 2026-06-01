@@ -1,0 +1,20 @@
+[Unit]
+Description=HashiCorp Nomad (combined server + client)
+Documentation=https://developer.hashicorp.com/nomad/docs
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+# Runs as root (no User=/Group=) so the client's docker/exec drivers work.
+ExecStart=/usr/local/bin/nomad agent -config /etc/nomad.d/nomad.hcl
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+LimitNPROC=infinity
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target

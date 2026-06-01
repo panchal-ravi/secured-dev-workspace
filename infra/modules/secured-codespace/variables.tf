@@ -51,6 +51,40 @@ variable "boundary_license" {
   sensitive   = true
 }
 
+variable "nomad_version" {
+  description = "Nomad Enterprise version baked into the AMI (informational; must end with +ent)"
+  type        = string
+  default     = "1.11.6+ent"
+
+  validation {
+    condition     = endswith(var.nomad_version, "+ent")
+    error_message = "nomad_version must be an Enterprise build ending in '+ent'."
+  }
+}
+
+variable "nomad_license" {
+  description = "Nomad Enterprise license contents (read from a file by the caller)"
+  type        = string
+  sensitive   = true
+}
+
+variable "vault_version" {
+  description = "Vault Enterprise version baked into the AMI (informational; must end with +ent)"
+  type        = string
+  default     = "1.20.4+ent"
+
+  validation {
+    condition     = endswith(var.vault_version, "+ent")
+    error_message = "vault_version must be an Enterprise build ending in '+ent'."
+  }
+}
+
+variable "vault_license" {
+  description = "Vault Enterprise license contents (read from a file by the caller)"
+  type        = string
+  sensitive   = true
+}
+
 variable "boundary_admin_login_name" {
   description = "Login name for the initial Boundary admin account"
   type        = string

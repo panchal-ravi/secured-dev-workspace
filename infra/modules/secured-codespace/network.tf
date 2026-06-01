@@ -130,6 +130,22 @@ resource "aws_security_group" "nlb" {
     cidr_blocks = [local.allowed_cidr]
   }
 
+  ingress {
+    description = "Nomad HTTP API/UI"
+    from_port   = 4646
+    to_port     = 4646
+    protocol    = "tcp"
+    cidr_blocks = [local.allowed_cidr]
+  }
+
+  ingress {
+    description = "Vault API/UI"
+    from_port   = 8200
+    to_port     = 8200
+    protocol    = "tcp"
+    cidr_blocks = [local.allowed_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -170,6 +186,22 @@ resource "aws_security_group" "instance" {
     description     = "Boundary worker proxy from NLB"
     from_port       = 9202
     to_port         = 9202
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+  }
+
+  ingress {
+    description     = "Nomad HTTP API/UI from NLB"
+    from_port       = 4646
+    to_port         = 4646
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+  }
+
+  ingress {
+    description     = "Vault API/UI from NLB"
+    from_port       = 8200
+    to_port         = 8200
     protocol        = "tcp"
     security_groups = [aws_security_group.nlb.id]
   }
