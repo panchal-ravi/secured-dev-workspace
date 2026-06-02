@@ -19,7 +19,9 @@ resource "tls_self_signed_cert" "boundary" {
     organizational_unit = "Boundary"
   }
 
-  validity_period_hours = 43800
+  validity_period_hours = 8760 # 365 days — under Apple/macOS's 398-day TLS cap so
+  # Go's platform verifier accepts it (the Boundary Client Agent has no -tls-insecure
+  # escape; a 1825-day cert is rejected as "not standards compliant"). See go#51991.
 
   allowed_uses = [
     "digital_signature",
@@ -48,7 +50,8 @@ resource "tls_self_signed_cert" "vault" {
     organizational_unit = "Vault"
   }
 
-  validity_period_hours = 43800
+  validity_period_hours = 8760 # 365 days — under macOS's 398-day TLS cap (see the
+  # Boundary cert above): a Go platform verifier rejects longer-lived self-signed certs.
 
   allowed_uses = [
     "digital_signature",
@@ -78,7 +81,8 @@ resource "tls_self_signed_cert" "nomad" {
     organizational_unit = "Nomad"
   }
 
-  validity_period_hours = 43800
+  validity_period_hours = 8760 # 365 days — under macOS's 398-day TLS cap (see the
+  # Boundary cert above): a Go platform verifier rejects longer-lived self-signed certs.
 
   allowed_uses = [
     "digital_signature",
