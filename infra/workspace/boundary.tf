@@ -92,3 +92,42 @@ resource "boundary_credential_library_vault_ssh_certificate" "ws" {
   key_type            = "ed25519"
   key_id              = "{{.User.Email}}"
 }
+
+# ---------------------------------------------------------------------------
+# Target aliases — the transparent-session front door. One global-scope alias
+# per workspace target. The Boundary Client Agent on the developer's laptop
+# intercepts DNS for the alias value and brokers the session, so the developer
+# connects with a plain `ssh <alias>` (hence VSCode Remote-SSH to a normal Host)
+# instead of `boundary connect ssh -target-id ...`. Credential injection is
+# unchanged — the worker still injects the Vault-signed cert. Aliases are only
+# supported at the global scope; value = <ws>.<dev>.<project>.<suffix>, unique
+# by construction. authorize_session_host_id pins the single host on the target.
+# ---------------------------------------------------------------------------
+resource "boundary_alias_target" "ws" {
+  for_each                  = local.workspace_units
+  scope_id                  = "global"
+  name                      = "ws-${local.unit_slug[each.key]}"
+  value                     = "${each.value.ws_name}.${each.value.dev_name}.${each.value.project}.${var.alias_suffix}"
+  destination_id            = boundary_target.ws[each.key].id
+  authorize_session_host_id = boundary_host_static.ws[each.key].id
+}
+
+# ---------------------------------------------------------------------------
+# Alias-resolution grant. The Client Agent periodically lists the aliases a user
+# can resolve to populate its local DNS-match cache; without this self-scoped
+# `list-resolvable-aliases` action every laptop DNS lookup hits the controller.
+# It is self-scoped to {{.User.Id}} and returns ONLY aliases whose target the
+# developer already has authorize-session on, so it does not widen access —
+# isolation still lives entirely in the target/role/managed-group graph. Created
+# explicitly (not relying on the default role) to keep the requirement legible;
+# additive and harmless if the default authenticated-user role already has it.
+# Global scope because the `user` resource lives in the global scope.
+# ---------------------------------------------------------------------------
+resource "boundary_role" "dev_resolve_aliases" {
+  name            = "dev-resolve-aliases"
+  description     = "Let developers' Client Agent cache the aliases they can already reach"
+  scope_id        = "global"
+  grant_scope_ids = ["this"]
+  principal_ids   = [for d in keys(var.developers) : boundary_managed_group.dev[d].id]
+  grant_strings   = ["ids={{.User.Id}};type=user;actions=list-resolvable-aliases"]
+}

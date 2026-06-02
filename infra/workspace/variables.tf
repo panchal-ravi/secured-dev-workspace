@@ -100,3 +100,14 @@ variable "workspace_session_max_seconds" {
   type        = number
   default     = 28800
 }
+
+variable "alias_suffix" {
+  description = <<-EOT
+    DNS-like suffix for Boundary target aliases (the value the Client Agent
+    intercepts), e.g. "boundary" yields main.ravi.project-acme.boundary. A
+    dedicated suffix keeps the alias namespace clear of real DNS the laptop
+    resolves. Aliases live in the global scope.
+  EOT
+  type        = string
+  default     = "boundary"
+}

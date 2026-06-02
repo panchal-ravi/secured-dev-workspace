@@ -97,7 +97,7 @@ ssh <node> hostname -I        # e.g. 10.220.10.196 — the first address
 ## Verify the Boundary-brokered workspace SSH
 
 End-to-end, this is the developer demo. The verified path today is CLI `boundary connect ssh` (cert
-injection); VSCode Remote-SSH is being added next via the Boundary Client Agent + transparent sessions.
+injection); VSCode Remote-SSH via the Boundary Client Agent + transparent sessions is documented below.
 
 **1. SSO-authenticate to Boundary as the developer** (the same IBM Verify login):
 ```bash
@@ -122,13 +122,9 @@ This is the **verified** connect path today. The brokered cert's `key_id` is the
 authenticated developer's email — confirm in the workspace `sshd` stderr:
 `nomad alloc logs -stderr -namespace <project> -task workspace <alloc>`.
 
-> **VSCode Remote-SSH** over these injected SSH targets is being added via the
-> **Boundary Client Agent + transparent sessions** (the Client Agent intercepts the
-> target's alias hostname and brokers/injects transparently, so VSCode connects to a
-> normal-looking `Host` with no `ProxyCommand`). Until that lands, use the CLI
-> `boundary connect ssh` above. Because each new SSH connection re-invokes Boundary
-> and gets a **fresh** cert, the 5m cert TTL only covers the handshake while the
-> target's `session_max_seconds` (8h) governs session length.
+> Because each new SSH connection re-invokes Boundary and gets a **fresh** cert, the
+> 5m cert TTL only covers the handshake while the target's `session_max_seconds`
+> (8h) governs session length.
 
 ### Verification gates
 
@@ -155,6 +151,44 @@ authenticated developer's email — confirm in the workspace `sshd` stderr:
 9. **Reachability negative:** on the node `ss -tlnp | grep 222` shows the SSH host
    port bound; from off-box `nc -vz <nlb-dns> 2222` **fails** — the only path in is
    Boundary.
+
+## VSCode Remote-SSH via transparent sessions
+
+With the **Boundary Client Agent** the developer skips `boundary connect` entirely:
+the agent intercepts DNS for the target's **alias** and brokers + injects the cert
+transparently, so `ssh <alias>` (and VSCode Remote-SSH to a normal `Host`) just works.
+The `boundary connect ssh` flow above remains the no-Client-Agent fallback.
+
+Per-laptop, one-time (the developer's action, like the OIDC login):
+
+1. **Install the matching Client Agent + Desktop + CLI** (macOS or Windows only). Fully
+   **uninstall** any existing Boundary Desktop/CLI first, then install the bundled
+   installer from the releases page (the Client Agent ships with the Desktop installer).
+   Confirm it is running: `boundary client-agent status`.
+2. **Authenticate** as the right developer via the existing OIDC login:
+   ```bash
+   eval "$(terraform -chdir=../infra output -raw boundary_oidc_login_command)"
+   ```
+3. **Find your alias** and add a normal `~/.ssh/config` host entry — **no `ProxyCommand`,
+   no `IdentityFile`** (Boundary injects the cert):
+   ```bash
+   terraform output -json workspace_aliases   # e.g. "ravi/main": "main.ravi.project-acme.boundary"
+   ```
+   ```
+   Host main.ravi.project-acme.boundary
+     User dev
+     StrictHostKeyChecking no
+     UserKnownHostsFile /dev/null
+   ```
+4. **Connect:** `ssh main.ravi.project-acme.boundary` logs in as `dev` with no key; or in
+   **VSCode** → Remote-SSH: *Connect to Host…* → the alias → opens `/home/dev/project`.
+
+> **Alias resolution permission.** The Client Agent needs the self-scoped
+> `list-resolvable-aliases` grant on the user resource to cache the aliases you can
+> reach; the `dev_resolve_aliases` role (in `boundary.tf`) grants it. It is self-scoped,
+> so you only ever resolve aliases for targets you can already reach — isolation is
+> unchanged. Vault must still be **unsealed** (the worker signs/injects the cert per
+> session, same as the CLI path).
 
 ## Troubleshooting
 

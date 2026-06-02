@@ -17,3 +17,8 @@ output "managed_group_ids" {
   description = "Map of developer => Boundary OIDC managed-group id"
   value       = { for k, g in boundary_managed_group.dev : k => g.id }
 }
+
+output "workspace_aliases" {
+  description = "Map of <developer>/<workspace> => Boundary target alias (the `ssh <alias>` / VSCode Remote-SSH Host)"
+  value       = { for k, a in boundary_alias_target.ws : k => a.value }
+}
