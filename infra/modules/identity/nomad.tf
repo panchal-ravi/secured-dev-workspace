@@ -89,3 +89,27 @@ resource "nomad_acl_binding_rule" "readonly" {
   bind_type   = "policy"
   bind_name   = nomad_acl_policy.readonly.name
 }
+
+# Defense-in-depth ONLY (dev-workspace phase). In the target design developers
+# never receive a Nomad token — the portal is their interface and Boundary the
+# authorization boundary — so this namespace-scoped policy is belt-and-suspenders
+# for the case where a developer IS ever handed Nomad SSO access: it confines them
+# to writing within their project namespace. One example namespace; not a generator.
+resource "nomad_acl_policy" "project_dev" {
+  name        = "project-${var.workspace_namespace}-dev"
+  description = "Write within the ${var.workspace_namespace} namespace only (IBM Verify developers group)"
+
+  rules_hcl = <<-EOT
+    namespace "${var.workspace_namespace}" {
+      policy = "write"
+    }
+  EOT
+}
+
+resource "nomad_acl_binding_rule" "project_dev" {
+  auth_method = nomad_acl_auth_method.ibm_verify.name
+  description = "Members of ${var.developers_group_name} -> ${var.workspace_namespace} namespace only"
+  selector    = "\"${var.developers_group_name}\" in list.groups"
+  bind_type   = "policy"
+  bind_name   = nomad_acl_policy.project_dev.name
+}

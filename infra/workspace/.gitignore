@@ -1,0 +1,14 @@
+# Terraform working dirs + state (commit .terraform.lock.hcl)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Contains the Boundary admin password + developer details — never commit
+# (trailing glob also covers backups like terraform.tfvars.bak)
+*.tfvars*
+# ...but keep the sanitized template tracked
+!*.tfvars.example
+
+# Saved plans embed sensitive variable values (admin password) — never commit
+*.tfplan

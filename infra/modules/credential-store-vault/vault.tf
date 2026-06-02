@@ -24,6 +24,9 @@ resource "vault_policy" "boundary" {
     path "sys/capabilities-self" {
       capabilities = ["update"]
     }
+    path "ssh-client-signer/sign/dev-workspace" {
+      capabilities = ["create", "update"]
+    }
   HCL
 }
 

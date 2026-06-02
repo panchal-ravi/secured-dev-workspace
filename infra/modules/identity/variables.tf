@@ -30,3 +30,15 @@ variable "readonly_group_name" {
   type        = string
   default     = "secured-codespace-readonly"
 }
+
+variable "developers_group_name" {
+  description = "IBM Verify group of developers — mapped to a Nomad namespace-scoped policy (defense-in-depth demo for the dev-workspace phase)."
+  type        = string
+  default     = "secured-codespace-developers"
+}
+
+variable "workspace_namespace" {
+  description = "Nomad namespace that the developers group is granted write on (one example project namespace; defense-in-depth only)."
+  type        = string
+  default     = "project-acme"
+}

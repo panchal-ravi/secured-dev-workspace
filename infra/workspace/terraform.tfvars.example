@@ -1,0 +1,52 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+#
+# Connection inputs — populate from the base root's outputs:
+#   terraform -chdir=../infra output -raw nomad_addr
+#   terraform -chdir=../infra output -raw boundary_addr
+#   terraform -chdir=../infra output -raw admin_auth_method_id
+#   terraform -chdir=../infra output -raw admin_login_name
+#   terraform -chdir=../infra output -raw admin_password
+#   terraform -chdir=../infra output -raw boundary_oidc_auth_method_id
+#   terraform -chdir=../infra output -raw project_scope_id
+
+nomad_addr                    = "https://<nlb-dns>:4646"
+boundary_addr                 = "https://<nlb-dns>:9200"
+boundary_admin_auth_method_id = "ampw_xxxxxxxxxx"
+boundary_admin_login          = "admin"
+boundary_admin_password       = "Password123!"
+boundary_oidc_auth_method_id  = "amoidc_xxxxxxxxxx"
+boundary_project_scope_id     = "p_xxxxxxxxxx"
+# Node PRIVATE IP — Nomad's docker driver publishes the workspace SSH host ports here
+# (NOT 127.0.0.1), and the co-located Boundary worker dials it. Find it on the node:
+#   ssh <node> hostname -I
+workspace_host_address        = "10.0.0.10"
+# Vault credential store wired to this project scope — from the base root:
+#   terraform -chdir=../infra output -raw vault_credential_store_id
+vault_credential_store_id     = "csvlt_xxxxxxxxxx"
+
+# One example project (= a Nomad namespace) with a PUBLIC repo cloned at bootstrap.
+# `image` is the PUBLIC Docker Hub path you built+pushed (see README) — Nomad pulls it.
+projects = {
+  "project-acme" = {
+    git_repo_url = "https://github.com/octocat/Hello-World.git"
+    image        = "<dockerhub-user>/dev-workspace:poc"
+  }
+}
+
+# Two developers prove the per-developer isolation (the negative test).
+# `email` must match each developer's IBM Verify /token/email claim.
+# SSH access is granted via Vault-signed certs injected by Boundary — no static public keys.
+developers = {
+  "alice" = {
+    email = "alice@example.com"
+    workspaces = {
+      "main" = { project = "project-acme", ssh_port = 2222 }
+    }
+  }
+  "bob" = {
+    email = "bob@example.com"
+    workspaces = {
+      "main" = { project = "project-acme", ssh_port = 2223 }
+    }
+  }
+}

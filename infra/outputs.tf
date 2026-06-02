@@ -66,6 +66,16 @@ output "vault_credential_store_id" {
   value       = module.credential_store_vault.credential_store_id
 }
 
+output "ssh_ca_public_key" {
+  description = "Vault SSH CA public key (workspace sshd TrustedUserCAKeys)"
+  value       = module.ssh_secrets_vault.ca_public_key
+}
+
+output "ssh_sign_path" {
+  description = "Vault path Boundary signs workspace SSH certs against"
+  value       = module.ssh_secrets_vault.sign_path
+}
+
 /*
 output "allowed_ingress_cidr" {
   description = "The single /32 allowed onto every exposed port (the caller's public IP)"

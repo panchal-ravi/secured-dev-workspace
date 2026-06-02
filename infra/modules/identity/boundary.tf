@@ -22,6 +22,13 @@ resource "boundary_auth_method_oidc" "ibm_verify" {
   api_url_prefix     = local.boundary_addr
   claims_scopes      = ["email", "groups"]
 
+  # Send prompt=login so IBM Verify ALWAYS re-authenticates on every
+  # `boundary authenticate oidc` instead of silently reusing the browser SSO
+  # session. (select_account only *allows* account choice — Verify still reused
+  # the existing session; login forces fresh credential entry.) Required to
+  # switch between developers (the per-developer OIDC isolation negative test).
+  prompts = ["login"]
+
   is_primary_for_scope = true
   state                = "active-public"
 }

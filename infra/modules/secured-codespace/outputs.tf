@@ -115,3 +115,8 @@ output "vault_unseal_keys" {
   value       = try(jsondecode(data.local_file.vault_setup.content).unseal_keys, null)
   sensitive   = true
 }
+
+output "nomad_ca_pem" {
+  description = "Nomad self-signed TLS cert (its own CA) — for Vault JWKS validation in Nomad↔Vault WIF"
+  value       = tls_self_signed_cert.nomad.cert_pem
+}

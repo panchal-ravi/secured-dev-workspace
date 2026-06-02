@@ -57,3 +57,15 @@ module "credential_store_vault" {
 
   project_scope_id = module.secured_codespace.project_scope_id
 }
+
+# JIT SSH-cert platform: Vault SSH CA (signs short-lived workspace certs Boundary
+# injects) + Nomad↔Vault workload-identity federation. Uses the default vault
+# provider (configured in providers.tf, root token over the NLB) — like
+# module.credential_store_vault it only talks to the already-running Vault.
+module "ssh_secrets_vault" {
+  source = "./modules/ssh-secrets-vault"
+
+  depends_on = [module.secured_codespace]
+
+  nomad_ca_pem = module.secured_codespace.nomad_ca_pem
+}

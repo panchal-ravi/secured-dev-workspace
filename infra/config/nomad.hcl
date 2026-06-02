@@ -48,3 +48,22 @@ tls {
   verify_server_hostname = true
   verify_https_client    = false
 }
+
+# Nomad↔Vault workload-identity federation (WIF). Nomad signs a per-task identity
+# JWT (aud=vault.io); the task's vault{} block exchanges it at Vault's jwt-nomad
+# auth method for a short, read-only token. Vault is co-located, so reach it
+# locally (its cert carries a 127.0.0.1 SAN). NOTE: this file is the cloud-init
+# SOURCE only — aws_instance.this has lifecycle ignore_changes=all, so editing it
+# does NOT replace the instance and does NOT push to the running node. Apply the
+# same block in-place on the node + restart Nomad separately.
+vault {
+  enabled               = true
+  address               = "https://127.0.0.1:8200"
+  jwt_auth_backend_path = "jwt-nomad"
+  tls_skip_verify       = true
+
+  default_identity {
+    aud = ["vault.io"]
+    ttl = "1h"
+  }
+}

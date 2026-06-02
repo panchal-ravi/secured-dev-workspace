@@ -24,6 +24,8 @@ infra/
 ├── modules/secured-codespace/ # VPC, NLB, SGs, TLS, EC2, bootstrap (+ Vault server)
 ├── modules/identity/          # IBM Verify OIDC SSO for Boundary + Nomad (Phase 6)
 ├── modules/credential-store-vault/ # Boundary Vault credential store + least-privilege token
+├── config/dev-workspace/      # Dockerfile for the dev-workspace:poc image (Phase 2)
+├── workspace/                 # day-2 root: namespaces, persistent workspaces, per-dev Boundary isolation
 ├── providers.tf  variables.tf  main.tf  outputs.tf  terraform.tfvars
 └── generated/                 # runtime artifacts (SSH key, init JSON) — gitignored
 ```
@@ -197,6 +199,67 @@ After applying, log in via SSO:
 eval "$(terraform output -raw boundary_oidc_login_command)"   # browser OIDC flow
 eval "$(terraform output -raw nomad_oidc_login_command)"      # CLI loopback flow
 ```
+
+## Phase 2: dev workspace (`infra/workspace/`)
+
+A **separate day-2 Terraform root** deploys the secured coding workspaces on top of the running base
+stack. It talks only to Nomad + Boundary over the NLB, so it **re-applies without an instance replace**.
+Driven by `projects` and `developers` variables, it creates, per developer-workspace: a Nomad
+**namespace** (per project), a **persistent** Docker workspace container (sshd + build tools) on a
+**dynamic host volume** (`/home/dev` survives stop/start + reboot), a first-boot clone of the project's
+**public** repo, and a **Boundary ssh target** plus a **per-developer OIDC managed group + role** so each
+developer can connect to **only their own** workspace. SSH auth is **JIT Vault-signed certs injected by
+Boundary** — the workspace `sshd` trusts only a Vault SSH CA (`TrustedUserCAKeys` + `AuthorizedKeysFile
+none`) and the developer holds no key (see `docs/specs/phase-2-jit-vault-ssh-certs.md`). Identity is the
+existing IBM Verify SSO (matched on the `/token/email` claim, also the cert `key_id`) — no password accounts.
+
+Build + push the image to a **public Docker Hub** repo (multi-arch so it runs on the amd64 node from any
+build host), then apply (**Vault must be unsealed** — Boundary signs the session cert through Vault):
+
+```bash
+docker login
+docker buildx create --name multiarch --use --bootstrap          # once
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t <dockerhub-user>/dev-workspace:poc --push config/dev-workspace
+
+cd workspace
+cp terraform.tfvars.example terraform.tfvars   # fill from `terraform -chdir=../ output ...` (gitignored)
+terraform init && terraform apply
+```
+
+See `infra/workspace/README.md` for the full variable wiring and verification gates. Scope is a
+single-node PoC (Docker isolation, public-repo clone); durable CSI/EBS storage, private-repo clone via
+Vault, multi-node, microVM, and the developer portal are roadmap (`docs/PLAN.md`).
+
+> The host volume lives on the node root EBS — workspace data survives **stop/start + reboot** but
+> **not** an instance replacement.
+
+## Verify the Boundary-brokered workspace SSH
+
+The end-to-end developer demo (run from `infra/workspace/` after applying). VSCode Remote-SSH over these
+targets is being added via the Boundary Client Agent + transparent sessions; the verified path today is
+the CLI `boundary connect ssh` below:
+
+1. **SSO-authenticate to Boundary as the developer** (same IBM Verify login):
+   ```bash
+   eval "$(terraform -chdir=../ output -raw boundary_oidc_login_command)"   # browser OIDC flow as e.g. alice
+   ```
+2. **Connect with `boundary connect ssh`** (routes via the co-located worker proxy on 9202 — nothing is
+   on the NLB). Boundary signs a fresh Vault cert and injects it — **no local key**:
+   ```bash
+   boundary connect ssh -tls-insecure \
+     -target-id "$(terraform output -json workspace_target_ids | jq -r '."alice/main"')" \
+     -- whoami        # → dev
+   ```
+   This is the **verified** connect path today; the cert `key_id` is alice's email (in the workspace
+   `sshd` stderr). **VSCode Remote-SSH** over these injected targets is being added via the **Boundary
+   Client Agent + transparent sessions** — until then use the CLI above.
+3. **Negative isolation test (required):** SSO-authenticate as **bob** — IBM Verify forces a fresh login
+   every time (the OIDC method sets `prompts = ["login"]`), so enter bob's credentials rather than
+   reusing alice's session — then `boundary connect ssh` to *alice's* target id is **DENIED** (bob's
+   managed group has no grant on alice's target). **Verified 2026-06-02.**
+4. **Reachability negative:** on the node `ss -tlnp | grep 222` shows the SSH host port bound, but
+   off-box `nc -vz <nlb-dns> 2222` **fails** — Boundary is the only path in.
 
 ## Notes
 
