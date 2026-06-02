@@ -96,8 +96,9 @@ ssh <node> hostname -I        # e.g. 10.220.10.196 — the first address
 
 ## Verify the Boundary-brokered workspace SSH
 
-End-to-end, this is the developer demo. The verified path today is CLI `boundary connect ssh` (cert
-injection); VSCode Remote-SSH via the Boundary Client Agent + transparent sessions is documented below.
+End-to-end, this is the developer demo. Both connect paths are **live-verified (2026-06-02)**: the CLI
+`boundary connect ssh` (cert injection) below, and VSCode Remote-SSH / plain `ssh <alias>` via the
+Boundary Client Agent + transparent sessions (documented in the next section).
 
 **1. SSO-authenticate to Boundary as the developer** (the same IBM Verify login):
 ```bash
@@ -170,18 +171,24 @@ Per-laptop, one-time (the developer's action, like the OIDC login):
    eval "$(terraform -chdir=../infra output -raw boundary_oidc_login_command)"
    ```
 3. **Find your alias** and add a normal `~/.ssh/config` host entry — **no `ProxyCommand`,
-   no `IdentityFile`** (Boundary injects the cert):
+   no `IdentityFile`** (Boundary injects the cert). The Client Agent listens on the
+   target's port — the workspace's static `ssh_port` — so set `Port` to match; a bare
+   `ssh <alias>` would otherwise default to port 22 and reach nothing:
    ```bash
    terraform output -json workspace_aliases   # e.g. "ravi/main": "main.ravi.project-acme.boundary"
    ```
    ```
    Host main.ravi.project-acme.boundary
+     Port 2222          # = this workspace's ssh_port (distinct per workspace on the shared node)
      User dev
      StrictHostKeyChecking no
      UserKnownHostsFile /dev/null
    ```
-4. **Connect:** `ssh main.ravi.project-acme.boundary` logs in as `dev` with no key; or in
-   **VSCode** → Remote-SSH: *Connect to Host…* → the alias → opens `/home/dev/project`.
+4. **Connect:** `ssh main.ravi.project-acme.boundary` logs in as `dev` with no key (with
+   `Port` set above); or in **VSCode** → Remote-SSH: *Connect to Host…* → the alias →
+   opens `/home/dev/project`. A benign `client_global_hostkeys_prove_confirm: ... bad
+   signature` line may appear — it is the brokering proxy unable to prove the *upstream*
+   host key during OpenSSH key rotation; the session is unaffected.
 
 > **Alias resolution permission.** The Client Agent needs the self-scoped
 > `list-resolvable-aliases` grant on the user resource to cache the aliases you can
@@ -204,3 +211,20 @@ sudo journalctl -u boundary | grep 'connection refused'   # directDialer dial tc
 Fix: set `workspace_host_address` to that private IP and re-apply. (`boundary_host_static`
 updates in place — target ids are preserved.) Binding the port on loopback instead
 would need a `nomad.hcl` change → instance replace, which this day-2 layer avoids.
+
+**`boundary client-agent status` shows `not standards compliant` / a `certificate ... unknown
+authority` error (Client Agent path only).** The Client Agent validates the Boundary controller's
+self-signed TLS cert with Go's macOS platform verifier and has **no `-tls-insecure` escape** (unlike the
+CLI). That verifier rejects any cert valid for more than **398 days** (golang/go#51991), so a long-lived
+self-signed controller cert fails even after you trust it in the login keychain. This is an **infra-side**
+fix, not a developer action: the base Boundary/Vault/Nomad certs must be ≤398-day
+(`infra/modules/secured-codespace/tls.tf` sets 365 days) and the cert must be trusted on the laptop. After
+the cert is regenerated, fully restart the agent (`launchctl kickstart -k gui/$(id -u)/<agent-label>`) so
+it rebuilds its TLS root pool.
+
+**VSCode: "Failed to set up dynamic port forwarding" / "TCP port forwarding appears to be disabled".**
+The Vault signing role must issue certs with the `permit-port-forwarding` extension — VSCode Remote-SSH
+uses an SSH direct-tcpip channel, and `sshd` enforces a cert's extensions on top of the global
+`AllowTcpForwarding`. This is fixed in `infra/modules/ssh-secrets-vault/vault.tf`; because Boundary signs
+a fresh cert per connection, simply **reconnect** (Remote-SSH: *Kill VS Code Server on Host* then
+*Connect to Host* again) to pick up a cert with the extension.

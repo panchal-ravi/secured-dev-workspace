@@ -15,8 +15,9 @@ resource "vault_ssh_secret_backend_ca" "ssh" {
   key_type             = "ed25519"
 }
 
-# Signing role: locks the cert to the "dev" principal, permits a pty, short TTLs.
-# Boundary supplies key_id = the authenticated developer's email for audit.
+# Signing role: locks the cert to the "dev" principal, permits a pty + TCP port
+# forwarding, short TTLs. Boundary supplies key_id = the authenticated developer's
+# email for audit.
 resource "vault_ssh_secret_backend_role" "dev_workspace" {
   name                    = "dev-workspace"
   backend                 = vault_mount.ssh.path
@@ -26,8 +27,14 @@ resource "vault_ssh_secret_backend_role" "dev_workspace" {
   allowed_users           = "dev"
   default_user            = "dev"
 
+  # permit-pty enables an interactive shell; permit-port-forwarding is REQUIRED for
+  # VSCode Remote-SSH, which reaches its remote server over a direct-tcpip channel.
+  # sshd enforces a certificate's extensions on top of the global AllowTcpForwarding,
+  # so without this the forward is refused as "administratively prohibited" even
+  # though a plain shell logs in fine.
   default_extensions = {
-    permit-pty = ""
+    permit-pty             = ""
+    permit-port-forwarding = ""
   }
 
   ttl     = var.cert_ttl

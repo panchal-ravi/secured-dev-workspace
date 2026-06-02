@@ -24,6 +24,7 @@ infra/
 ├── modules/secured-codespace/ # VPC, NLB, SGs, TLS, EC2, bootstrap (+ Vault server)
 ├── modules/identity/          # IBM Verify OIDC SSO for Boundary + Nomad (Phase 6)
 ├── modules/credential-store-vault/ # Boundary Vault credential store + least-privilege token
+├── modules/ssh-secrets-vault/ # Vault SSH CA + signing role + Nomad↔Vault WIF (JIT workspace SSH certs)
 ├── config/dev-workspace/      # Dockerfile for the dev-workspace:poc image (Phase 2)
 ├── workspace/                 # day-2 root: namespaces, persistent workspaces, per-dev Boundary isolation
 ├── providers.tf  variables.tf  main.tf  outputs.tf  terraform.tfvars
@@ -31,9 +32,35 @@ infra/
 ```
 
 Everything lives in a **single Terraform state**: the base node (`modules/secured-codespace`,
-which now also runs Vault), the IBM Verify SSO layer (`modules/identity`) and the Boundary Vault
-credential store (`modules/credential-store-vault`). All module calls are in `main.tf`; all provider
-configs are in `providers.tf`.
+which now also runs Vault), the IBM Verify SSO layer (`modules/identity`), the Boundary Vault
+credential store (`modules/credential-store-vault`) and the Vault SSH CA + Nomad↔Vault workload-identity
+federation (`modules/ssh-secrets-vault`, which signs the JIT workspace SSH certs). All module calls are in
+`main.tf`; all provider configs are in `providers.tf`.
+
+## Modules
+
+What each module provisions and the order it applies in:
+
+- **`modules/secured-codespace`** *(base — applied first)* — the all-in-one node and everything it
+  depends on: VPC, subnets, security groups (locked to your `/32`), the public NLB, the self-signed TLS
+  certs, and the EC2 instance whose cloud-init bootstraps the **Boundary controller+worker** (local
+  PostgreSQL + AEAD KMS), the combined **Nomad server+client** (ACLs + TLS), and the single-node
+  **Vault** server (init + unseal). Emits all the connection outputs (`*_addr`, admin creds, scope IDs,
+  tokens) the day-2 modules and providers consume.
+- **`modules/identity`** *(day-2 — IBM Verify SSO, Phase 6)* — creates two OIDC apps in the IBM Verify
+  SaaS tenant via REST and wires **Boundary and Nomad** to trust them, mapping Verify group membership
+  → admin / readonly. Additive: the Boundary password admin and Nomad management token remain as
+  break-glass logins.
+- **`modules/credential-store-vault`** *(day-2)* — registers Vault as a **Boundary Vault credential
+  store** in the project scope, authenticated with a dedicated least-privilege periodic token (not the
+  root token). The workspace targets attach a credential library to this store.
+- **`modules/ssh-secrets-vault`** *(day-2)* — turns Vault into the **SSH certificate authority** for the
+  dev workspaces: the `ssh-client-signer` CA mount + `dev-workspace` signing role, plus the
+  **Nomad↔Vault workload-identity** (`jwt-nomad`) auth method. Boundary signs a short-lived SSH cert per
+  session; the workspace `sshd` trusts only this CA, so developers hold no key.
+- **`workspace/`** *(separate day-2 root — not part of this state)* — the per-developer secured
+  workspaces (Nomad namespaces, persistent Docker containers, Boundary targets + per-dev OIDC isolation).
+  Applied from its own root after the base is up; see [Phase 2: dev workspace](#phase-2-dev-workspace-infraworkspace).
 
 ## Prerequisites
 
@@ -71,21 +98,27 @@ configs are in `providers.tf`.
 4. **Provision:**
    ```bash
    terraform init
-   # Single state: the identity providers connect to the base over the NLB, so on
-   # a fresh stack bring the base up first...
+   # Single state: the day-2 providers (boundary/nomad/vault/restapi) connect to the
+   # base over the NLB, so on a fresh stack bring the base up first...
    terraform apply -target=module.secured_codespace
-   # ...then a plain apply provisions module.identity — the IBM Verify OIDC apps +
-   # the Boundary/Nomad SSO wiring — on top of the now-running base.
+   # ...then a plain apply provisions everything that layers on the now-running base:
+   #   module.identity              — IBM Verify OIDC apps + Boundary/Nomad SSO wiring
+   #   module.credential_store_vault — Boundary Vault credential store + scoped token
+   #   module.ssh_secrets_vault      — Vault SSH CA + signing role + Nomad↔Vault WIF
    terraform apply
    ```
    The first apply finds the just-built AMI via the `<owner>-boundary-enterprise-*`
    filter and waits for cloud-init (Postgres + `boundary database init` + the
    recovery-KMS setup that creates the admin, org/project scopes, password auth
-   method and admin role; then the Nomad agent + `nomad acl bootstrap`), copying the
-   generated IDs to `generated/boundary-setup.json` and the Nomad management token to
-   `generated/nomad-setup.json`. The second apply fetches an IBM Verify token,
-   creates the two OIDC apps, and wires Boundary + Nomad to trust them (see the SSO
-   section below).
+   method and admin role; then the Nomad agent + `nomad acl bootstrap`; then
+   `vault operator init`/unseal with the `vault{}` JWT-auth stanza baked into
+   `nomad.hcl`), copying the generated IDs to `generated/boundary-setup.json`, the
+   Nomad management token to `generated/nomad-setup.json`, and the Vault root token +
+   unseal keys to `generated/vault-setup.json`. The second apply fetches an IBM Verify
+   token and creates the two OIDC apps (wiring Boundary + Nomad to trust them — see
+   the SSO section below), registers the Boundary Vault credential store, and stands
+   up the Vault SSH CA + signing role + the Nomad↔Vault workload-identity auth method
+   that together issue the JIT workspace SSH certificates.
 
    > **Re-applying onto an existing instance:** `aws_instance.this` has
    > `lifecycle { ignore_changes = all }`, so changes to the bootstrap/config are not
@@ -148,7 +181,18 @@ unseals it; the **root token** and **unseal keys** are scp'd back to
 (called from `main.tf`) then registers Vault as a **Boundary Vault credential
 store** in the project scope, authenticated with a **dedicated least-privilege
 periodic token** (policy + token in that module — *not* the root token). This is
-Phase 4 groundwork; Phase 2 targets will attach credential libraries to the store.
+Phase 4 groundwork; the Phase 2 workspace targets attach a credential library to this store.
+
+`modules/ssh-secrets-vault` then turns Vault into the **SSH certificate authority** for the dev
+workspaces: a `ssh` secrets mount in signing (CA) mode, a `dev-workspace` signing role
+(`permit-pty` + `permit-port-forwarding`, 5m/10m TTL, `key_id` = the developer's email), and the
+**Nomad↔Vault workload-identity (WIF)** auth method (`jwt-nomad`) that lets a workspace task fetch the CA
+public key over its Nomad-signed identity JWT. The workspace `sshd` trusts only this CA
+(`TrustedUserCAKeys`) and Boundary injects a freshly-signed cert per session — the developer holds no key.
+The CA public key and sign path surface as the `ssh_ca_public_key` / `ssh_sign_path` outputs. See
+`docs/specs/phase-2-jit-vault-ssh-certs.md`. The base `nomad.hcl` carries the `vault{}` stanza for WIF, so
+this works on a fresh build; rolling it onto an already-running node needs the in-place `nomad.hcl` update
++ `systemctl restart nomad` described in that spec (no instance replace).
 
 > **Re-unseal after a reboot.** With Shamir unseal, Vault comes back **sealed**
 > whenever the node restarts. Because the root `vault` provider is configured at
@@ -236,9 +280,11 @@ Vault, multi-node, microVM, and the developer portal are roadmap (`docs/PLAN.md`
 
 ## Verify the Boundary-brokered workspace SSH
 
-The end-to-end developer demo (run from `infra/workspace/` after applying). VSCode Remote-SSH over these
-targets is being added via the Boundary Client Agent + transparent sessions; the verified path today is
-the CLI `boundary connect ssh` below:
+The end-to-end developer demo (run from `infra/workspace/` after applying). Two connect paths are
+**live-verified (2026-06-02)**: VSCode Remote-SSH (and plain `ssh <alias>`) via the **Boundary Client
+Agent + transparent sessions**, and the CLI `boundary connect ssh` as the no-Client-Agent fallback. The
+CLI path is shown below; the transparent-session / VSCode steps are in `infra/workspace/README.md`
+("VSCode Remote-SSH via transparent sessions").
 
 1. **SSO-authenticate to Boundary as the developer** (same IBM Verify login):
    ```bash
@@ -251,9 +297,9 @@ the CLI `boundary connect ssh` below:
      -target-id "$(terraform output -json workspace_target_ids | jq -r '."alice/main"')" \
      -- whoami        # → dev
    ```
-   This is the **verified** connect path today; the cert `key_id` is alice's email (in the workspace
-   `sshd` stderr). **VSCode Remote-SSH** over these injected targets is being added via the **Boundary
-   Client Agent + transparent sessions** — until then use the CLI above.
+   The cert `key_id` is alice's email (in the workspace `sshd` stderr). For **VSCode Remote-SSH** over
+   these injected targets, use the **Boundary Client Agent + transparent sessions** path documented in
+   `infra/workspace/README.md` (plain `ssh <alias>` / a normal VSCode `Host` entry — no `ProxyCommand`).
 3. **Negative isolation test (required):** SSO-authenticate as **bob** — IBM Verify forces a fresh login
    every time (the OIDC method sets `prompts = ["login"]`), so enter bob's credentials rather than
    reusing alice's session — then `boundary connect ssh` to *alice's* target id is **DENIED** (bob's
