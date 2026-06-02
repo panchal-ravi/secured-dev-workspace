@@ -8,8 +8,9 @@
 *.hclic
 *.lic
 # tfvars often carry secrets (this repo: boundary_admin_password).
-# Track a sanitized terraform.tfvars.example instead.
-*.tfvars
+# Track a sanitized terraform.tfvars.example instead. The trailing glob also
+# covers backup variants (e.g. terraform.tfvars.bak).
+*.tfvars*
 !*.tfvars.example
 
 # ── Terraform ──────────────────────────────────────────────────────────
