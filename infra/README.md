@@ -22,10 +22,10 @@ infra/
 ├── ami/base_image/            # Packer: builds <owner>-boundary-enterprise-* AMI
 ├── config/                    # Boundary HCL template, systemd unit, license
 ├── modules/secured-codespace/ # VPC, NLB, SGs, TLS, EC2, bootstrap (+ Vault server)
-├── modules/identity/          # IBM Verify OIDC SSO for Boundary + Nomad (Phase 6)
+├── modules/identity/          # IBM Verify OIDC SSO for Boundary + Nomad
 ├── modules/credential-store-vault/ # Boundary Vault credential store + least-privilege token
 ├── modules/ssh-secrets-vault/ # Vault SSH CA + signing role + Nomad↔Vault WIF (JIT workspace SSH certs)
-├── config/dev-workspace/      # Dockerfile for the dev-workspace:poc image (Phase 2)
+├── config/dev-workspace/      # Dockerfile for the dev-workspace:poc image
 ├── workspace/                 # day-2 root: namespaces, persistent workspaces, per-dev Boundary isolation
 ├── providers.tf  variables.tf  main.tf  outputs.tf  terraform.tfvars
 └── generated/                 # runtime artifacts (SSH key, init JSON) — gitignored
@@ -47,7 +47,7 @@ What each module provisions and the order it applies in:
   PostgreSQL + AEAD KMS), the combined **Nomad server+client** (ACLs + TLS), and the single-node
   **Vault** server (init + unseal). Emits all the connection outputs (`*_addr`, admin creds, scope IDs,
   tokens) the day-2 modules and providers consume.
-- **`modules/identity`** *(day-2 — IBM Verify SSO, Phase 6)* — creates two OIDC apps in the IBM Verify
+- **`modules/identity`** *(day-2 — IBM Verify SSO)* — creates two OIDC apps in the IBM Verify
   SaaS tenant via REST and wires **Boundary and Nomad** to trust them, mapping Verify group membership
   → admin / readonly. Additive: the Boundary password admin and Nomad management token remain as
   break-glass logins.
@@ -60,7 +60,7 @@ What each module provisions and the order it applies in:
   session; the workspace `sshd` trusts only this CA, so developers hold no key.
 - **`workspace/`** *(separate day-2 root — not part of this state)* — the per-developer secured
   workspaces (Nomad namespaces, persistent Docker containers, Boundary targets + per-dev OIDC isolation).
-  Applied from its own root after the base is up; see [Phase 2: dev workspace](#phase-2-dev-workspace-infraworkspace).
+  Applied from its own root after the base is up; see [Dev workspace](#dev-workspace-infraworkspace).
 
 ## Prerequisites
 
@@ -91,7 +91,7 @@ What each module provisions and the order it applies in:
    Set the base values and the three IBM Verify values (`ibm_verify_tenant`,
    `ibm_verify_api_client_id`, `ibm_verify_api_client_secret`). The `ibm_verify_*`
    variables have **no defaults**, so they must be set before any `terraform`
-   plan/apply will run — see [IBM Verify OIDC SSO](#ibm-verify-oidc-sso-phase-6)
+   plan/apply will run — see [IBM Verify OIDC SSO](#ibm-verify-oidc-sso)
    below for what they are and how to obtain them. (`terraform.tfvars` is
    gitignored — never commit secrets.)
 
@@ -180,8 +180,8 @@ unseals it; the **root token** and **unseal keys** are scp'd back to
 `vault_root_token` / `vault_unseal_keys`. `modules/credential-store-vault`
 (called from `main.tf`) then registers Vault as a **Boundary Vault credential
 store** in the project scope, authenticated with a **dedicated least-privilege
-periodic token** (policy + token in that module — *not* the root token). This is
-Phase 4 groundwork; the Phase 2 workspace targets attach a credential library to this store.
+periodic token** (policy + token in that module — *not* the root token). The
+workspace targets attach a credential library to this store.
 
 `modules/ssh-secrets-vault` then turns Vault into the **SSH certificate authority** for the dev
 workspaces: a `ssh` secrets mount in signing (CA) mode, a `dev-workspace` signing role
@@ -210,7 +210,7 @@ this works on a fresh build; rolling it onto an already-running node needs the i
 > plain `terraform apply` to configure the credential store. The replace rebuilds
 > Boundary/Nomad and re-runs the SSO wiring.
 
-## IBM Verify OIDC SSO (Phase 6)
+## IBM Verify OIDC SSO
 
 `modules/identity` (called from `main.tf`) creates two OIDC applications in an
 **IBM Verify SaaS** tenant via its REST API and configures Boundary **and** Nomad
@@ -244,7 +244,7 @@ eval "$(terraform output -raw boundary_oidc_login_command)"   # browser OIDC flo
 eval "$(terraform output -raw nomad_oidc_login_command)"      # CLI loopback flow
 ```
 
-## Phase 2: dev workspace (`infra/workspace/`)
+## Dev workspace (`infra/workspace/`)
 
 A **separate day-2 Terraform root** deploys the secured coding workspaces on top of the running base
 stack. It talks only to Nomad + Boundary over the NLB, so it **re-applies without an instance replace**.
