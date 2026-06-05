@@ -35,13 +35,13 @@ output "allowed_ingress_cidr" {
 }
 
 output "gpu_instance_private_ip" {
-  description = "Private IP of the GPU worker node (operator diagnostics only; the portal resolves the runtime placement IP dynamically from the alloc's node attribute, so nothing consumes this)."
-  value       = aws_instance.gpu.private_ip
+  description = "Private IP of the GPU worker node, or null when enable_gpu_node = false. The developer tier (terraform/workspace) points the Boundary host at this for a GPU flavor; the portal instead resolves the placement IP dynamically from the alloc's node attribute."
+  value       = one(aws_instance.gpu[*].private_ip)
 }
 
 output "gpu_instance_public_ip" {
-  description = "Public IP of the GPU worker node (direct SSH for operator troubleshooting; image egress)."
-  value       = aws_instance.gpu.public_ip
+  description = "Public IP of the GPU worker node (direct SSH for operator troubleshooting; image egress), or null when enable_gpu_node = false."
+  value       = one(aws_instance.gpu[*].public_ip)
 }
 
 output "ssh_private_key_path" {

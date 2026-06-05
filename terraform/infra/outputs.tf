@@ -39,12 +39,12 @@ output "nomad_addr" {
 }
 
 output "gpu_instance_private_ip" {
-  description = "Private IP of the GPU worker node (operator diagnostics; the portal resolves runtime placement from the alloc's node attribute)."
+  description = "Private IP of the GPU worker node, or null when enable_gpu_node = false. The developer tier (terraform/workspace) points the Boundary host at this for a GPU flavor; the portal resolves runtime placement from the alloc's node attribute."
   value       = module.secured_codespace.gpu_instance_private_ip
 }
 
 output "gpu_instance_public_ip" {
-  description = "Public IP of the GPU worker node (direct SSH for operator troubleshooting)."
+  description = "Public IP of the GPU worker node (direct SSH for operator troubleshooting), or null when enable_gpu_node = false."
   value       = module.secured_codespace.gpu_instance_public_ip
 }
 

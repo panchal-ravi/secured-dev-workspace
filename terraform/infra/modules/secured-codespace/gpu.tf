@@ -9,6 +9,8 @@
 # AMI built by ami/gpu_image (Ubuntu 24.04 + NVIDIA driver + toolkit + Nomad +
 # nomad-device-nvidia plugin).
 data "aws_ami" "gpu" {
+  count = var.enable_gpu_node ? 1 : 0
+
   most_recent = true
   owners      = ["self"]
 
@@ -27,6 +29,8 @@ locals {
 }
 
 data "cloudinit_config" "gpu" {
+  count = var.enable_gpu_node ? 1 : 0
+
   gzip          = true
   base64_encode = true
 
@@ -44,13 +48,15 @@ data "cloudinit_config" "gpu" {
 }
 
 resource "aws_instance" "gpu" {
-  ami                         = data.aws_ami.gpu.id
+  count = var.enable_gpu_node ? 1 : 0
+
+  ami                         = data.aws_ami.gpu[0].id
   instance_type               = var.gpu_instance_type
   key_name                    = aws_key_pair.this.key_name
   subnet_id                   = aws_subnet.public[0].id
   vpc_security_group_ids      = [aws_security_group.instance.id]
   associate_public_ip_address = true
-  user_data_base64            = data.cloudinit_config.gpu.rendered
+  user_data_base64            = data.cloudinit_config.gpu[0].rendered
 
   root_block_device {
     volume_size = var.gpu_root_volume_size

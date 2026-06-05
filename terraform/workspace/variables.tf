@@ -36,13 +36,14 @@ variable "ssh_port" {
   type        = number
 }
 
-variable "git_repo_url" {
-  description = "github.com repo cloned into /home/dev on first boot (HTTPS). Private repos work — the Vault-minted GitHub App token is supplied by the in-container credential helper."
-  type        = string
-}
-
 variable "job_template_name" {
-  description = "Which of the project's Vault-KV job templates (a 'flavor') to render. The image is pinned to the template by the project tier, so picking the flavor picks the image."
+  description = <<-EOT
+    Which of the project's Vault-KV job templates (a "flavor") to render. The
+    project tier pins each template's image AND git repo (workspace_templates), so
+    picking the flavor picks both — there is no image or git_repo_url to set here.
+    A pooled flavor (e.g. "gpu-workspace", node_pool = "gpu") also places the
+    workspace on the matching node automatically.
+  EOT
   type        = string
   default     = "dev-workspace"
 }

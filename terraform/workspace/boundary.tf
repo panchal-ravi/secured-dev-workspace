@@ -16,7 +16,8 @@
 # Static host catalog -> host -> host set -> ssh target. The co-located Boundary
 # worker reaches the workspace SSH host port at the node's private IP (where
 # Nomad's docker driver publishes the static port — NOT 127.0.0.1); nothing is
-# added to the NLB or any security group.
+# added to the NLB or any security group. local.host_address resolves to the node
+# the flavor's pool places on (main node, or the GPU worker for a "gpu" flavor).
 resource "boundary_host_catalog_static" "ws" {
   name     = "ws-${local.slug}"
   scope_id = local.p.project_scope_id
@@ -25,7 +26,7 @@ resource "boundary_host_catalog_static" "ws" {
 resource "boundary_host_static" "ws" {
   name            = "ws-${local.slug}"
   host_catalog_id = boundary_host_catalog_static.ws.id
-  address         = local.f.instance_private_ip
+  address         = local.host_address
 }
 
 resource "boundary_host_set_static" "ws" {

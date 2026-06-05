@@ -34,6 +34,23 @@ locals {
   slug        = "${var.developer_handle}-${var.workspace_name}"
   job_name    = "ws-${local.slug}"
   volume_name = "home-${local.slug}"
+
+  # Node pool of the selected flavor, pinned per template by the project tier
+  # (workspace_templates[*].node_pool, surfaced as a project output). "" = the
+  # implicit default pool (main node); "gpu" places the workspace on the GPU
+  # worker. try() keeps default-pool workspaces working against a project state
+  # applied before this output existed — only GPU flavors require the project
+  # re-apply. Mirrors the portal's node-pool-aware provisioning.
+  node_pool = try(local.p.job_template_node_pools[var.job_template_name], "")
+
+  # The node Boundary's worker dials for this workspace. One node per pool on this
+  # single-node PoC, so the address is static per pool: default pool -> main node,
+  # "gpu" -> the GPU worker. (The portal instead resolves it at runtime from the
+  # placed allocation's node attribute; here the mapping is known up front.)
+  # try() because the foundation drops gpu_instance_private_ip from its outputs
+  # when enable_gpu_node = false (Terraform omits null-valued outputs from state) —
+  # default-pool workspaces must keep resolving even with no GPU node provisioned.
+  host_address = local.node_pool == "gpu" ? try(local.f.gpu_instance_private_ip, null) : local.f.instance_private_ip
 }
 
 # The project tier published this project's job templates (raw HCL) to Vault KV at
@@ -55,35 +72,34 @@ resource "nomad_dynamic_host_volume" "home" {
   namespace = local.p.namespace
   plugin_id = "mkdir"
 
+  # Pin the volume to the flavor's node pool so it materializes on a node the job
+  # can actually be placed on. The default pool is pinned explicitly too: otherwise
+  # the scheduler may put the volume on the GPU node, where a default-pool job can
+  # never co-locate with it ("missing compatible host volumes").
+  node_pool = local.node_pool != "" ? local.node_pool : "default"
+
   capability {
     access_mode     = "single-node-writer"
     attachment_mode = "file-system"
   }
 }
 
-# The workspace job. The KV blob carries consul-template `{{ }}` + bash untouched;
-# templatestring() fills only the Terraform `${...}` placeholders — including the
-# per-project wif_role and ssh_ca_path, which is why the template is shared across
-# projects but rendered per workspace.
+# The workspace job. The project tier already baked every project-static value
+# (namespace, image, git_repo_url, wif_role, ssh_ca_path, github/db/deepseek paths)
+# into the published jobspec at onboarding (kv.tf), leaving only the per-workspace
+# placeholders as literal `${...}`. We fill exactly those five — the same set the
+# Developer Portal renders — so the workspace tier and the portal produce an
+# identical job from the identical template.
 resource "nomad_job" "workspace" {
   detach           = false # wait for the deployment to become healthy on apply
   purge_on_destroy = true
 
   jobspec = templatestring(data.vault_kv_secret_v2.job_template.data["jobspec"], {
-    job_name          = local.job_name
-    namespace         = local.p.namespace
-    image             = data.vault_kv_secret_v2.job_template.data["image"]
-    ssh_port          = var.ssh_port
-    volume_name       = nomad_dynamic_host_volume.home.name
-    git_repo_url      = var.git_repo_url
-    wif_role          = local.p.wif_role
-    ssh_ca_path       = local.p.ssh_ca_path
-    developer_email   = var.developer_email
-    git_user_name     = var.developer_handle
-    github_token_path = local.p.github_token_path
-    db_creds_path     = local.p.db_creds_path
-    db_endpoint       = local.p.db_endpoint
-    deepseek_key_path = local.p.deepseek_key_path
+    job_name        = local.job_name
+    ssh_port        = var.ssh_port
+    volume_name     = nomad_dynamic_host_volume.home.name
+    developer_email = var.developer_email
+    git_user_name   = var.developer_handle
   })
 
   depends_on = [nomad_dynamic_host_volume.home]

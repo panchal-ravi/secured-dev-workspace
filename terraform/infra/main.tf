@@ -4,6 +4,7 @@ module "secured_codespace" {
   owner                = var.owner
   region               = var.region
   instance_type        = var.instance_type
+  enable_gpu_node      = var.enable_gpu_node
   gpu_instance_type    = var.gpu_instance_type
   gpu_root_volume_size = var.gpu_root_volume_size
   boundary_version     = var.boundary_version

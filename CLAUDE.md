@@ -63,3 +63,11 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## 5. Manage Context
+
+**Run `/compact` when context grows large (~250K tokens).**
+
+When the conversation approaches ~250K tokens of context, run `/compact` to summarize and free up context before continuing. Use the harness's context-usage indicator as the signal.

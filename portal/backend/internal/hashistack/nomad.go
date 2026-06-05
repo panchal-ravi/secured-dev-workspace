@@ -95,13 +95,21 @@ func (n *Nomad) ResolvePlacementIP(namespace, jobID string) (string, error) {
 }
 
 // RegisterJob parses the rendered HCL on the server (so HCL2 functions resolve
-// exactly as the CLI would) and registers the resulting job in namespace.
-func (n *Nomad) RegisterJob(namespace, jobHCL string) (string, error) {
+// exactly as the CLI would) and registers the resulting job in namespace. The
+// flavor (template name) is stamped into the job's Meta so the listing can show
+// which template produced a workspace (the rendered HCL doesn't carry it).
+func (n *Nomad) RegisterJob(namespace, jobHCL, flavor string) (string, error) {
 	job, err := n.c.Jobs().ParseHCL(jobHCL, true)
 	if err != nil {
 		return "", fmt.Errorf("nomad: parse job hcl: %w", err)
 	}
 	job.Namespace = &namespace
+	if flavor != "" {
+		if job.Meta == nil {
+			job.Meta = map[string]string{}
+		}
+		job.Meta["flavor"] = flavor
+	}
 	if _, _, err := n.c.Jobs().Register(job, &napi.WriteOptions{Namespace: namespace}); err != nil {
 		return "", fmt.Errorf("nomad: register job: %w", err)
 	}
@@ -181,10 +189,12 @@ type WorkspaceJob struct {
 	Name   string
 	Status string
 	Port   int
+	Flavor string // template name stamped into the job Meta at register time
 }
 
 // ListWorkspaceJobs returns jobs in namespace whose name starts with prefix,
-// with the workspace's static SSH port resolved from the job's network block.
+// with the workspace's static SSH port and template (flavor) resolved from the
+// full job (one Info read per workspace job).
 func (n *Nomad) ListWorkspaceJobs(namespace, prefix string) ([]WorkspaceJob, error) {
 	stubs, _, err := n.c.Jobs().List(&napi.QueryOptions{Namespace: namespace})
 	if err != nil {
@@ -196,12 +206,56 @@ func (n *Nomad) ListWorkspaceJobs(namespace, prefix string) ([]WorkspaceJob, err
 			continue
 		}
 		port := 0
-		if ports, err := n.jobPorts(namespace, s.ID); err == nil && len(ports) > 0 {
-			port = ports[0]
+		flavor := ""
+		if job, _, err := n.c.Jobs().Info(s.ID, &napi.QueryOptions{Namespace: namespace}); err == nil {
+			if ports := portsFromJob(job); len(ports) > 0 {
+				port = ports[0]
+			}
+			flavor = job.Meta["flavor"]
 		}
-		out = append(out, WorkspaceJob{ID: s.ID, Name: s.Name, Status: s.Status, Port: port})
+		out = append(out, WorkspaceJob{ID: s.ID, Name: s.Name, Status: n.workspaceStatus(namespace, s.ID, s.Status), Port: port, Flavor: flavor})
 	}
 	return out, nil
+}
+
+// workspaceStatus refines the job-level status into one that reflects whether the
+// workspace is actually reachable. A freshly-registered service job reports
+// "running" the moment it is scheduled, while its allocation is still pulling the
+// image and rendering secrets and sshd is not yet up — so the card would invite
+// the developer to connect (and fail) too early. Even once the container process
+// starts (ClientStatus "running") Nomad keeps the deployment "in progress" until
+// the allocation is marked healthy; we mirror that, reporting "pending" until the
+// latest allocation's deployment health is true. A failed placement is surfaced
+// as-is and a stopped job ("dead") is reported verbatim.
+func (n *Nomad) workspaceStatus(namespace, jobID, jobStatus string) string {
+	if jobStatus == "dead" {
+		return "dead"
+	}
+	qo := &napi.QueryOptions{Namespace: namespace}
+	allocs, _, err := n.c.Jobs().Allocations(jobID, false, qo)
+	if err != nil || len(allocs) == 0 {
+		return "pending"
+	}
+	latest := allocs[0]
+	for _, a := range allocs[1:] {
+		if a.ModifyIndex > latest.ModifyIndex {
+			latest = a
+		}
+	}
+	switch latest.ClientStatus {
+	case "running":
+		// The container is up, but the deployment is still "in progress" until
+		// the allocation passes its health gate. Only then is the workspace
+		// actually ready to accept connections.
+		if latest.DeploymentStatus != nil && latest.DeploymentStatus.Healthy != nil && *latest.DeploymentStatus.Healthy {
+			return "running"
+		}
+		return "pending"
+	case "failed", "lost":
+		return latest.ClientStatus
+	default: // pending, or not yet set
+		return "pending"
+	}
 }
 
 // JobLogs returns the tail (up to maxBytes) of the most recent allocation's
@@ -291,6 +345,12 @@ func (n *Nomad) jobPorts(namespace, jobID string) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
+	return portsFromJob(job), nil
+}
+
+// portsFromJob extracts the static reserved host ports declared in a job's
+// network blocks.
+func portsFromJob(job *napi.Job) []int {
 	var ports []int
 	for _, tg := range job.TaskGroups {
 		for _, net := range tg.Networks {
@@ -301,5 +361,5 @@ func (n *Nomad) jobPorts(namespace, jobID string) ([]int, error) {
 			}
 		}
 	}
-	return ports, nil
+	return ports
 }

@@ -108,31 +108,31 @@ The chain in one line: **IBM Verify** says *who you are*, **Boundary** decides *
 you may connect and brokers it*, **Vault** mints *the short-lived credential*, and
 **Nomad** runs *the workspace you reach*.
 
-## Three tiers, three personas
+## Three tiers, three roles
 
 The Terraform is split into three independently-applied tiers under `terraform/`,
-each owned by a different persona and applied in order. This separation is the
-operational form of least privilege — the platform team holds the privileged tokens,
-project teams onboard their own projects, and developers only ever reach their own
-workspace.
+each owned by a different role and applied in order. This separation is the
+operational form of least privilege — the **Platform Admin** holds the privileged tokens,
+**Project Admins** onboard their own projects, and **Developers** only ever provision and
+reach their own workspace (self-service through the Developer Portal).
 
-| Tier | Path | Persona | Cadence | Creates |
-|------|------|---------|---------|---------|
-| **Platform** | [`terraform/infra/`](terraform/infra/) | Platform / infra team | **Once** | Boundary/Nomad/Vault clusters, IBM Verify OIDC + SSO, Boundary **org** scope, shared Nomad↔Vault WIF auth method, Vault KV mount |
-| **Project** | [`terraform/project/`](terraform/project/) | Project team / platform operator | **Per project** | Boundary project **scope**, Nomad **namespace**, per-project Vault SSH CA + signing role, Boundary cred store + SSH credential library, per-project WIF role, namespace ACL, job templates in Vault KV |
-| **Developer** | [`terraform/workspace/`](terraform/workspace/) | Platform operator | **Per workspace** | Workspace container (Nomad job + persistent host volume), Boundary target/alias + per-developer managed group/role, `~/.ssh/config` snippet |
+| Tier | Path | Role | Cadence | Creates |
+|------|------|------|---------|---------|
+| **Platform** | [`terraform/infra/`](terraform/infra/) | Platform Admin | **Once** | Boundary/Nomad/Vault clusters, IBM Verify OIDC + SSO, Boundary **org** scope, shared Nomad↔Vault WIF auth method, Vault KV mount |
+| **Project** | [`terraform/project/`](terraform/project/) | Project Admin | **Per project** | Boundary project **scope**, Nomad **namespace**, per-project Vault SSH CA + signing role, Boundary cred store + SSH credential library, per-project WIF role, namespace ACL, job templates in Vault KV |
+| **Developer** | [`terraform/workspace/`](terraform/workspace/) | Developer | **Per workspace** | Workspace container (Nomad job + persistent host volume), Boundary target/alias + per-developer managed group/role, `~/.ssh/config` snippet |
 
 Per-instance state is kept with `terraform workspace` (one per project / per
 developer-workspace); the lower roots read the upstream tier's outputs via
 `terraform_remote_state`, so there is **no token or address copying** between tiers.
 
-## Provisioning sequence (by persona)
+## Provisioning sequence (by role)
 
 Apply order is strict: **platform → project → developer**. **Vault must be unsealed**
 for the project and developer applies and for every connect (Boundary signs each
 session cert through Vault).
 
-### 1. Platform team — once
+### 1. Platform Admin — once
 
 Stand up the clusters, SSO, and shared trust anchors. Full instructions:
 [`terraform/infra/README.md`](terraform/infra/README.md).
@@ -157,7 +157,7 @@ scope exists (no project scope yet).
 > admin/readonly groups) are one-time and described in the platform README. The
 > `ibm_verify_*` variables have no defaults and must be set before any apply.
 
-### 2. Project team — per project
+### 2. Project Admin — per project
 
 Onboard a project: its own Boundary scope, Nomad namespace, Vault SSH CA, credential
 store/library, WIF role, namespace ACL, and job templates. Full instructions:
@@ -182,24 +182,35 @@ scope, Nomad namespace, and GitHub App. Onboard another by repeating with a new 
 and the outputs (`project_scope_id`, `namespace`, `credential_library_id`, `ssh_ca_path`,
 `wif_role`, `github_token_path`, …) feed the developer tier.
 
-### 3. Platform operator — per developer workspace
+### 3. Developer — per workspace
 
-Spin up one developer's workspace from a selected project job template, and create the
-Boundary target + per-developer authorization. Full instructions and verification gates:
+The developer provisions their own workspace from a selected project flavor — primarily
+**self-service through the Developer Portal** (see [Developer Portal](#developer-portal)
+below). The `terraform/workspace/` tier is the **equivalent CLI/operator path** to the same
+result (workspace container from the chosen flavor + the Boundary target / per-developer
+authorization). Full instructions and verification gates:
 [`terraform/workspace/README.md`](terraform/workspace/README.md).
 
 ```bash
 cd terraform/workspace
-# Build + push the dev-workspace image (multi-arch) to a public registry — see the workspace README.
+# The flavor's image is built + pushed by the PROJECT tier (see the project README) — not here.
 terraform init
-cp terraform.tfvars.example ravi-main.tfvars       # developer_handle/email, project_name, ssh_port, git_repo_url, image
+cp terraform.tfvars.example ravi-main.tfvars       # developer_handle/email, project_name, ssh_port, (optional) job_template_name
 terraform workspace new ravi-main                  # one Terraform workspace per developer-workspace
 terraform apply -var-file=ravi-main.tfvars -out=ravi-main.tfplan   # review the saved plan, then apply
 ```
 
 This deploys the workspace container (persistent `/home/dev` host volume, first-boot
-clone of the project repo), the Boundary target/alias, the per-developer managed
-group + role, and a ready-to-paste `~/.ssh/config` snippet (`ssh_config_path` output).
+clone of the flavor's pinned repo), the Boundary target/alias, the per-developer managed
+group + role, and a ready-to-paste `~/.ssh/config` snippet (`ssh_config_path` output). The
+**image and git repo are pinned to the chosen flavor** by the project tier — the developer
+selects only `job_template_name` (default `dev-workspace`), with no image or repo to set. A
+flavor with `node_pool = "gpu"` (e.g. `gpu-workspace`) places the workspace on the GPU worker
+node automatically.
+
+The **Developer Portal** performs this same provisioning directly over the HashiStack APIs —
+the Terraform developer tier and the portal are two paths to the same Vault-KV templates. See
+[Developer Portal](#developer-portal).
 
 ### 4. Developer — connect
 
@@ -216,6 +227,37 @@ boundary connect ssh -target-id <target-id> -- whoami        # CLI fallback
 The negative-isolation gate (a second developer is **denied** the first's target) and
 the off-box reachability gate (the SSH port is unreachable except via Boundary) are
 documented and verified in [`terraform/workspace/README.md`](terraform/workspace/README.md).
+
+## Developer Portal
+
+Developers don't run Terraform to get a workspace — they use the **Developer Portal**
+(`portal/`), a self-service web app that is the **direct-API equivalent of the
+`terraform/workspace` tier**. Both build the **same** per-workspace resource graph from the
+**same** Vault-KV job templates (dynamic host volume + Nomad job, Boundary target with injected
+Vault-signed certs, per-developer managed group / role / alias) — the portal just does it live
+over the HashiStack APIs instead of through Terraform.
+
+```
+Carbon React SPA  ──►  Go backend (trusted)  ──►  Vault   (read project descriptors + job templates)
+  (IBM Verify OIDC)        authz by groups    ──►  Nomad   (host volume + parse/register job)
+                                              ──►  Boundary(host/target/managed-group/role/alias)
+```
+
+- **Login & authorization.** The developer signs in with **IBM Verify SSO** (the portal's own
+  OIDC app — Authorization Code + PKCE) and sees only the projects whose `developers_group_name`
+  is in their `groups` claim. This is separate from the *SSH-time* Boundary login run when
+  connecting.
+- **Discovery & template picker.** The project tier publishes a per-project descriptor to Vault
+  KV (`terraform/project/portal.tf` → `secret/projects/<project>/portal-descriptor`); the portal
+  reads these to show one **flavor card** per template (its label, description, git repo, image,
+  and capability tags). The developer never sets an image or repo — both are pinned by the
+  project. A `gpu-workspace` flavor places the workspace on the GPU worker node automatically.
+- **Connect.** Each workspace card carries copy-paste **VSCode Remote-SSH** instructions; a small
+  local **`secured-ws://` helper** runs the Boundary login and writes the managed `~/.ssh/config`
+  block (and removes it on destroy).
+
+> **Status: PoC.** The portal runs locally against the live HashiStack; production hardening and
+> an NLB-hosted deployment are on the roadmap. See [`portal/README.md`](portal/README.md).
 
 ## Teardown (destroy the environment)
 
@@ -276,17 +318,23 @@ untouched.
 ## Repository layout
 
 ```
-terraform/
-├── infra/          # PLATFORM tier (once) — clusters, IBM Verify SSO, org scope, WIF, KV,
-│   │               #   GitHub secrets-plugin registration (vault-github-plugin.tf)
-│   ├── ami/        # Packer base image (Boundary/Nomad/Vault/Consul Enterprise binaries
-│   │               #   + the baked GitHub secrets plugin)
-│   ├── config/     # cluster HCL, systemd units, licenses, dev-workspace Dockerfile
-│   └── modules/    # secured-codespace · identity · nomad-vault-wif
-├── project/        # PROJECT tier (per project) — FLAT root (no child module);
-│   │               #   github.tf = per-project GitHub App token broker
-│   └── templates/  #   Nomad job templates (raw HCL → Vault KV)
-└── workspace/      # DEVELOPER tier (per workspace) — FLAT root (no child module)
+.
+├── terraform/
+│   ├── infra/          # PLATFORM tier (once) — clusters, IBM Verify SSO, org scope, WIF, KV,
+│   │   │               #   GitHub secrets-plugin registration (vault-github-plugin.tf)
+│   │   ├── ami/        # Packer images: base_image (Boundary/Nomad/Vault/Consul +ent + baked
+│   │   │               #   GitHub plugin) and gpu_image (NVIDIA driver + toolkit + device plugin)
+│   │   ├── config/     # cluster HCL, systemd units, licenses
+│   │   └── modules/    # secured-codespace (+ GPU worker, node_pool "gpu") · identity · nomad-vault-wif
+│   ├── project/        # PROJECT tier (per project) — FLAT root (no child module);
+│   │   │               #   github.tf = per-project GitHub App token broker
+│   │   ├── templates/  #   Nomad job templates (raw HCL → Vault KV) — dev-workspace, gpu-workspace
+│   │   └── images/     #   Dockerfile per flavor: dev-workspace/ + gpu-workspace/ (CUDA)
+│   └── workspace/      # DEVELOPER tier (per workspace) — FLAT root (no child module)
+└── portal/             # DEVELOPER PORTAL — self-service web app (direct-API equivalent of terraform/workspace)
+    ├── backend/        #   Go: cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api}; serves the SPA from web/
+    ├── frontend/       #   Vite + React + @carbon/react (build output → backend/web)
+    └── helper/         #   macOS secured-ws:// helper (Boundary login + ~/.ssh/config management)
 ```
 
 > The `project/` and `workspace/` tiers are **flat** roots: each was a single-instance

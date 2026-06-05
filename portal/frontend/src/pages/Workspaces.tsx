@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { InlineNotification, Loading } from '@carbon/react'
 import { listAllWorkspaces, Workspace } from '../api/client'
 import WorkspaceCard from '../components/WorkspaceCard'
+import BoundaryAuth from '../components/BoundaryAuth'
 
 export default function Workspaces() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
@@ -43,6 +44,12 @@ export default function Workspaces() {
       {Object.entries(byProject).map(([project, wss]) => (
         <div key={project} style={{ marginBottom: '1.5rem' }}>
           <h4 style={{ marginBottom: '0.5rem', color: 'var(--cds-text-secondary)' }}>{project}</h4>
+          <BoundaryAuth
+            project={project}
+            command={wss[0].boundary_authenticate_cmd}
+            addr={wss[0].boundary_addr}
+            authMethodId={wss[0].boundary_auth_method_id}
+          />
           <div className="card-grid">
             {wss.map((w) => (
               <WorkspaceCard key={w.name} ws={w} onChanged={refresh} />

@@ -17,10 +17,11 @@ What each instance creates:
   build tools) on a **dynamic host volume** mounting `/home/dev` so it survives
   stop/start + reboot — rendered from the project's **Vault-KV job template** via
   `templatestring()`;
-- a first-boot clone of the workspace's git repo into `/home/dev/project` — **private
-  github.com repos supported**, with **git pre-configured** for the logged-in developer
-  (author = their email) and a **short-lived, Vault-minted GitHub App token** as the push
-  credential (rendered to tmpfs, auto-refreshed, never on the persistent volume);
+- a first-boot clone of **the flavor's pinned git repo** into `/home/dev/project` (the
+  repo is set per-template in the project tier's `workspace_templates`, not chosen here) —
+  **private github.com repos supported**, with **git pre-configured** for the logged-in
+  developer (author = their email) and a **short-lived, Vault-minted GitHub App token** as
+  the push credential (rendered to tmpfs, auto-refreshed, never on the persistent volume);
 - a **Boundary ssh target** + **global alias** for the workspace;
 - a **per-workspace OIDC managed group** (matched on the developer's `/token/email`) + a
   **role** granting `authorize-session` on **only this target**, plus a self-scoped
@@ -35,10 +36,12 @@ CA public key reaches the container over Nomad↔Vault workload identity. Identi
 existing **IBM Verify OIDC** login — no password accounts; the `/token/email` claim is also
 stamped as the cert `key_id` for audit.
 
-> **Scope (PoC):** single node; Docker isolation. **Private-repo clone/push via
-> Vault-minted GitHub App tokens is implemented** (the project must have a GitHub App
-> configured — see `terraform/project`). Durable storage (CSI/EBS), multi-node, microVM,
-> and the developer portal are roadmap — see `docs/PLAN.md`.
+> **Scope (PoC):** single all-in-one node + an optional GPU worker; Docker isolation.
+> **Private-repo clone/push via Vault-minted GitHub App tokens is implemented** (the project
+> must have a GitHub App configured — see `terraform/project`). The **Developer Portal**
+> (`portal/`) is a working PoC that provisions the same workspaces over the HashiStack APIs
+> directly — this Terraform tier and the portal are two paths to the **same** Vault-KV job
+> templates. Durable storage (CSI/EBS), multi-node, and microVM isolation remain roadmap.
 
 ## Prerequisites
 
@@ -53,11 +56,14 @@ stamped as the cert `key_id` for audit.
    credential source), and writes the project's **job templates (flavors) + their pinned
    images to Vault KV**. This tier reads that project's state at
    `../project/terraform.tfstate.d/<project_name>/terraform.tfstate`.
-3. **A workspace flavor published by the project.** The project tier **owns the workspace
-   images**: each job template ("flavor") is built and pushed by the project team and pinned
-   to its image (the build steps live in `terraform/project/README.md`). The developer just
-   picks a flavor via `job_template_name` (default `dev-workspace`) — **there is no image to
-   set here**, so every workspace in the project runs the project-blessed toolchain.
+3. **A workspace flavor published by the project.** The project tier **owns each flavor's
+   image AND git repo**: every job template ("flavor") is built and pushed by the project
+   team and pinned — in `workspace_templates` — to its image, its git repo, and an optional
+   `node_pool` (the build steps live in `terraform/project/README.md`). The developer just
+   picks a flavor via `job_template_name` (default `dev-workspace`) — **there is no image or
+   repo to set here**, so every workspace in the project runs the project-blessed toolchain
+   against the flavor's repo. A flavor with `node_pool = "gpu"` (e.g. `gpu-workspace`) is
+   placed on the GPU node automatically (see [GPU flavor](#gpu-flavor) below).
 4. **An IBM Verify developer** whose `email` claim matches `developer_email`, able to log in
    through the existing Boundary OIDC method.
 
@@ -78,14 +84,19 @@ developer_handle = "alice"
 workspace_name   = "main"
 project_name     = "project-acme"        # must match an applied project workspace of this name
 ssh_port         = 2222                   # DISTINCT static host port per workspace on the shared node
-git_repo_url     = "https://github.com/<org>/<repo>.git"   # github.com repo (private OK), cloned first boot
-# job_template_name = "dev-workspace"                       # optional: the project flavor (image pinned to it); default shown
+# job_template_name = "dev-workspace"     # optional: the project flavor (image AND repo pinned to it); default shown
 ```
 
-Connection inputs are **not** here — `providers.tf` reads `nomad_addr`, `boundary_addr`,
-`vault_addr`, the admin/management/root credentials, `boundary_oidc_auth_method_id`, and the
-node private IP (`workspace_host_address`) from the foundation state, and the project scope,
-namespace, credential library, WIF role, and SSH CA path from the project state.
+There is **no `git_repo_url` or `image`** here — both are pinned to the chosen flavor by the
+project tier (`workspace_templates`), so the developer tier renders only the per-workspace
+placeholders (`job_name`, `ssh_port`, `volume_name`, `developer_email`, `git_user_name`) —
+the **same set the Developer Portal fills**, from the **same** published template.
+
+Connection inputs are **not** here either — `providers.tf` reads `nomad_addr`, `boundary_addr`,
+`vault_addr`, the admin/management/root credentials, `boundary_oidc_auth_method_id`, and both
+node IPs (`instance_private_ip` + `gpu_instance_private_ip`) from the foundation state, and the
+project scope, namespace, credential library, WIF role, SSH CA path, and the per-flavor
+`job_template_node_pools` map from the project state.
 
 > **Apply order:** foundation → project (its workspace) → here. Each new developer-workspace
 > is `terraform workspace new <handle>-<name>` + `apply -var-file=<handle>-<name>.tfvars`.
@@ -142,7 +153,8 @@ workspace `sshd` stderr (`nomad alloc logs -stderr -namespace <project> <alloc> 
    `grep -E '^(TrustedUserCAKeys|AuthorizedKeysFile)' /etc/ssh/sshd_config` shows the CA path
    **and** `AuthorizedKeysFile none`.
 6. **Clone present:** `/home/dev/project/.git` exists and `git -C /home/dev/project remote -v`
-   points at `git_repo_url` (a **private** repo proves the GitHub App token clone worked).
+   points at the **flavor's pinned repo** (`workspace_templates[<flavor>].git_repo_url` in the
+   project tier) — a **private** repo proves the GitHub App token clone worked.
 6a. **Git identity + push:** in the workspace, `git config --global -l` shows the developer's
    `user.email`/`user.name`; `/secrets/git-token` exists on tmpfs (not under `/home/dev`); and
    from `/home/dev/project` an edit + `git commit` + `git push` succeeds with **no credential
@@ -198,6 +210,30 @@ Ada Lovelace, Alan Turing, Grace Hopper) in `appdb`. SSH into the workspace as `
    ```
    Expect host `<node-ip>:15432`, db `appdb`, username prefixed `v-jwt-noma-…` — the
    per-session SELECT-only role Vault drops on lease expiry.
+
+## GPU flavor
+
+A project can publish a GPU flavor (`gpu-workspace`) whose `workspace_templates` entry sets
+`node_pool = "gpu"` and a CUDA-capable image. Selecting it here is a single line:
+
+```hcl
+job_template_name = "gpu-workspace"
+```
+
+Nothing else changes. The developer tier reads the flavor's pool from the project state
+(`job_template_node_pools`) and automatically (1) pins the `/home/dev` dynamic host volume to
+the `gpu` pool and (2) points the Boundary host at the **GPU node's** private IP
+(`gpu_instance_private_ip`, from the foundation state) instead of the main node — so the
+workspace lands on the `g4dn.xlarge` NVIDIA-T4 node. (The portal reaches the same outcome by
+resolving the placement IP from the live allocation; here the per-pool node is known up front.)
+The GPU node is a Nomad **client in the `gpu` node pool** with the `nomad-device-nvidia` plugin,
+provisioned by the platform tier — see [`../infra/README.md`](../infra/README.md#gpu-worker-node).
+
+Verify inside the workspace, over the same Boundary SSH path:
+```bash
+nvidia-smi                              # the T4 is visible
+cd ~/project && make && ./vectorAdd     # bundled CUDA sample -> "Test PASSED"
+```
 
 ## VSCode Remote-SSH via transparent sessions
 
@@ -259,13 +295,17 @@ Per-laptop, one-time (the developer's action, like the OIDC login):
 
 ## Troubleshooting
 
-**Repo isn't updated after changing `git_repo_url`.** The clone is **first-boot-only** and
+**Repo isn't updated after the flavor's repo changed.** The repo URL is pinned to the flavor
+by the project tier (`workspace_templates[<flavor>].git_repo_url`), baked into the published
+job template — so changing it is a **project-tier** edit + re-apply (re-publishes the KV
+template), not a developer-tier var. On top of that the clone is **first-boot-only** and
 `/home/dev` **persists**:
 ```bash
 if [ ! -d /home/dev/project/.git ]; then sudo -u dev git clone ${git_repo_url} /home/dev/project; fi
 ```
-So re-applying with a new URL won't re-clone — the guard sees the existing `.git`. To switch
-repos, recreate the volume **and** job so the workspace boots into an empty `/home/dev`:
+So even after the template is re-published, an existing workspace won't re-clone — the guard
+sees the existing `.git`. To pick up a new repo, recreate the volume **and** job so the
+workspace boots into an empty `/home/dev`:
 ```bash
 terraform apply \
   -replace=nomad_job.workspace \

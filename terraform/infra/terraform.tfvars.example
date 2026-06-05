@@ -7,6 +7,10 @@ instance_type    = "t3.large"
 boundary_version = "0.21.3+ent"
 nomad_version    = "1.11.6+ent"
 
+# Optional GPU Nomad client (NVIDIA T4 / g4dn.xlarge). Off by default because the
+# instance is costly — set true only when GPU workspaces are needed.
+# enable_gpu_node = true
+
 # Initial Boundary admin + scopes (sensible defaults below).
 # NOTE: boundary_admin_password is sensitive — change it and never commit a real one.
 boundary_admin_login_name = "admin"

@@ -27,6 +27,7 @@ export interface Workspace {
   name: string
   workspace_name: string
   project: string
+  flavor: string
   status: string
   port: number
   target_id: string
@@ -35,6 +36,17 @@ export interface Workspace {
   proxycommand_config: string
   transparent_config: string
   boundary_authenticate_cmd: string
+  boundary_addr: string
+  boundary_auth_method_id: string
+  user: string
+}
+
+// TerminalOption is a terminal emulator the portal can launch. The list is
+// derived in the browser from the user's OS (see BoundaryAuth), and the chosen
+// id is sent to the backend's boundary-authenticate endpoint.
+export interface TerminalOption {
+  id: string
+  label: string
 }
 
 export interface Me {
@@ -127,6 +139,47 @@ export function writeSSHConfig(project: string, ws: string): Promise<string> {
   return fetch(`${base}/ssh-config`, { method: 'POST', credentials: 'include' })
     .then(asJSON)
     .then((d) => d.host as string)
+}
+
+// The portal backend is remote, so it can't touch the developer's machine. These
+// secured-ws:// deep links are handed to the locally-installed helper, which runs
+// the one-time Boundary login (authenticate) or writes the SSH config block and
+// opens the IDE (connect). The helper validates every parameter; we only assemble
+// and URL-encode them here.
+const SCHEME = 'secured-ws'
+
+// HELPER_DOWNLOAD is the portal-served macOS helper bundle (built by
+// portal/helper/macos/build.sh into backend/web/helper).
+export const HELPER_DOWNLOAD = '/helper/SecuredWS-macos.zip'
+
+export function boundaryAuthLink(addr: string, authMethodId: string, terminal: string): string {
+  const q = new URLSearchParams({ addr, auth_method_id: authMethodId, terminal })
+  return `${SCHEME}://authenticate?${q.toString()}`
+}
+
+export function connectLink(p: {
+  host: string
+  user: string
+  targetId: string
+  addr: string
+  ide: string
+}): string {
+  const q = new URLSearchParams({
+    host: p.host,
+    user: p.user,
+    target_id: p.targetId,
+    addr: p.addr,
+    ide: p.ide,
+  })
+  return `${SCHEME}://connect?${q.toString()}`
+}
+
+// disconnectLink tells the helper to remove this workspace's managed Host block
+// from ~/.ssh/config — fired when a workspace is destroyed so stale entries don't
+// linger. The helper no-ops if the block was never written.
+export function disconnectLink(host: string): string {
+  const q = new URLSearchParams({ host })
+  return `${SCHEME}://disconnect?${q.toString()}`
 }
 
 export function logout(): Promise<Response> {

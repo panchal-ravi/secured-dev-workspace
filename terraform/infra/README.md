@@ -12,6 +12,9 @@ Provisions **HashiCorp Boundary Enterprise** as a single all-in-one node on AWS:
    instance from that AMI running, on the same host: the Boundary **controller +
    worker** (backed by a **local PostgreSQL**, static **AEAD KMS keys**) and a
    single combined **Nomad server + client** agent (TLS + ACLs enabled).
+3. A second **Packer** GPU image (`ami/gpu_image/`) and a second EC2 — a **GPU worker**
+   (`g4dn.xlarge`, NVIDIA T4) — that joins the cluster as a **Nomad client in the `gpu`
+   node pool** for GPU workspaces. See [GPU worker node](#gpu-worker-node).
 
 The Boundary controller API (`9200`), Boundary worker proxy (`9202`), the Nomad
 HTTP API/UI (`4646`) and the Vault API/UI (`8200`) are all reached through a public **Network Load Balancer**.
@@ -58,13 +61,18 @@ tiers are documented in [`../project/README.md`](../project/README.md) and
    `config/nomad_license.hclic` and Vault at `config/vault_license.hclic` (replace the placeholders).
    All are gitignored. Vault Enterprise will not start without its license.
 
-2. **Build the AMI:**
+2. **Build the AMIs** — the base AMI, **and** the GPU AMI (the GPU node is provisioned
+   unconditionally, so its image is a prerequisite — see [GPU worker node](#gpu-worker-node)):
    ```bash
    cd ami/base_image
    packer init .
-   packer build -var-file=variables.pkrvars.hcl .
+   packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-boundary-enterprise-<ts>
+   cd ../gpu_image
+   packer init .
+   packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-gpu-workspace-<ts>
    ```
-   Produces `<owner>-boundary-enterprise-<timestamp>`, tagged with the four versions.
+   The base AMI is tagged with the four binary versions; the GPU AMI bakes the NVIDIA driver +
+   container toolkit + Nomad + the `nomad-device-nvidia` plugin.
 
 3. **Configure variables:**
    ```bash
@@ -226,6 +234,39 @@ After applying, log in via SSO:
 eval "$(terraform output -raw boundary_oidc_login_command)"   # browser OIDC flow
 eval "$(terraform output -raw nomad_oidc_login_command)"      # CLI loopback flow
 ```
+
+## GPU worker node
+
+For GPU workspaces, the platform tier provisions a **second EC2** that joins the existing
+all-in-one node as a **Nomad client in the `gpu` node pool** — the main node stays in the
+implicit `default` pool, so existing jobs can't drift onto the GPU box and only a flavor that
+opts into `node_pool = "gpu"` is placed there.
+
+- **Separate GPU AMI** (`ami/gpu_image/`, built with `packer build` like the base image): an
+  Ubuntu 24.04 base with the NVIDIA driver, `nvidia-container-toolkit` (the Docker `nvidia`
+  runtime), Nomad `+ent`, and the **`nomad-device-nvidia`** plugin — so the node fingerprints
+  its `nvidia/gpu` device and can schedule GPU jobs.
+- **`aws_instance.gpu`** (`gpu.tf`, type `var.gpu_instance_type` = `g4dn.xlarge`, root
+  `var.gpu_root_volume_size` = 60 GiB) in the same VPC/subnet/SG, with a **public IP** for
+  image egress (no NAT in the PoC VPC). It registers to the main node over the VPC; new SG
+  rules are **self-referencing/intra-SG only** (Nomad RPC+serf, Vault, demo-db, and the
+  Boundary worker → workspace SSH range `2222–2399`) — no new public ingress.
+- **Reuses the existing Boundary worker**, which dials the GPU node's private IP over the VPC,
+  and the **same Nomad TLS cert** (mutual RPC TLS authorizes the join; a client needs no ACL
+  token). No Vault/Boundary/Postgres runs on the GPU node.
+
+The GPU node's private IP surfaces as the `gpu_instance_private_ip` output. The project tier
+publishes the `gpu-workspace` flavor (`node_pool = "gpu"`, CUDA image) and the developer tier
+(or the portal) places the workspace there — see
+[`../project/README.md`](../project/README.md) and
+[`../workspace/README.md`](../workspace/README.md#gpu-flavor).
+
+> **The GPU node is currently provisioned unconditionally** — `aws_instance.gpu` has no
+> `count`, so a plain `terraform apply` looks up the GPU AMI and creates the GPU instance, and
+> its `remote-exec` **blocks the apply** until the node finishes bootstrapping and `nvidia-smi`
+> works. So the **GPU AMI (`ami/gpu_image/`) is a prerequisite** of every infra apply (build it
+> in step 2 below). To run the base node *without* a GPU box, remove/comment `gpu.tf` and the
+> `gpu_*` outputs — making it opt-in (a `count`/feature flag) is a roadmap cleanup.
 
 ## Next steps
 

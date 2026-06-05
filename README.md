@@ -79,13 +79,17 @@ company's single sign-on.
 
 No keys to copy. No tools to install. No source code to download. No tokens to paste.
 
-## What's next
+## Self-service developer portal
 
-Today, workspaces are set up by the platform team. We're evolving this into a
-**self-service developer portal**: developers will request, start, stop, and manage
-their own secured workspaces through a simple web interface — with no need to understand
-or run any of the underlying infrastructure tooling. The same security guarantees above
-will continue to apply, automatically.
+Workspaces can be set up by the platform team — and, increasingly, by developers
+themselves. A **self-service developer portal** (currently a working preview) lets
+developers request, start, stop, and manage their own secured workspaces from a simple
+web interface, choosing from ready-made workspace types — including **GPU-backed** ones for
+heavier workloads — with no need to understand or run any of the underlying infrastructure
+tooling. The same security guarantees above apply automatically, whichever path is used.
+
+What's next: maturing the portal, durable storage so a workspace survives a full machine
+replacement, and stronger per-workspace isolation.
 
 ---
 

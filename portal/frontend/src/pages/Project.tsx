@@ -5,6 +5,7 @@ import { Add } from '@carbon/icons-react'
 import { listWorkspaces, Project, Workspace } from '../api/client'
 import WorkspaceCard from '../components/WorkspaceCard'
 import CreateWorkspaceModal from '../components/CreateWorkspaceModal'
+import BoundaryAuth from '../components/BoundaryAuth'
 
 export default function ProjectPage() {
   const { name } = useParams()
@@ -52,6 +53,14 @@ export default function ProjectPage() {
         <InlineNotification kind="error" title="Error" subtitle={err} lowContrast onClose={() => setErr('')} />
       )}
       {workspaces.length === 0 && !err && <p>No workspaces yet. Create one to get started.</p>}
+      {name && workspaces.length > 0 && (
+        <BoundaryAuth
+          project={name}
+          command={workspaces[0].boundary_authenticate_cmd}
+          addr={workspaces[0].boundary_addr}
+          authMethodId={workspaces[0].boundary_auth_method_id}
+        />
+      )}
       <div className="card-grid">
         {workspaces.map((w) => (
           <WorkspaceCard key={w.name} ws={w} onChanged={refresh} />

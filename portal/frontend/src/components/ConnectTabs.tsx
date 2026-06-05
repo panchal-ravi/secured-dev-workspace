@@ -3,7 +3,6 @@ import {
   Button,
   CodeSnippet,
   Dropdown,
-  InlineNotification,
   ListItem,
   OrderedList,
   Tab,
@@ -13,38 +12,37 @@ import {
   Tabs,
 } from '@carbon/react'
 import { Launch } from '@carbon/icons-react'
-import { Workspace, writeSSHConfig } from '../api/client'
-import { useMe } from '../me'
+import { Workspace, connectLink } from '../api/client'
 
 // IDEs in the VS Code family share the `vscode-remote/ssh-remote+<host>` deep
-// link authority and differ only by URL scheme, so one list covers them all.
+// link authority and differ only by URL scheme; the helper maps these ids to the
+// right scheme when it opens the IDE.
 const IDES = [
-  { id: 'vscode', label: 'VS Code', scheme: 'vscode' },
-  { id: 'vscode-insiders', label: 'VS Code Insiders', scheme: 'vscode-insiders' },
-  { id: 'cursor', label: 'Cursor', scheme: 'cursor' },
-  { id: 'windsurf', label: 'Windsurf', scheme: 'windsurf' },
+  { id: 'vscode', label: 'VS Code' },
+  { id: 'vscode-insiders', label: 'VS Code Insiders' },
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'windsurf', label: 'Windsurf' },
 ]
 
 // Two connection methods on the workspace card: the ProxyCommand path (no Client
 // Agent, better speed) and the transparent-session path. Both need a one-time
-// Boundary SSO login.
+// Boundary SSO login (see the Connect panel above the cards). With a remote
+// backend, the ProxyCommand "Open" hands a secured-ws://connect link to the local
+// helper, which writes ~/.ssh/config and launches the IDE.
 export default function ConnectTabs({ ws }: { ws: Workspace }) {
-  const me = useMe()
   const [ide, setIde] = useState(IDES[0])
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
+  const running = ws.status === 'running'
 
-  const openInIDE = async () => {
-    setBusy(true)
-    setErr('')
-    try {
-      const host = await writeSSHConfig(ws.project, ws.name)
-      window.location.assign(`${ide.scheme}://vscode-remote/ssh-remote+${host}/home/dev/project`)
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
+  const open = () => {
+    window.location.assign(
+      connectLink({
+        host: ws.name,
+        user: ws.user,
+        targetId: ws.target_id,
+        addr: ws.boundary_addr,
+        ide: ide.id,
+      }),
+    )
   }
 
   return (
@@ -55,66 +53,39 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
       </TabList>
       <TabPanels>
         <TabPanel>
-          <OrderedList style={{ marginBottom: '0.5rem' }}>
-            <ListItem>One time per terminal session, authenticate to Boundary:</ListItem>
+          <OrderedList style={{ margin: '0.5rem 0' }}>
+            <ListItem>
+              Open it directly — the Secured Workspace helper writes the SSH config to <code>~/.ssh/config</code> and
+              launches your IDE:
+            </ListItem>
           </OrderedList>
-          <CodeSnippet type="single" feedback="Copied!">
-            {ws.boundary_authenticate_cmd}
-          </CodeSnippet>
-
-          {me?.local_ssh ? (
-            <>
-              <OrderedList style={{ margin: '0.75rem 0 0.5rem' }}>
-                <ListItem>
-                  Then open it directly — the portal writes the SSH config to <code>~/.ssh/config</code> and launches
-                  your IDE:
-                </ListItem>
-              </OrderedList>
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
-                <Dropdown
-                  id={`ide-${ws.name}`}
-                  size="sm"
-                  label="IDE"
-                  titleText="IDE"
-                  items={IDES}
-                  itemToString={(i) => (i ? i.label : '')}
-                  selectedItem={ide}
-                  onChange={({ selectedItem }) => selectedItem && setIde(selectedItem)}
-                  style={{ minWidth: '12rem' }}
-                />
-                <Button size="sm" renderIcon={Launch} disabled={busy} onClick={openInIDE}>
-                  Open in {ide.label}
-                </Button>
-              </div>
-              {err && (
-                <InlineNotification
-                  kind="error"
-                  title="Could not open"
-                  subtitle={err}
-                  lowContrast
-                  onClose={() => setErr('')}
-                />
-              )}
-              <details style={{ marginTop: '0.75rem' }}>
-                <summary style={{ cursor: 'pointer', fontSize: '0.8rem' }}>Or configure manually</summary>
-                <CodeSnippet type="multi" feedback="Copied!">
-                  {ws.proxycommand_config}
-                </CodeSnippet>
-              </details>
-            </>
-          ) : (
-            <>
-              <OrderedList style={{ margin: '0.75rem 0 0.5rem' }}>
-                <ListItem>
-                  Append this to <code>~/.ssh/config</code>, then in VSCode run “Remote-SSH: Connect to Host…” and pick{' '}
-                  <code>{ws.name}</code>:
-                </ListItem>
-              </OrderedList>
-              <CodeSnippet type="multi" feedback="Copied!">
-                {ws.proxycommand_config}
-              </CodeSnippet>
-            </>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
+            <Dropdown
+              id={`ide-${ws.name}`}
+              size="sm"
+              label="IDE"
+              titleText="IDE"
+              items={IDES}
+              itemToString={(i) => (i ? i.label : '')}
+              selectedItem={ide}
+              onChange={({ selectedItem }) => selectedItem && setIde(selectedItem)}
+              style={{ minWidth: '12rem' }}
+            />
+            <Button size="sm" renderIcon={Launch} disabled={!running} onClick={open}>
+              Open
+            </Button>
+          </div>
+          {!running && (
+            <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+              Available once the workspace is running.
+            </p>
           )}
+          <details style={{ marginTop: '0.75rem' }}>
+            <summary style={{ cursor: 'pointer', fontSize: '0.8rem' }}>Or configure manually</summary>
+            <CodeSnippet type="multi" feedback="Copied!">
+              {ws.proxycommand_config}
+            </CodeSnippet>
+          </details>
         </TabPanel>
         <TabPanel>
           <OrderedList style={{ margin: '0 0 0.5rem' }}>

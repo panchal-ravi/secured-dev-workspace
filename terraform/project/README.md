@@ -26,12 +26,17 @@ project:
   permission set, plus a WIF policy letting the workspace read a `contents:write` token from it) — the
   git push credential for every workspace in the project; no static PAT anywhere.
 - The project's **Nomad job templates** ("flavors"), written as raw HCL to Vault KV at
-  `secret/projects/<project>/job-templates/<name>`, **each with its pinned workspace image**
-  (from `workspace_images`) — the developer tier renders the chosen flavor and runs its image,
-  so a developer never selects an image.
+  `secret/projects/<project>/job-templates/<name>`, **each with its OWN pinned image AND git
+  repo** (from `workspace_templates`), plus an optional `node_pool` (`"gpu"` for the GPU
+  flavor). At publish the project-static values (namespace, image, repo, WIF role, SSH CA path,
+  GitHub/DB/DeepSeek paths) are baked in, leaving only the per-workspace placeholders — so both
+  the developer tier and the Developer Portal render the **same** template and a developer never
+  selects an image or repo.
 
 The outputs (`project_scope_id`, `namespace`, `credential_library_id`, `ssh_ca_path`, `wif_role`,
-`github_token_path`, `job_template_names`, …) feed the developer tier.
+`github_token_path`, `job_template_names`, `job_template_node_pools`, …) feed the developer tier;
+a parallel `portal-descriptor` (with the same flavors, their picker metadata, and node pools) is
+published to Vault KV for the Developer Portal.
 
 ## Prerequisite: a GitHub App (manual, one-time per project)
 
@@ -61,12 +66,17 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   -t <dockerhub-user>/dev-workspace:poc --push images/dev-workspace
 ```
 
+The **GPU flavor** image builds from `images/gpu-workspace/` (a CUDA-devel base with full
+dev-workspace parity — `nvidia-smi`/`nvcc` plus Claude/DB-MCP/git). It only runs on the
+amd64 GPU node, so a single-arch `linux/amd64` build is enough; it still pulls at launch.
+
 Then add an entry per template to `workspace_templates` (see tfvars below) mapping the
 template name to its pushed `image`, its `git_repo_url`, a picker `label`/`description`,
-and an optional `node_pool` (`"gpu"` for the GPU flavor). Only the templates you list are
-published, so a project opts in to one or many. The image repo must be **public** (PoC — no
-registry credentials in the job). (Roadmap: a **private** repo with a Nomad docker `auth`
-block, or ECR with per-project toolchains.)
+and an optional `node_pool` (`"gpu"` for the GPU flavor — it places the workspace on the GPU
+node and requests an `nvidia/gpu` device). Only the templates you list are published, so a
+project opts in to one or many. The image repo must be **public** (PoC — no registry
+credentials in the job). (Roadmap: a **private** repo with a Nomad docker `auth` block, or ECR
+with per-project toolchains.)
 
 ### Claude Code → DeepSeek
 

@@ -40,6 +40,7 @@ RUN mkdir -p /etc/claude-code \
     '{' \
     '  "apiKeyHelper": "/usr/local/bin/deepseek-key",' \
     '  "env": {' \
+    '    "DISABLE_AUTOUPDATER": "1",' \
     '    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",' \
     '    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",' \
     '    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",' \

@@ -12,39 +12,42 @@ steps.
 ## Layout
 
 The stack is organized into **three tiers**, each its own Terraform root, applied
-in order — built this way so a future portal/CLI can drive the lower two
-one instance at a time:
+in order — built this way so the **Developer Portal** (`portal/`, a working PoC) and a
+future CLI can drive the lower two one instance at a time over the HashiStack APIs:
 
 - **Platform tier** *(once)* — the foundation root `terraform/infra/`: the Boundary/Nomad/Vault
-  clusters, IBM Verify OIDC apps + SSO wiring, the admin/readonly managed groups, the
-  Boundary **org** scope, the shared Nomad↔Vault WIF auth method, and a Vault KV mount
-  for project artifacts.
+  clusters (plus a **GPU worker node** in the `gpu` Nomad pool), IBM Verify OIDC apps + SSO
+  wiring, the admin/readonly managed groups, the Boundary **org** scope, the shared Nomad↔Vault
+  WIF auth method, and a Vault KV mount for project artifacts.
 - **Project tier** *(per project)* — the `terraform/project/` root: a Boundary **project**
   scope, a Nomad namespace, a path-prefixed Vault SSH CA (`ssh/<project>`), the Boundary
   Vault credential store + SSH credential library, a per-project WIF role, a namespace
-  ACL, and the project's Nomad job templates saved to Vault KV.
+  ACL, and the project's **per-template** Nomad job templates (each pinning its own repo +
+  image + node pool) saved to Vault KV, plus a portal descriptor for the Developer Portal.
 - **Developer tier** *(per workspace)* — the `terraform/workspace/` root: spins up a workspace
-  container in the project namespace from a selected job template and creates the
-  Boundary target/alias/role for transparent VSCode Remote-SSH.
+  container in the project namespace from a **selected flavor** (its image, repo, and node pool
+  pinned by the project) and creates the Boundary target/alias/role for transparent VSCode
+  Remote-SSH.
 
 ```
 terraform/
 ├── infra/                          # PLATFORM root → secured-codespace + identity + nomad-vault-wif + KV mount
 │   ├── ami/base_image/             # Packer: builds <owner>-boundary-enterprise-* AMI
+│   ├── ami/gpu_image/              # Packer: builds <owner>-gpu-workspace-* AMI (NVIDIA driver + toolkit + nomad-device-nvidia)
 │   ├── config/                     # Boundary/Nomad/Vault HCL, systemd units, licenses
 │   ├── modules/
-│   │   ├── secured-codespace/      # PLATFORM: VPC, NLB, SGs, TLS, EC2, bootstrap (Boundary+Nomad+Vault, org scope)
+│   │   ├── secured-codespace/      # PLATFORM: VPC, NLB, SGs, TLS, EC2 (+ GPU worker in node_pool "gpu"), bootstrap (Boundary+Nomad+Vault, org scope)
 │   │   ├── identity/               # PLATFORM: IBM Verify OIDC SSO for Boundary + Nomad (admin/readonly groups)
 │   │   └── nomad-vault-wif/        # PLATFORM: the shared jwt-nomad auth method (Nomad↔Vault WIF)
 │   ├── vault-github-plugin.tf      # PLATFORM: register the GitHub secrets plugin into Vault's catalog
 │   └── generated/                  # runtime artifacts (SSH key, init JSON) — gitignored
 ├── project/                        # PROJECT root (flat — one Terraform workspace per project)
-│   │                               #   per-project scope, namespace, Vault SSH CA, cred store/library, WIF role, job templates + images
+│   │                               #   per-project scope, namespace, Vault SSH CA, cred store/library, WIF role, per-template job templates (repo+image+node_pool), portal descriptor
 │   ├── github.tf                   #   per-project GitHub App token broker (github/<project> + permission set)
-│   ├── templates/                  #   Nomad job templates (raw HCL, published to Vault KV) — one "flavor" each
-│   └── images/dev-workspace/       #   Dockerfile for the dev-workspace:poc image (project-owned; pinned per template)
+│   ├── templates/                  #   Nomad job templates (raw HCL, published to Vault KV) — one "flavor" each (dev-workspace, gpu-workspace)
+│   └── images/                     #   Dockerfile per flavor: dev-workspace/ + gpu-workspace/ (CUDA) — project-owned, pinned per template
 └── workspace/                      # DEVELOPER root (flat — one Terraform workspace per workspace)
-                                    #   reads the chosen flavor's template + pinned image from project state
+                                    #   reads the chosen flavor's template + its pinned image/repo + node pool from project state
 ```
 
 The **platform** root (`terraform/infra/`) holds a single Terraform state: the base node
@@ -62,9 +65,9 @@ Apply the tiers in sequence; each lower tier reads the one above via `terraform_
 so there is no token/address copying between them.
 
 1. **Platform** *(once)* — `terraform/infra/` → see [`infra/README.md`](infra/README.md).
-   Builds the AMI and the all-in-one node, bootstraps Boundary + Nomad + Vault, wires IBM
-   Verify SSO, and stands up the shared `jwt-nomad` WIF anchor + the KV mount for job
-   templates.
+   Builds the base **and GPU** AMIs and the all-in-one node (plus the GPU worker, a Nomad
+   client in the `gpu` pool), bootstraps Boundary + Nomad + Vault, wires IBM Verify SSO, and
+   stands up the shared `jwt-nomad` WIF anchor + the KV mount for job templates.
 2. **Project** *(per project)* — `terraform/project/` → see [`project/README.md`](project/README.md).
    Creates, scoped to the project: a Boundary project scope, a Nomad namespace, a Vault SSH
    CA (`ssh/<project>`) + signing role, a least-privilege Boundary credential store + SSH

@@ -41,6 +41,11 @@ func NewMux(a *auth.Authenticator, svc *workspace.Service, staticDir string) htt
 	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/ssh-config", protect(s.writeSSHConfig))
 	mux.Handle("DELETE /api/projects/{name}/workspaces/{ws}", protect(s.destroyWorkspace))
 
+	// The secured-ws:// helper download. Served from a sibling of the SPA dir so the
+	// frontend build (which empties ./web) never deletes it. Public, no secrets.
+	helperDir := filepath.Join(filepath.Dir(staticDir), "helper-dist")
+	mux.Handle("GET /helper/", http.StripPrefix("/helper/", http.FileServer(http.Dir(helperDir))))
+
 	mux.Handle("/", spaHandler(staticDir))
 	return mux
 }

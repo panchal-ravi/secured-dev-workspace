@@ -12,8 +12,9 @@ workspace_name   = "main"
 project_name = "project-acme" # must match an applied project (terraform/project workspace of this name)
 ssh_port     = 2222           # DISTINCT static host port per workspace on the shared node
 
-git_repo_url = "https://github.com/octocat/Hello-World.git" # PUBLIC repo, cloned first boot
-
-# No image here — the project pins it to the chosen flavor. Default flavor is
-# "dev-workspace"; uncomment to pick another the project published:
+# No image or git repo here — the project pins BOTH to the chosen flavor
+# (terraform/project workspace_templates). Default flavor is "dev-workspace";
+# uncomment to pick another the project published (e.g. the GPU flavor, which also
+# places the workspace on the GPU node automatically):
 # job_template_name = "dev-workspace"
+# job_template_name = "gpu-workspace"

@@ -2,6 +2,10 @@
 frontend/node_modules/
 backend/web/
 
+# secured-ws helper build artifacts (binary; rebuilt by helper/macos/build.sh)
+backend/helper-dist/
+helper/macos/build/
+
 # Local config / secrets (never commit)
 *.env
 .env

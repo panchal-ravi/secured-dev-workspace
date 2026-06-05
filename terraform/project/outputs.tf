@@ -50,6 +50,11 @@ output "job_template_names" {
   value       = keys(vault_kv_secret_v2.job_template)
 }
 
+output "job_template_node_pools" {
+  description = "Map of published job-template name => its Nomad node pool (\"\" = the implicit default pool). The developer tier reads the selected flavor's pool to place the home volume and the Boundary host on the right node (e.g. \"gpu\")."
+  value       = { for name, cfg in var.workspace_templates : name => cfg.node_pool }
+}
+
 output "github_token_path" {
   description = "Vault path the workspace WIF task reads a pre-scoped, short-lived GitHub App token from (github/<project>/token/<permissionset>)."
   value       = "${vault_mount.github.path}/token/${local.github_permissionset_name}"

@@ -34,6 +34,12 @@ variable "root_volume_size" {
   default     = 40
 }
 
+variable "enable_gpu_node" {
+  description = "Provision the GPU Nomad client EC2 (NVIDIA T4). Off by default — the g4dn instance is costly, so opt in only when GPU workspaces are needed."
+  type        = bool
+  default     = false
+}
+
 variable "gpu_instance_type" {
   description = "EC2 instance type for the GPU Nomad client node (NVIDIA T4)"
   type        = string

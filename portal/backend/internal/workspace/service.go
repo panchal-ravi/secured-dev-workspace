@@ -61,6 +61,7 @@ type Workspace struct {
 	Name                    string               `json:"name"`           // ws-<handle>-<ws>
 	WorkspaceName           string               `json:"workspace_name"` // <ws>
 	Project                 string               `json:"project"`        // owning project, for the cross-project view
+	Flavor                  string               `json:"flavor"`         // template the workspace was created from
 	Status                  string               `json:"status"`
 	Port                    int                  `json:"port"`
 	TargetID                string               `json:"target_id"`
@@ -69,6 +70,12 @@ type Workspace struct {
 	ProxyCommandConfig      string               `json:"proxycommand_config"`
 	TransparentConfig       string               `json:"transparent_config"`
 	BoundaryAuthenticateCmd string               `json:"boundary_authenticate_cmd"`
+	// Parameters the frontend assembles into secured-ws:// deep links so the
+	// locally-installed helper can authenticate / write SSH config + open the IDE
+	// (the backend is remote and can't touch the developer's machine itself).
+	BoundaryAddr         string `json:"boundary_addr"`
+	BoundaryAuthMethodID string `json:"boundary_auth_method_id"`
+	User                 string `json:"user"`
 }
 
 // ListProjects returns the descriptors the developer's groups may access.
@@ -106,7 +113,7 @@ func (s *Service) ListWorkspaces(ctx context.Context, d descriptor.Descriptor, h
 	out := make([]Workspace, 0, len(jobs))
 	for _, j := range jobs {
 		wsName := strings.TrimPrefix(j.Name, prefix)
-		out = append(out, s.view(d, j.Name, wsName, j.Status, j.Port, targetIDs[j.Name], handle))
+		out = append(out, s.view(d, j.Name, wsName, j.Status, j.Port, targetIDs[j.Name], handle, j.Flavor))
 	}
 	return out, nil
 }
@@ -178,7 +185,7 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 	if err := s.nomad.CreateHostVolume(d.Namespace, volume, flavor.NodePool); err != nil {
 		return Workspace{}, err
 	}
-	jobID, err := s.nomad.RegisterJob(d.Namespace, rendered)
+	jobID, err := s.nomad.RegisterJob(d.Namespace, rendered, in.Flavor)
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -211,9 +218,7 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 		return Workspace{}, err
 	}
 
-	ws := s.view(d, name, wsName, "pending", port, res.TargetID, in.Handle)
-	ws.Features = flavor.Features // exact flavor known on create
-	return ws, nil
+	return s.view(d, name, wsName, "pending", port, res.TargetID, in.Handle, in.Flavor), nil
 }
 
 // Stop stops a developer's workspace job, leaving the home volume and Boundary
@@ -319,25 +324,36 @@ func requireOwned(handle, jobName string) error {
 	return nil
 }
 
-// view assembles the UI workspace, including both connection configs.
-func (s *Service) view(d descriptor.Descriptor, name, wsName, status string, port int, targetID, handle string) Workspace {
+// view assembles the UI workspace, including both connection configs. When the
+// flavor (template) is known, its features are attributed exactly; otherwise we
+// fall back to the single-flavor case (e.g. workspaces created before the
+// template was stamped into the job meta).
+func (s *Service) view(d descriptor.Descriptor, name, wsName, status string, port int, targetID, handle, flavor string) Workspace {
 	user := d.WorkspaceUser
 	if user == "" {
 		user = "dev"
+	}
+	features := singleFlavorFeatures(d)
+	if f, ok := d.Flavor(flavor); ok {
+		features = f.Features
 	}
 	alias := fmt.Sprintf("%s.%s.%s.%s", wsName, handle, d.ProjectName, d.AliasSuffix)
 	return Workspace{
 		Name:                    name,
 		WorkspaceName:           wsName,
 		Project:                 d.ProjectName,
+		Flavor:                  flavor,
 		Status:                  status,
 		Port:                    port,
 		TargetID:                targetID,
 		Alias:                   alias,
-		Features:                singleFlavorFeatures(d),
+		Features:                features,
 		ProxyCommandConfig:      ProxyCommandConfig(name, user, s.cfg.BoundaryAddr, targetID),
 		TransparentConfig:       TransparentConfig(alias, user),
 		BoundaryAuthenticateCmd: BoundaryAuthenticateCmd(s.cfg.BoundaryAddr, d.BoundaryOIDCAuthMethodID),
+		BoundaryAddr:            s.cfg.BoundaryAddr,
+		BoundaryAuthMethodID:    d.BoundaryOIDCAuthMethodID,
+		User:                    user,
 	}
 }
 
