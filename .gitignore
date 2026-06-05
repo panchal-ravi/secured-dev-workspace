@@ -26,6 +26,7 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+
 # ── Packer ─────────────────────────────────────────────────────────────
 packer_cache/
 **/packer_cache/
@@ -36,9 +37,10 @@ generated/
 
 # ── Local working docs (plan + phase specs; not committed) ─────────────
 docs/
-
+.claude/
 # ── Throwaway verification harness (not part of the real stack) ────────
-infra/identity-test/
+terraform/infra/identity-test/
+scratch
 
 # ── OS / editor cruft ──────────────────────────────────────────────────
 .DS_Store
@@ -47,3 +49,4 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+.envrc

@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euxo pipefail
+exec > >(tee -a /var/log/gpu-bootstrap.log) 2>&1
+
+echo "=== GPU Nomad client bootstrap starting ==="
+
+export DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# Nomad client agent (TLS + ACLs + nvidia device plugin). This is the ONLY
+# service on the GPU node — Vault/Boundary/Postgres all live on the all-in-one
+# node. The agent runs as root (config/nomad.service has no User=) so the
+# client's docker/exec drivers work; the driver + nvidia-container-toolkit +
+# nomad-device-nvidia plugin are baked into the AMI.
+# ---------------------------------------------------------------------------
+mkdir -p /opt/nomad/data /opt/nomad/plugins /etc/nomad.d/tls /var/log/nomad
+
+cat > /etc/nomad.d/nomad.hcl <<-'NOMAD_HCL'
+${nomad_config}
+NOMAD_HCL
+
+cat > /etc/nomad.d/tls/nomad.crt <<-'NOMAD_CRT'
+${nomad_crt}
+NOMAD_CRT
+
+cat > /etc/nomad.d/tls/nomad.key <<-'NOMAD_KEY'
+${nomad_key}
+NOMAD_KEY
+
+cat > /etc/nomad.d/license.hclic <<-'NOMAD_LICENSE'
+${nomad_license}
+NOMAD_LICENSE
+
+cat > /etc/systemd/system/nomad.service <<-'NOMAD_SERVICE'
+${nomad_service}
+NOMAD_SERVICE
+
+chmod 600 /etc/nomad.d/tls/nomad.key
+
+# Sanity: the driver must be live before Nomad fingerprints the GPU device.
+nvidia-smi || { echo "nvidia-smi failed — driver not loaded"; exit 1; }
+
+# Docker must be running for the client's docker driver (and nvidia runtime) to
+# fingerprint.
+systemctl enable --now docker
+
+systemctl daemon-reload
+systemctl enable --now nomad
+
+# ---------------------------------------------------------------------------
+# Wait for the client to register with the server's leader. No ACL bootstrap
+# here — that is one-time on the server; mutual RPC TLS authorizes the join.
+# Probe /v1/status/leader: it is unauthenticated (so it works with ACLs on,
+# unlike the agent endpoints) AND the client only returns a leader once it has
+# joined the cluster, so it doubles as a join check.
+# ---------------------------------------------------------------------------
+echo "Waiting for the Nomad client to join the cluster..."
+nomad_ready=0
+for _ in $(seq 1 60); do
+  if [ -n "$(curl -ksf https://127.0.0.1:4646/v1/status/leader || true)" ]; then nomad_ready=1; break; fi
+  sleep 5
+done
+[ "$nomad_ready" = "1" ] || { echo "Nomad client did not join"; exit 1; }
+
+# Signal readiness for the Terraform provisioner.
+touch /home/ubuntu/.gpu-ready
+chown ubuntu:ubuntu /home/ubuntu/.gpu-ready
+
+echo "=== GPU Nomad client bootstrap complete ==="

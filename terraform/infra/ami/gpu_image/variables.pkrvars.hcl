@@ -1,0 +1,7 @@
+owner                       = "rp"
+aws_region                  = "ap-southeast-1"
+aws_instance_type           = "g4dn.xlarge"
+nomad_version               = "1.11.6+ent"
+nvidia_driver_package       = "nvidia-driver-550-server"
+nomad_device_nvidia_version = "1.1.0"
+cni_version                 = "v1.9.0"
