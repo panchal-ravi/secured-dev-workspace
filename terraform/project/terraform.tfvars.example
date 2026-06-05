@@ -1,0 +1,57 @@
+# Copy to <project>.tfvars and apply under a matching Terraform workspace:
+#   terraform init
+#   terraform workspace new project-acme
+#   terraform apply -var-file=project-acme.tfvars
+# *.tfvars is gitignored.
+
+# Project identifier (lowercase alphanumeric/hyphen). Reused as the Boundary
+# project scope, Nomad namespace, Vault `ssh/<project>` mount and WIF role.
+project_name = "project-acme"
+
+# IBM Verify group confined to this project's Nomad namespace (defense-in-depth).
+# Create it in the Verify console; members reach workspaces via Boundary regardless.
+developers_group_name = "project-acme-developers"
+
+# --- Workspace templates (one per job template; the project owns the toolchain) ---
+# A project may offer several templates; the developer picks one in the portal. Each
+# template maps a templates/<name>.nomad.hcl file => its own published PUBLIC image,
+# git repo (cloned into the workspace), picker label/description, and optional Nomad
+# node_pool. The map KEY must match a templates/<name>.nomad.hcl file. Only listed
+# templates are published, so this map is opt-in per project.
+#   - node_pool = ""    -> default pool (the all-in-one node); standard CPU workspace
+#   - node_pool = "gpu" -> the NVIDIA T4 GPU worker node (gpu-workspace template)
+workspace_templates = {
+  "dev-workspace" = {
+    image        = "panchalravi/dev-workspace:poc"
+    git_repo_url = "https://github.com/<org>/<repo>"
+    label        = "Standard Dev Workspace"
+    description  = "Full dev environment: Claude Code (DeepSeek), read-only DB MCP, dynamic Git PAT."
+  }
+  "gpu-workspace" = {
+    image        = "panchalravi/gpu-workspace:poc"
+    git_repo_url = "https://github.com/panchal-ravi/gpu-workspace-demo"
+    label        = "GPU Workspace (NVIDIA T4)"
+    description  = "Everything in the standard workspace plus a CUDA toolchain on an NVIDIA T4 GPU."
+    node_pool    = "gpu"
+  }
+}
+
+# --- DeepSeek (the LLM the baked-in Claude Code CLI is pointed at) ---
+# Stored only in Vault KV, rendered per session to the workspace /secrets tmpfs and
+# read by Claude's apiKeyHelper — never persisted to /home/dev. From the DeepSeek
+# platform dashboard.
+deepseek_api_key = "sk-..."
+
+# --- GitHub App (per-project git push credential broker) ---
+# Create a GitHub App with repository permission Contents: Read & write (+ the
+# auto-selected Metadata: read), install it on this project's repos, then fill in:
+github_app_id              = 123456            # App ID (App settings page)
+github_app_installation_id = 7654321           # from …/installations/<id>
+# PKCS#1 PEM. If GitHub issued PKCS#8, convert: openssl rsa -in key.pem -out key.pkcs1.pem
+github_app_private_key = <<-EOT
+-----BEGIN RSA PRIVATE KEY-----
+...paste the App private key here...
+-----END RSA PRIVATE KEY-----
+EOT
+# Optional: constrain minted tokens to specific repos (default = all installed repos).
+# github_repositories = ["confused-deputy-aws"]

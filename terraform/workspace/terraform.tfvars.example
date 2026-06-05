@@ -1,0 +1,19 @@
+# Copy to <handle>-<workspace>.tfvars and apply under a matching Terraform workspace:
+#   terraform init
+#   terraform workspace new alice-main
+#   terraform apply -var-file=alice-main.tfvars
+# *.tfvars is gitignored. Connection details + project wiring are read from the
+# foundation and project states automatically — no tokens/addresses go here.
+
+developer_email  = "alice@example.com" # IBM Verify /token/email — managed-group filter + cert key_id
+developer_handle = "alice"
+workspace_name   = "main"
+
+project_name = "project-acme" # must match an applied project (terraform/project workspace of this name)
+ssh_port     = 2222           # DISTINCT static host port per workspace on the shared node
+
+git_repo_url = "https://github.com/octocat/Hello-World.git" # PUBLIC repo, cloned first boot
+
+# No image here — the project pins it to the chosen flavor. Default flavor is
+# "dev-workspace"; uncomment to pick another the project published:
+# job_template_name = "dev-workspace"
