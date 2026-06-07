@@ -38,6 +38,7 @@ generated/
 # ── Local working docs (plan + phase specs; not committed) ─────────────
 docs/
 .claude/
+CLAUDE.md
 # ── Throwaway verification harness (not part of the real stack) ────────
 terraform/infra/identity-test/
 scratch
