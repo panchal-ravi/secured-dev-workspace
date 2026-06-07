@@ -109,13 +109,27 @@ resource "vault_policy" "nomad_ca_read" {
   HCL
 }
 
-# WIF grant: the workspace task (via its per-project WIF role) may READ a
-# per-session credential from the read-only DB role path only (use case B1).
+# WIF grant: the read-only DB role path (use case B1). Now read by the per-project
+# demo-db-mcp service (demo-db-mcp.tf) — the centralized MCP server that holds the
+# shared connection — using this same project WIF role.
 resource "vault_policy" "nomad_db_creds" {
   name = "nomad-${var.project_name}-db-creds"
 
   policy = <<-HCL
     path "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}" {
+      capabilities = ["read"]
+    }
+  HCL
+}
+
+# WIF grant: the workspace task may READ the per-project MCP coordinates (the
+# virtual-server URL + client bearer token) written by the gateway orchestration
+# (mcp-gateway.tf) to secret/projects/<project>/mcp. KV v2 ⇒ /data/ prefix.
+resource "vault_policy" "nomad_mcp_read" {
+  name = "nomad-${var.project_name}-mcp-read"
+
+  policy = <<-HCL
+    path "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp" {
       capabilities = ["read"]
     }
   HCL
@@ -131,7 +145,7 @@ resource "vault_jwt_auth_backend_role" "project" {
   bound_audiences         = ["vault.io"]
   user_claim              = "/nomad_job_id"
   user_claim_json_pointer = true
-  token_policies          = [vault_policy.nomad_ca_read.name, vault_policy.nomad_github_token.name, vault_policy.nomad_db_creds.name, vault_policy.nomad_deepseek_key.name]
+  token_policies          = [vault_policy.nomad_ca_read.name, vault_policy.nomad_github_token.name, vault_policy.nomad_db_creds.name, vault_policy.nomad_deepseek_key.name, vault_policy.nomad_mcp_read.name]
   token_ttl               = 1800
   token_max_ttl           = 3600
   token_type              = "service"

@@ -30,32 +30,60 @@ func NewNomad(addr, token string) (*Nomad, error) {
 
 // CreateHostVolume creates the persistent /home/dev dynamic host volume (mkdir
 // plugin, single-node-writer/file-system), mirroring the dev-workspace tier. The
-// volume is pinned to the job's target node pool so it materializes on a node the
-// job can actually be placed on: a non-empty nodePool (e.g. "gpu") pins it there,
-// and an empty nodePool means the implicit "default" pool (the main node). Without
-// pinning the default case, the scheduler may place the volume on the GPU node,
-// where a default-pool job can never co-locate with it ("missing compatible host
-// volumes").
+// volume is pinned to a specific ready node in the job's target node pool so it
+// materializes on a node the job can actually be placed on: a non-empty nodePool
+// (e.g. "gpu") selects a node there, and an empty nodePool means the implicit
+// "default" pool (the main node). Pinning to a resolved ready node (rather than
+// letting the server place by pool alone) is what keeps the default case off the
+// GPU node, and also skips any stale "down" node a GPU destroy/reprovision cycle
+// leaves in the pool — Nomad's pool placement does not filter those out and would
+// fail with "No path to node".
 func (n *Nomad) CreateHostVolume(namespace, name, nodePool string) error {
 	pool := nodePool
 	if pool == "" {
 		pool = "default"
+	}
+	nodeID, err := n.readyNodeInPool(pool)
+	if err != nil {
+		return err
 	}
 	vol := &napi.HostVolume{
 		Namespace: namespace,
 		Name:      name,
 		PluginID:  "mkdir",
 		NodePool:  pool,
+		NodeID:    nodeID,
 		RequestedCapabilities: []*napi.HostVolumeCapability{{
 			AccessMode:     napi.HostVolumeAccessModeSingleNodeWriter,
 			AttachmentMode: napi.HostVolumeAttachmentModeFilesystem,
 		}},
 	}
-	_, _, err := n.c.HostVolumes().Create(&napi.HostVolumeCreateRequest{Volume: vol}, &napi.WriteOptions{Namespace: namespace})
+	_, _, err = n.c.HostVolumes().Create(&napi.HostVolumeCreateRequest{Volume: vol}, &napi.WriteOptions{Namespace: namespace})
 	if err != nil {
 		return fmt.Errorf("nomad: create host volume %q: %w", name, err)
 	}
 	return nil
+}
+
+// readyNodeInPool returns the ID of a ready, eligible, non-draining client node
+// in the given node pool. Used to pin a host volume to a live node so placement
+// never lands on a stale "down" node (e.g. one left behind by a GPU-node
+// destroy/reprovision before Nomad garbage-collects it), which the server can't
+// reach ("No path to node").
+func (n *Nomad) readyNodeInPool(pool string) (string, error) {
+	nodes, _, err := n.c.Nodes().List(nil)
+	if err != nil {
+		return "", fmt.Errorf("nomad: list nodes: %w", err)
+	}
+	for _, node := range nodes {
+		if node.NodePool == pool &&
+			node.Status == napi.NodeStatusReady &&
+			node.SchedulingEligibility == napi.NodeSchedulingEligible &&
+			!node.Drain {
+			return node.ID, nil
+		}
+	}
+	return "", fmt.Errorf("nomad: no ready node in pool %q", pool)
 }
 
 // ResolvePlacementIP polls for the job's first allocation and returns the private

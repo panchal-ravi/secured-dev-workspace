@@ -144,3 +144,25 @@ output "nomad_ca_pem" {
   description = "Nomad self-signed TLS cert (its own CA) — for Vault JWKS validation in Nomad↔Vault WIF"
   value       = module.secured_codespace.nomad_ca_pem
 }
+
+# --- ContextForge MCP Gateway (platform tier, see mcp-gateway.tf) ---
+
+output "mcp_gateway_addr" {
+  description = "ContextForge MCP Gateway admin API base URL via the NLB (locked to the operator /32). Plaintext HTTP — the gateway terminates no TLS (PoC). The project tier calls /gateways and /servers here with a JWT minted from JWT_SECRET_KEY."
+  value       = "http://${module.secured_codespace.nlb_dns_name}:4444"
+}
+
+output "mcp_gateway_private_endpoint" {
+  description = "Node-private MCP gateway base URL (http://<node-ip>:4444). Workspaces register Claude's remote MCP against the virtual-server path under this; the gateway federates the project's demo-db-mcp peer over the VPC."
+  value       = "http://${module.secured_codespace.instance_private_ip}:4444"
+}
+
+output "mcp_gateway_kv_path" {
+  description = "Vault KV v2 read path for the gateway secrets (jwt_secret_key/admin_email/…). The project tier reads jwt_secret_key here to mint admin + per-project client JWTs."
+  value       = "${vault_mount.kv.path}/data/infra/mcp-gateway"
+}
+
+output "infra_namespace" {
+  description = "Nomad namespace hosting the platform-tier MCP gateway."
+  value       = nomad_namespace.infra.name
+}

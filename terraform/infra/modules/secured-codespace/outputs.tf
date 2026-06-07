@@ -34,6 +34,11 @@ output "allowed_ingress_cidr" {
   value       = local.allowed_cidr
 }
 
+output "vpc_cidr" {
+  description = "CIDR of the dedicated VPC. The MCP gateway allowlists this for SSRF so it may federate per-project MCP peers running on the node-private network."
+  value       = var.vpc_cidr
+}
+
 output "gpu_instance_private_ip" {
   description = "Private IP of the GPU worker node, or null when enable_gpu_node = false. The developer tier (terraform/workspace) points the Boundary host at this for a GPU flavor; the portal instead resolves the placement IP dynamically from the alloc's node attribute."
   value       = one(aws_instance.gpu[*].private_ip)

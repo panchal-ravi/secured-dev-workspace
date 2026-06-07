@@ -61,7 +61,14 @@ In the IBM Verify console create an OIDC application (this mirrors the Boundary/
   the stack.
 - Entitle the relevant users/groups.
 
-Note the **issuer**, **client id**, and **client secret**.
+Note the **issuer**, **client id**, and **client secret**. The **issuer** is the full IBM Verify
+OIDC endpoint, *not* the bare tenant host: `https://<tenant>.verify.ibm.com/oidc/endpoint/default`
+(same value Boundary/Nomad use in `terraform/infra/modules/identity`). The backend's go-oidc client
+runs discovery at `<issuer>/.well-known/openid-configuration` and rejects any mismatch, so a bare
+host fails at startup with `auth: discover issuer`. Verify with:
+```bash
+curl -s https://<tenant>.verify.ibm.com/oidc/endpoint/default/.well-known/openid-configuration | jq .issuer
+```
 (Moving this into the `identity` Terraform module is a [roadmap](#roadmap) item.)
 
 ## Step 2 — configuration
@@ -72,7 +79,7 @@ Terraform outputs into a **gitignored** env file (never echo secrets to the term
 ```bash
 cd terraform/infra
 cat > ../../portal/backend/.env <<EOF
-PORTAL_OIDC_ISSUER=<issuer from Step 1>
+PORTAL_OIDC_ISSUER=https://<tenant>.verify.ibm.com/oidc/endpoint/default
 PORTAL_OIDC_CLIENT_ID=<client id from Step 1>
 PORTAL_OIDC_CLIENT_SECRET=<client secret from Step 1>
 PORTAL_OIDC_REDIRECT_URL=http://localhost:8080/auth/callback

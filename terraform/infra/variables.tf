@@ -105,3 +105,11 @@ variable "readonly_group_name" {
   type        = string
   default     = "secured-codespace-readonly"
 }
+
+# --- ContextForge MCP Gateway (see mcp-gateway.tf) ---
+
+variable "mcp_gateway_image" {
+  description = "ContextForge MCP Gateway container image (amd64). Pin a concrete release tag at apply rather than relying on :latest."
+  type        = string
+  default     = "ghcr.io/ibm/mcp-context-forge:latest"
+}

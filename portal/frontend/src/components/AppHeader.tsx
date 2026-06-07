@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import {
   Header,
   HeaderName,
@@ -18,18 +17,22 @@ export default function AppHeader({
   me,
   theme,
   onToggleTheme,
+  navExpanded,
+  onNavExpandedChange,
 }: {
   me: Me
   theme: 'white' | 'g100'
   onToggleTheme: () => void
+  navExpanded: boolean
+  onNavExpandedChange: (expanded: boolean) => void
 }) {
   const nav = useNavigate()
   const { pathname } = useLocation()
-  const [expanded, setExpanded] = useState(false)
 
   const go = (e: MouseEvent, path: string) => {
     e.preventDefault()
-    setExpanded(false)
+    // Leave the nav panel open on navigation — it only closes via the menu (X)
+    // button, matching the IBM Verify shell.
     nav(path)
   }
 
@@ -40,15 +43,15 @@ export default function AppHeader({
   ]
 
   return (
-    <Header aria-label="Developer Portal">
+    <Header aria-label="Secured Dev Workspace" className="cds--g100">
       <HeaderMenuButton
-        aria-label={expanded ? 'Collapse navigation' : 'Expand navigation'}
+        aria-label={navExpanded ? 'Collapse navigation' : 'Expand navigation'}
         isCollapsible
-        isActive={expanded}
-        onClick={() => setExpanded((v) => !v)}
+        isActive={navExpanded}
+        onClick={() => onNavExpandedChange(!navExpanded)}
       />
       <HeaderName href="/" prefix="Secured Dev" onClick={(e) => go(e, '/')}>
-        Developer Portal
+        Workspace
       </HeaderName>
       <HeaderGlobalBar>
         <span style={{ display: 'flex', alignItems: 'center', padding: '0 1rem', fontSize: '0.85rem' }}>
@@ -71,12 +74,15 @@ export default function AppHeader({
           <Logout />
         </HeaderGlobalAction>
       </HeaderGlobalBar>
+      {/* Dark (g100) nav even in the white theme; isPersistent=false makes it a
+          toggled panel — hidden when collapsed, 16rem when open — so the main
+          content (offset in App) pushes right instead of being overlaid. */}
       <SideNav
         aria-label="Primary navigation"
-        isRail
-        expanded={expanded}
-        onOverlayClick={() => setExpanded(false)}
-        onSideNavBlur={() => setExpanded(false)}
+        className="cds--g100"
+        isPersistent={false}
+        expanded={navExpanded}
+        onOverlayClick={() => onNavExpandedChange(false)}
       >
         <SideNavItems>
           {items.map((it) => (

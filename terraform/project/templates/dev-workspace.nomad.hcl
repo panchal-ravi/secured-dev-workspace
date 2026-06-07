@@ -16,8 +16,7 @@
 #   wif_role          — per-project Nomad↔Vault WIF role (= project name)
 #   ssh_ca_path       — per-project Vault SSH CA config path (ssh/<project>/config/ca)
 #   github_token_path — per-project Vault GitHub permission-set token path
-#   db_creds_path     — per-project Vault read-only DB creds path (database/<project>/creds/dev-workspace-ro)
-#   db_endpoint       — host:port the container uses to reach the demo-db (node IP + demo-db port)
+#   mcp_kv_path       — per-project Vault KV path for the virtual-MCP coordinates (secret/data/projects/<project>/mcp)
 #   deepseek_key_path — per-project Vault KV path for the DeepSeek API key (secret/data/projects/<project>/deepseek)
 #
 # Per-workspace placeholders (escaped "$$" here; filled by the portal at create):
@@ -97,17 +96,26 @@ EOH
 EOH
       }
 
-      # Per-session, read-only Postgres credential (use case B1), minted over WIF
-      # from the project's database engine. consul-template renders a full
-      # connection URI to the /secrets tmpfs; the Postgres MCP server reads it at
-      # spawn. change_mode=noop so a re-render NEVER restarts sshd. The credential
-      # never lands on the persistent /home/dev.
+      # The project's REMOTE virtual MCP server on the central ContextForge gateway:
+      # its URL + a per-project client bearer token, written to Vault KV by the
+      # project tier's gateway orchestration (mcp-gateway.tf). Rendered to the
+      # /secrets tmpfs over WIF; the entrypoint registers them with Claude.
+      # change_mode=noop so a re-render NEVER restarts sshd; never lands on /home/dev.
       template {
-        destination = "secrets/db-uri"
+        destination = "secrets/mcp-url"
         perms       = "0644"
         change_mode = "noop"
         data        = <<EOH
-{{ with secret "${db_creds_path}" }}postgresql://{{ .Data.username }}:{{ .Data.password }}@${db_endpoint}/appdb?sslmode=disable{{ end }}
+{{ with secret "${mcp_kv_path}" }}{{ .Data.data.url }}{{ end }}
+EOH
+      }
+
+      template {
+        destination = "secrets/mcp-token"
+        perms       = "0644"
+        change_mode = "noop"
+        data        = <<EOH
+{{ with secret "${mcp_kv_path}" }}{{ .Data.data.token }}{{ end }}
 EOH
       }
 
@@ -157,15 +165,16 @@ HELPER
 chmod 0755 /local/git-credential-helper
 sudo -u dev git config --global 'credential.https://github.com.helper' /local/git-credential-helper
 
-# Register the Postgres MCP server (use case B1) for the dev user, user-scoped so
-# it is available from any directory. The wrapper /usr/local/bin/pg-mcp (baked
-# into the workspace image) feeds DATABASE_URI from /secrets/db-uri (the
-# Vault-minted, per-session credential) at spawn. Idempotent — only add when not
-# already present — and a registration failure WARNs without aborting the
-# workspace (a missing MCP tool must never cost the developer their SSH session).
+# Register the project's REMOTE virtual MCP server (demo-db) on the central
+# ContextForge gateway for the dev user, user-scoped so it is available from any
+# directory. The URL + per-project bearer token are rendered to /secrets over WIF
+# (templates above). Idempotent — only add when not already present — and a
+# registration failure WARNs without aborting the workspace (a missing MCP tool
+# must never cost the developer their SSH session).
 if ! sudo -u dev claude mcp list 2>/dev/null | grep -q 'demo-db'; then
-  sudo -u dev claude mcp add --scope user demo-db -- /usr/local/bin/pg-mcp \
-    || echo "WARN: failed to register demo-db MCP server" >&2
+  sudo -u dev claude mcp add --scope user --transport sse demo-db "$(cat /secrets/mcp-url)" \
+    --header "Authorization: Bearer $(cat /secrets/mcp-token)" \
+    || echo "WARN: failed to register remote demo-db MCP server" >&2
 fi
 
 # Clone the project repo on first boot only. Private repos work: the credential

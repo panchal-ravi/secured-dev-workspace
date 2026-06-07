@@ -61,13 +61,13 @@ output "github_token_path" {
 }
 
 output "db_creds_path" {
-  description = "Vault path the workspace WIF task reads a per-session, read-only DB credential from (database/<project>/creds/dev-workspace-ro)."
+  description = "Vault path the per-project demo-db-mcp service reads its read-only DB credential from (database/<project>/creds/dev-workspace-ro). Held by the centralized MCP service, not the workspace."
   value       = "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}"
 }
 
-output "db_endpoint" {
-  description = "host:port the workspace container uses to reach the demo-db (node private IP + the demo-db static port). Distinct from Vault's 127.0.0.1 connection."
-  value       = "${local.f.instance_private_ip}:${local.demo_db_port}"
+output "mcp_kv_path" {
+  description = "Vault KV path the workspace WIF task reads the project's virtual-MCP coordinates from (url + client bearer token), written by the gateway orchestration: secret/data/projects/<project>/mcp."
+  value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"
 }
 
 output "deepseek_key_path" {

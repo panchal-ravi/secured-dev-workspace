@@ -35,7 +35,7 @@ export default function ProjectPage() {
   // without a manual reload.
   useEffect(() => {
     if (!workspaces.some((w) => w.status === 'pending')) return
-    const id = setInterval(refresh, 4000)
+    const id = setInterval(refresh, 1500)
     return () => clearInterval(id)
   }, [workspaces, refresh])
 

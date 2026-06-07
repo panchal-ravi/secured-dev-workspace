@@ -85,6 +85,24 @@ resource "aws_lb_target_group" "vault" {
   }
 }
 
+resource "aws_lb_target_group" "mcp" {
+  name        = "${local.name}-mcp"
+  port        = 4444
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+
+  health_check {
+    protocol = "TCP"
+    port     = "4444"
+  }
+
+  tags = {
+    Name  = "${local.name}-mcp"
+    owner = var.owner
+  }
+}
+
 resource "aws_lb_target_group_attachment" "api" {
   target_group_arn = aws_lb_target_group.api.arn
   target_id        = aws_instance.this.id
@@ -107,6 +125,12 @@ resource "aws_lb_target_group_attachment" "vault" {
   target_group_arn = aws_lb_target_group.vault.arn
   target_id        = aws_instance.this.id
   port             = 8200
+}
+
+resource "aws_lb_target_group_attachment" "mcp" {
+  target_group_arn = aws_lb_target_group.mcp.arn
+  target_id        = aws_instance.this.id
+  port             = 4444
 }
 
 resource "aws_lb_listener" "api" {
@@ -150,5 +174,18 @@ resource "aws_lb_listener" "vault" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.vault.arn
+  }
+}
+
+# ContextForge MCP Gateway admin API (plaintext HTTP — the gateway terminates no
+# TLS; the listener ingress is locked to the operator /32 in network.tf).
+resource "aws_lb_listener" "mcp" {
+  load_balancer_arn = aws_lb.this.arn
+  port              = 4444
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.mcp.arn
   }
 }

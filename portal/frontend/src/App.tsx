@@ -15,6 +15,7 @@ type ThemeName = 'white' | 'g100'
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
+  const [navExpanded, setNavExpanded] = useState(false)
   const [theme, setTheme] = useState<ThemeName>(
     () => (localStorage.getItem('portal-theme') as ThemeName) || 'white',
   )
@@ -40,9 +41,23 @@ export default function App() {
   return (
     <MeContext.Provider value={me}>
       <Theme theme={theme} className="app-shell">
-        <AppHeader me={me} theme={theme} onToggleTheme={toggleTheme} />
-        {/* Offset the fixed Carbon header (3rem tall) and the collapsed SideNav rail (3rem wide). */}
-        <main style={{ marginTop: '3rem', marginLeft: '3rem' }}>
+        <AppHeader
+          me={me}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          navExpanded={navExpanded}
+          onNavExpandedChange={setNavExpanded}
+        />
+        {/* Offset the fixed Carbon header (3rem tall); push the content right by the
+            side-nav width (16rem) when the nav panel is open, so it pushes rather
+            than overlays. */}
+        <main
+          style={{
+            marginTop: '3rem',
+            marginLeft: navExpanded ? '16rem' : 0,
+            transition: 'margin-left 0.11s cubic-bezier(0.2, 0, 1, 0.9)',
+          }}
+        >
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/projects" element={<Projects />} />

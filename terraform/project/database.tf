@@ -35,15 +35,17 @@ resource "vault_database_secret_backend_connection" "demo_db" {
 }
 
 # Read-only role: each lease creates a fresh LOGIN role with SELECT on public,
-# valid until the lease expires. TTL is set well beyond a working session so a
-# live MCP connection never breaks mid-session; the user is dropped on revoke.
+# valid until the lease expires. This credential is now held by the long-lived
+# per-project demo-db-mcp service (demo-db-mcp.tf), not minted per developer
+# session — so TTLs are bumped well beyond a session: consul-template restarts the
+# MCP server (change_mode=restart) when the lease rotates, dropping the old role.
 resource "vault_database_secret_backend_role" "dev_workspace_ro" {
   backend = vault_mount.database.path
   name    = "dev-workspace-ro"
   db_name = vault_database_secret_backend_connection.demo_db.name
 
-  default_ttl = 14400 # 4h
-  max_ttl     = 28800 # 8h
+  default_ttl = 86400  # 24h
+  max_ttl     = 604800 # 7d
 
   creation_statements = [
     "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';",

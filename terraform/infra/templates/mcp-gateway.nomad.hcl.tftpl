@@ -1,0 +1,132 @@
+# ContextForge MCP Gateway jobspec (platform tier). Rendered by terraform/infra/
+# mcp-gateway.tf templatefile(). consul-template "{{ ... }}" is left literal (a
+# different delimiter from Terraform interpolation, so no escaping is needed).
+job "mcp-gateway" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "service"
+
+  group "gateway" {
+    count = 1
+
+    network {
+      port "http" {
+        static = ${port}
+        to     = ${port}
+      }
+    }
+
+    # Persistent SQLite registry — registered peers + virtual servers survive a
+    # restart. The mkdir dynamic host volume created in mcp-gateway.tf.
+    volume "data" {
+      type            = "host"
+      source          = "${volume}"
+      read_only       = false
+      access_mode     = "single-node-writer"
+      attachment_mode = "file-system"
+    }
+
+    # The mkdir dynamic host volume is created root-owned (0755), but the
+    # ContextForge image runs as non-root (uid 10001) and must create
+    # /data/mcp.db. Without this, the gateway's startup db_isready probe fails 30
+    # times and the app aborts ("Database not ready after 30 attempts"), so it
+    # never becomes healthy. This prestart task (root, busybox) hands the volume
+    # to that uid before the gateway starts. Idempotent across restarts.
+    task "init-data-perms" {
+      driver = "docker"
+
+      lifecycle {
+        hook    = "prestart"
+        sidecar = false
+      }
+
+      config {
+        image      = "busybox:1.37"
+        force_pull = true
+        command    = "sh"
+        args       = ["-c", "chown -R 10001:10001 /data && chmod 0775 /data"]
+      }
+
+      volume_mount {
+        volume      = "data"
+        destination = "/data"
+        read_only   = false
+      }
+
+      resources {
+        cpu    = 50
+        memory = 32
+      }
+    }
+
+    task "gateway" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = true
+        ports      = ["http"]
+      }
+
+      volume_mount {
+        volume      = "data"
+        destination = "/data"
+        read_only   = false
+      }
+
+      # WIF: exchange the Nomad task JWT for a short Vault token that may read ONLY
+      # the gateway's secret path (the infra-mcp-gateway role/policy).
+      vault {
+        role = "${wif_role}"
+      }
+
+      # Secrets from Vault -> task env. env=true sources the rendered KEY=VALUE file
+      # as environment; change_mode=restart so a secret rotation restarts the
+      # gateway. KV v2 ⇒ the read path is /data/-prefixed and values are under
+      # .Data.data.*. Basic auth is intentionally NOT enabled (no API_ALLOW_BASIC_AUTH).
+      template {
+        destination = "secrets/gateway.env"
+        env         = true
+        change_mode = "restart"
+        data        = <<EOH
+{{ with secret "${kv_path}" }}
+JWT_SECRET_KEY={{ .Data.data.jwt_secret_key }}
+AUTH_ENCRYPTION_SECRET={{ .Data.data.enc_secret }}
+PLATFORM_ADMIN_EMAIL={{ .Data.data.admin_email }}
+PLATFORM_ADMIN_PASSWORD={{ .Data.data.admin_password }}
+{{ end }}
+EOH
+      }
+
+      env {
+        HOST                         = "0.0.0.0"
+        PORT                         = "${port}"
+        MCPGATEWAY_ADMIN_API_ENABLED = "true"
+        MCPGATEWAY_UI_ENABLED        = "true"
+        AUTH_REQUIRED                = "true"
+        DATABASE_URL                 = "sqlite:////data/mcp.db"
+        # SSRF protection stays ON (and private networks OFF by default), but the VPC
+        # CIDR is allowlisted so the gateway may federate per-project MCP peers on the
+        # node-private network. JSON array per the pydantic List[str] env contract.
+        SSRF_ALLOWED_NETWORKS = "[\"${ssrf_allowed_networks}\"]"
+      }
+
+      service {
+        name     = "mcp-gateway"
+        provider = "nomad"
+        port     = "http"
+        check {
+          type     = "http"
+          path     = "/health"
+          interval = "10s"
+          timeout  = "2s"
+        }
+      }
+
+      resources {
+        cpu    = 500
+        memory = 1024
+      }
+    }
+  }
+}

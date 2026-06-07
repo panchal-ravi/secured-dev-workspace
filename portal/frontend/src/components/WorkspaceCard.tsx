@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, InlineNotification, Modal, Tag, Tile } from '@carbon/react'
+import { Button, InlineNotification, Loading, Modal, Tag, Tile } from '@carbon/react'
 import { destroyWorkspace, disconnectLink, startWorkspace, stopWorkspace, Workspace } from '../api/client'
 import ConnectTabs from './ConnectTabs'
 import FeatureTags from './FeatureTags'
@@ -37,7 +37,12 @@ export default function WorkspaceCard({ ws, onChanged }: { ws: Workspace; onChan
     <Tile>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h4>{ws.workspace_name}</h4>
-        <Tag type={statusType}>{ws.status || 'unknown'}</Tag>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {ws.status === 'pending' && (
+            <Loading small withOverlay={false} description="Workspace starting" />
+          )}
+          <Tag type={statusType}>{ws.status || 'unknown'}</Tag>
+        </div>
       </div>
       {ws.flavor && (
         <div style={{ marginTop: '0.25rem' }}>

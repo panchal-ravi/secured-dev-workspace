@@ -7,13 +7,10 @@ dev workspace runs centrally on Nomad, and developers connect their IDE (VSCode
 Remote-SSH) through an authenticated, authorized **Boundary** session — holding no
 SSH key of their own.
 
-> This document describes the **current** architecture. Keep it in sync — update it
-> whenever the architecture changes.
+## Security model
 
-## Why this exists — the security model
-
-The whole architecture is organized around a few security properties. Keep these in
-mind; every provisioning step below serves one of them.
+The architecture is organized around a small set of security properties. Each component
+and provisioning step described below exists to uphold one of them.
 
 - **No code or credentials on the laptop.** The source tree, the build toolchain, and
   the AI coding tools all live in a central container. A lost or compromised laptop
@@ -67,11 +64,13 @@ Vault  ── signs SSH cert per session (key_id = developer email)
        ── SSH CA per project (ssh/<project>), reached by Nomad over WIF
 ```
 
-Everything runs on a single all-in-one EC2 node (`ap-southeast-1`): Boundary
-controller+worker (local PostgreSQL, AEAD KMS), a combined Nomad server+client
-(ACLs + TLS), and a single-node Vault (file storage, self-signed TLS). The Boundary
-API (`9200`), Boundary worker proxy (`9202`), Nomad (`4646`) and Vault (`8200`) are
-reached through a public NLB; the workspace SSH port is **not**.
+In the reference deployment, the control plane runs on a single all-in-one EC2 node
+(`ap-southeast-1`): Boundary controller+worker (local PostgreSQL, AEAD KMS), a combined
+Nomad server+client (ACLs + TLS), and a single-node Vault (file storage, self-signed
+TLS). A production deployment scales these onto separate, highly-available clusters per
+HashiCorp's reference architectures; the logical model is unchanged. The Boundary API
+(`9200`), Boundary worker proxy (`9202`), Nomad (`4646`) and Vault (`8200`) are reached
+through a public NLB; the workspace SSH port is not.
 
 ## Component roles
 
@@ -126,15 +125,81 @@ Per-instance state is kept with `terraform workspace` (one per project / per
 developer-workspace); the lower roots read the upstream tier's outputs via
 `terraform_remote_state`, so there is **no token or address copying** between tiers.
 
+## Logical architecture by persona
+
+The architecture composes **cumulatively** across three layers — a platform foundation, an
+isolated project slice, and a developer sandbox — each owned by a different role. The diagrams
+below are logical views: they show the design pattern rather than any specific deployment
+topology, so the number and placement of nodes reflect the production model, not the reference
+PoC. Each diagram builds on the one before it and is followed by a table describing the role each
+component plays in the security model. In the diagrams, **dashed outlines are trust boundaries**
+and **bold-blue notes call out the security property each layer adds**.
+
+### Platform Admin — foundation
+
+The foundation provides identity, the HashiStack security authorities, a Nomad cluster of standard
+and GPU worker nodes, and the centralized **AI / MCP gateway**. IBM Verify is the identity provider
+both Boundary and Nomad trust; Boundary is the single, identity-aware entry to every workspace;
+Vault is the authority for all just-in-time credentials; and the gateway is the one policy point
+governing which MCP servers, tools, and LLMs any workload may reach.
+
+![Logical foundation: IBM Verify, Boundary, Vault, the AI / MCP gateway, and a Nomad cluster of standard and GPU worker nodes](diagrams/01-platform-admin.png)
+
+| Component | Role in the security model |
+|---|---|
+| **IBM Verify (SaaS)** | OIDC/SSO identity provider that both Boundary and Nomad trust; every access is bound to a named person (the `/token/email` claim). |
+| **Boundary** | Identity-aware access broker — the org scope + OIDC auth method; brokers each workspace session and injects its credential, so no workspace is directly network-reachable. |
+| **Vault** | Credential authority and PKI — the `secret/` KV mount and the `jwt-nomad` workload-identity auth method; mints every short-lived credential for SSH, MCP, Git, and LLM access. |
+| **Nomad cluster** | Workload scheduler and isolation boundary — standard and `gpu` node pools that run every workload, including the gateway itself. |
+| **AI / MCP Gateway (ContextForge)** | The centralized AI/MCP policy point (Nomad job, namespace `infra`) — governs which MCP servers, tools, and LLMs a workspace may reach. |
+| **Network ingress** | A single public load balancer is the only ingress; every listener is restricted to the operator `/32`, and Nomad reaches Vault over workload-identity federation, so no static tokens are baked into jobs. |
+
+### Project Admin — project slice
+
+Each project is carved out as an **isolated slice** on top of the foundation: a Boundary scope, a
+Nomad namespace, per-project Vault paths, a project database with its own MCP service, and that
+service federated into the gateway as a per-project **virtual MCP server** reachable only with a
+scoped client token. Tenant isolation is structural — by scope, namespace, and Vault path prefix —
+rather than policy-gated.
+
+![Logical project slice: the foundation plus a per-project Boundary scope, Nomad namespace, Vault paths, database with MCP service, and gateway virtual server](diagrams/02-project-admin.png)
+
+| Component | Role in the security model |
+|---|---|
+| **Boundary project scope** | Per-project scope + credential store / SSH credential library (a least-privilege periodic token), isolating brokered access to this project. |
+| **Nomad namespace** | Per-project namespace (ACL-backstopped) partitioning every workload, so projects cannot schedule into one another. |
+| **Per-project Vault paths** | `ssh/<project>` (SSH CA), `database/<project>` (dynamic read-only Postgres role), `github/<project>` (GitHub App token broker), `secret/projects/<project>/*` (KV) — isolation by path. |
+| **demo-db + demo-db-mcp** | A Postgres database and a long-running postgres-mcp (SSE) service whose DB credential is a dynamic, auto-rotating Vault read-only role — no static DB password. |
+| **Gateway virtual server + scoped token** | demo-db-mcp is registered as a gateway peer and exposed as a per-project virtual MCP server; a scoped client token (written to `secret/projects/<project>/mcp`) reaches only that server. |
+
+### Developer — sandbox
+
+A developer self-services a workspace through the **Developer Portal** (or the equivalent
+`terraform/workspace` path), which renders it from the same Vault-KV job template. The coding agent
+runs centrally in the sandbox container — not on the laptop — reaching its LLM and only its
+project's virtual MCP server through the gateway. Access is a Boundary session carrying a
+just-in-time, short-lived Vault-signed SSH certificate, so the developer holds no key and secrets
+render only to in-memory tmpfs.
+
+![Logical developer sandbox: the project slice plus the Developer Portal, a workspace sandbox running the coding agent with remote MCP, and brokered just-in-time access](diagrams/03-developer.png)
+
+| Component | Role in the security model |
+|---|---|
+| **Developer Portal** | Self-service trusted backend (IBM Verify OIDC); shows only the projects the developer's groups grant and provisions the workspace over the Nomad/Boundary/Vault APIs. |
+| **Workspace container** | The AI-agentic sandbox — a Nomad job running Claude Code → DeepSeek with a persistent `/home/dev` volume; secrets render only to **tmpfs `/secrets`**, never to the volume. |
+| **Boundary target + per-developer group/role** | An email-bound managed group authorizes exactly one workspace target (negative-isolation tested); the workspace `sshd` is never published on the NLB. |
+| **JIT Vault SSH certificate** | Boundary injects a fresh 5-minute Vault-signed certificate (`key_id` = developer email) per session — the developer holds no SSH key to steal or rotate. |
+| **Remote MCP via the gateway** | Claude connects to the project's virtual MCP server with the scoped token from tmpfs — AI tool/data access is gated centrally by gateway policy, not embedded per workspace. |
+
 ## Provisioning sequence (by role)
 
-Apply order is strict: **platform → project → developer**. **Vault must be unsealed**
-for the project and developer applies and for every connect (Boundary signs each
-session cert through Vault).
+The tiers apply in a strict order — **platform → project → developer**. Vault is unsealed
+for the project and developer applies and for every connection, since Boundary signs each
+session certificate through Vault.
 
 ### 1. Platform Admin — once
 
-Stand up the clusters, SSO, and shared trust anchors. Full instructions:
+The platform tier stands up the clusters, SSO, and shared trust anchors. Full instructions:
 [`terraform/infra/README.md`](terraform/infra/README.md).
 
 ```bash
@@ -149,18 +214,18 @@ terraform apply                                    # IBM Verify OIDC + WIF auth 
 
 Outputs the lower tiers consume: `boundary_addr`, `nomad_addr`, `vault_addr`,
 `org_scope_id`, admin login/password + `admin_auth_method_id`, the OIDC method IDs, the
-WIF backend path, and the KV mount path. Verify SSO login works for both Boundary and
-Nomad, Vault is unsealed with the KV mount + `jwt-nomad` present, and the Boundary org
+WIF backend path, and the KV mount path. After this apply, SSO login works for both Boundary
+and Nomad, Vault is unsealed with the KV mount + `jwt-nomad` present, and the Boundary org
 scope exists (no project scope yet).
 
 > IBM Verify prerequisites (a SaaS tenant, a bootstrap API client, and the
 > admin/readonly groups) are one-time and described in the platform README. The
-> `ibm_verify_*` variables have no defaults and must be set before any apply.
+> `ibm_verify_*` variables have no defaults and are set before any apply.
 
 ### 2. Project Admin — per project
 
-Onboard a project: its own Boundary scope, Nomad namespace, Vault SSH CA, credential
-store/library, WIF role, namespace ACL, and job templates. Full instructions:
+The project tier onboards a project — its own Boundary scope, Nomad namespace, Vault SSH CA,
+credential store/library, WIF role, namespace ACL, and job templates. Full instructions:
 [`terraform/infra/README.md` → Project onboarding](terraform/infra/README.md#project-onboarding-terraformproject).
 
 ```bash
@@ -177,8 +242,8 @@ private-key PEM) — a one-time manual prerequisite per project (create the App 
 `github/<project>` token broker + a pre-scoped `dev-workspace` permission set from them.
 
 Each project is fully isolated — separate Vault path (`ssh/project-acme`), Boundary
-scope, Nomad namespace, and GitHub App. Onboard another by repeating with a new workspace
-+ tfvars. The job template is readable at `secret/projects/<project>/job-templates/<name>`
+scope, Nomad namespace, and GitHub App. Additional projects are onboarded by repeating with a
+new workspace + tfvars. The job template is readable at `secret/projects/<project>/job-templates/<name>`
 and the outputs (`project_scope_id`, `namespace`, `credential_library_id`, `ssh_ca_path`,
 `wif_role`, `github_token_path`, …) feed the developer tier.
 
@@ -261,12 +326,12 @@ Carbon React SPA  ──►  Go backend (trusted)  ──►  Vault   (read proj
 
 ## Teardown (destroy the environment)
 
-Destroy in the **reverse** of the apply order — **developer → project → platform** — so
-the Boundary/Nomad/Vault control planes each tier talks to stay up until the platform node
-is torn down last. **Vault must be unsealed** for the developer and project destroys: they
-revoke Boundary/Nomad/Vault resources through those APIs, and a sealed Vault makes them
-hang or error. `terraform destroy` prints a plan and prompts before deleting — review it
-and confirm (no `-auto-approve` on the shared clusters).
+Teardown runs in the **reverse** of the apply order — **developer → project → platform** — so
+the Boundary/Nomad/Vault control planes each tier talks to remain up until the platform node is
+torn down last. Vault is unsealed for the developer and project destroys, which revoke
+Boundary/Nomad/Vault resources through those APIs; a sealed Vault makes them hang or error.
+`terraform destroy` prints a plan and prompts before deleting, and on the shared clusters the
+plan is reviewed rather than applied with `-auto-approve`.
 
 ### 1. Developer workspaces — each Terraform workspace
 
@@ -306,14 +371,14 @@ Tears down the EC2 node and the Boundary/Nomad/Vault clusters, and the IBM Verif
 **apps** (recreated on the next apply). The IBM Verify **tenant** itself is external and
 untouched.
 
-> **Order matters.** Do **not** destroy the platform tier while any project or developer
-> state still exists — those tiers' providers read the platform's addresses and
-> credentials from its state, so their destroys would fail with no control plane left to
-> call. Always empty the lower tiers first.
+Order matters: the platform tier cannot be torn down while any project or developer state
+still exists, because those tiers' providers read the platform's addresses and credentials from
+its state — with no control plane left to call, their destroys fail. The lower tiers are always
+emptied first.
 
-> **State cleanup (optional).** Once a tier's resources are gone you can drop the now-empty
-> per-instance state: `terraform workspace select default && terraform workspace delete <name>`.
-> The gitignored `*.tfvars` and any `*.tfplan` files can then be removed too.
+Once a tier's resources are gone, the now-empty per-instance state can be dropped
+(`terraform workspace select default && terraform workspace delete <name>`), and the gitignored
+`*.tfvars` and `*.tfplan` files removed.
 
 ## Repository layout
 
@@ -352,15 +417,15 @@ untouched.
 - A **GitHub App per project** (Contents: Read & write), installed on the project's
   repos — supplies the workspace git push credential (see the project onboarding section).
 
-## Operational guardrails
+## Operational constraints
 
-- **Never** commit `*.tfvars`, plan files, or `generated/` artifacts — they embed the
-  Boundary admin password and Vault/Nomad tokens. All are gitignored.
-- On the shared Boundary/Nomad/Vault clusters, prefer a **saved, reviewed plan**
-  (`terraform apply -out=<file>.tfplan`) over `-auto-approve`; delete the plan file
-  afterward.
-- **Re-unseal Vault after any node reboot** before running Terraform or connecting —
-  the demo uses Shamir unseal, so Vault comes back sealed. See the platform README.
-- The workspace host volume lives on the node root EBS: data survives **stop/start +
-  reboot** but **not** an instance replacement.
+- `*.tfvars`, plan files, and `generated/` artifacts embed the Boundary admin password and
+  Vault/Nomad tokens; all are gitignored and are never committed.
+- On the shared Boundary/Nomad/Vault clusters, changes are applied from a **saved, reviewed
+  plan** (`terraform apply -out=<file>.tfplan`) rather than with `-auto-approve`, and the plan
+  file is deleted afterward.
+- Vault uses Shamir unseal, so it returns sealed after any node reboot and is re-unsealed before
+  Terraform runs or connections are made (see the platform README).
+- The workspace host volume lives on the node root EBS: data survives **stop/start + reboot**,
+  but not instance replacement.
 ```

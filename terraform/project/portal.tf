@@ -20,13 +20,13 @@ locals {
     "dev-workspace" = [
       {
         key         = "claude-deepseek"
-        label       = "Claude Code CLI (DeepSeek)"
+        label       = "Claude Code CLI (governed model)"
         description = "Pre-configured AI coding assistant. The API key is injected per session from Vault and never lands on the persistent home volume."
       },
       {
         key         = "db-mcp-readonly"
         label       = "Database MCP (read-only)"
-        description = "A Postgres MCP server wired to per-session, read-only dynamic database credentials minted by Vault."
+        description = "A read-only Postgres MCP server, federated through the central ContextForge MCP gateway as this project's virtual MCP server. Backed by a Vault-dynamic, read-only database credential."
       },
       {
         key         = "git-dynamic-pat"
@@ -42,13 +42,13 @@ locals {
       },
       {
         key         = "claude-deepseek"
-        label       = "Claude Code CLI (DeepSeek)"
+        label       = "Claude Code CLI (governed model)"
         description = "Pre-configured AI coding assistant. The API key is injected per session from Vault and never lands on the persistent home volume."
       },
       {
         key         = "db-mcp-readonly"
         label       = "Database MCP (read-only)"
-        description = "A Postgres MCP server wired to per-session, read-only dynamic database credentials minted by Vault."
+        description = "A read-only Postgres MCP server, federated through the central ContextForge MCP gateway as this project's virtual MCP server. Backed by a Vault-dynamic, read-only database credential."
       },
       {
         key         = "git-dynamic-pat"

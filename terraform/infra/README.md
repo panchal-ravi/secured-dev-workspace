@@ -268,6 +268,68 @@ publishes the `gpu-workspace` flavor (`node_pool = "gpu"`, CUDA image) and the d
 > in step 2 below). To run the base node *without* a GPU box, remove/comment `gpu.tf` and the
 > `gpu_*` outputs — making it opt-in (a `count`/feature flag) is a roadmap cleanup.
 
+## Verify the MCP Gateway
+
+The platform tier runs one **ContextForge MCP Gateway** (Nomad ns `infra`, see `mcp-gateway.tf`).
+Its admin API is reachable only from the operator `/32` via the NLB on `:4444` (plain HTTP — the
+gateway terminates no TLS in the PoC). Auth is **JWT-only** (HTTP Basic is disabled), so every
+admin call needs a bearer token minted from the gateway's `JWT_SECRET_KEY`. Mint a short-lived
+admin JWT, then list the federated peers, virtual servers, tools, and tokens:
+
+```bash
+cd terraform/infra
+GW="$(terraform output -raw mcp_gateway_addr)"        # http://<nlb>:4444 (operator /32)
+
+# Signing secret + admin identity from Vault (the gateway KV path; never echoed).
+JWT_SECRET="$(vault kv get -mount=secret -field=jwt_secret_key infra/mcp-gateway)"
+ADMIN_EMAIL="$(vault kv get -mount=secret -field=admin_email   infra/mcp-gateway)"
+
+# Mint an HS256 admin JWT with the exact claims ContextForge verifies (iss/aud/exp/jti).
+# A hand-minted JWT only authenticates the bootstrap admin identity — arbitrary users 401.
+b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
+now=$(date +%s); exp=$((now + 600)); jti=$(openssl rand -hex 16)
+hdr=$(printf '{"alg":"HS256","typ":"JWT"}' | b64url)
+pld=$(printf '{"sub":"%s","username":"%s","iss":"mcpgateway","aud":"mcpgateway-api","iat":%s,"exp":%s,"jti":"%s"}' \
+  "$ADMIN_EMAIL" "$ADMIN_EMAIL" "$now" "$exp" "$jti" | b64url)
+sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | b64url)
+ADMIN_JWT="$hdr.$pld.$sig"
+auth=(-H "Authorization: Bearer $ADMIN_JWT")
+```
+
+```bash
+# Auth is enforced (Basic disabled): no token => 401, valid token => 200.
+curl -s -o /dev/null -w 'no-token: %{http_code}\n' "$GW/health"      # 401
+curl -s "${auth[@]}" "$GW/health"; echo                              # {"status":"healthy",...}
+curl -s "${auth[@]}" "$GW/version" | jq '{name, version}'            # gateway build
+
+# Peer MCP servers — the federated upstreams (one demo-db-<project> per onboarded project).
+curl -s "${auth[@]}" "$GW/gateways" \
+  | jq -r '.[] | "\(.id)\t\(.name)\t\(.url)\treachable=\(.reachable // .enabled)"'
+
+# Virtual MCP servers — the per-project tool bundles a workspace token is scoped to.
+curl -s "${auth[@]}" "$GW/servers" \
+  | jq -r '.[] | "\(.id)\t\(.name)\ttools=\((.associatedTools // .associated_tools) | length)"'
+
+# MCP tools — everything discovered across all peers (each tagged with its peer gateway id).
+curl -s "${auth[@]}" "$GW/tools" \
+  | jq -r '.[] | "\(.name)\tgateway=\(.gatewayId // .gateway_id)"'
+
+# API tokens — the per-project client tokens (include_inactive shows revoked/soft-deleted ones).
+curl -s "${auth[@]}" "$GW/tokens?include_inactive=true&limit=100" \
+  | jq -r '.tokens[]? | "\(.id)\t\(.name)\tactive=\(.is_active)"'
+```
+
+Notes:
+- `/tokens` lists tokens **owned by the caller** (the bootstrap admin, which created the
+  per-project client tokens, so they appear here). `/tokens/admin/all` needs full platform-admin
+  RBAC and **403s** for a hand-minted JWT — that's expected.
+- The per-project client tokens are **server-scoped**: each returns `200` only on its own
+  `/servers/<vs>/...` and `403` on every other server/admin endpoint (per-project isolation).
+- A virtual server's id is what a workspace connects to: `secret/projects/<project>/mcp` holds
+  `{url: <private-endpoint>/servers/<vs-id>/sse, token: <scoped-client-token>}` (project tier).
+- The **Admin UI** is the same surface in a browser: open `$GW/` and log in with `admin_email` /
+  `admin_password` from `vault kv get -mount=secret infra/mcp-gateway`.
+
 ## Next steps
 
 The platform tier is now provisioned. Continue with the lower tiers (each reads this root's

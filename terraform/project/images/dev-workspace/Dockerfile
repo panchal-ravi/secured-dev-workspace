@@ -54,29 +54,11 @@ RUN mkdir -p /etc/claude-code \
   && printf '%s\n' '#!/bin/sh' 'cat /secrets/deepseek-key' > /usr/local/bin/deepseek-key \
   && chmod 0755 /usr/local/bin/deepseek-key
 
-# Postgres MCP server (Vault use case B1), installed at BUILD time via uv into
-# system paths so it runs OFFLINE at runtime (the workspace has restricted egress)
-# and OUTSIDE /home/dev (which the persistent volume shadows). uv fetches its own
-# Python 3.12 because postgres-mcp needs >=3.12 (bookworm ships 3.11). Pinned.
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
-    UV_TOOL_DIR=/opt/uv/tools \
-    UV_TOOL_BIN_DIR=/usr/local/bin
-RUN python3 -m pip install --no-cache-dir --break-system-packages uv \
-  && uv python install 3.12 \
-  && uv tool install --python 3.12 postgres-mcp==0.3.0 \
-  && /usr/local/bin/postgres-mcp --help >/dev/null \
-  && chmod -R a+rX /opt/uv
-
-# Wrapper Claude's MCP config invokes (registered per-workspace by the job
-# entrypoint as `claude mcp add ... -- /usr/local/bin/pg-mcp`): it feeds
-# DATABASE_URI from the Vault-minted, per-session credential rendered to the
-# /secrets tmpfs, then execs the server read-only. Read at spawn, so each session
-# uses the current credential.
-RUN printf '%s\n' '#!/bin/sh' \
-  'export DATABASE_URI="$(cat /secrets/db-uri)"' \
-  'exec /usr/local/bin/postgres-mcp --access-mode=restricted' \
-  > /usr/local/bin/pg-mcp \
-  && chmod 0755 /usr/local/bin/pg-mcp
+# The demo-db MCP server is no longer embedded in the image. Claude connects to
+# the project's REMOTE virtual MCP server on the central ContextForge gateway —
+# the job entrypoint registers it with `claude mcp add --transport sse` using the
+# URL + bearer token rendered to /secrets from Vault. No local Python MCP
+# toolchain (postgres-mcp / pg-mcp / uv) is baked in.
 
 # Non-root developer (uid 1000 == dynamic host volume owner) with PoC sudo.
 RUN useradd --create-home --uid 1000 --shell /bin/bash dev \

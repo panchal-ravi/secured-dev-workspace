@@ -41,6 +41,23 @@ docs/
 # ── Throwaway verification harness (not part of the real stack) ────────
 terraform/infra/identity-test/
 scratch
+AGENTIC-SANDBOX-REVIEW.md
+demo/
+samples/
+
+# Frontend deps + build artifacts
+portal/frontend/node_modules/
+portal/backend/web/
+
+# secured-ws helper build artifacts (binary; rebuilt by helper/macos/build.sh)
+portal/backend/helper-dist/
+portal/helper/macos/build/
+
+# Local config / secrets (never commit)
+*.env
+.env
+portal/backend/portal
+
 
 # ── OS / editor cruft ──────────────────────────────────────────────────
 .DS_Store

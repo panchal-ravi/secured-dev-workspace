@@ -26,8 +26,10 @@ resource "vault_kv_secret_v2" "job_template" {
   name     = "projects/${var.project_name}/job-templates/${each.key}"
   # Bake the project-static placeholders now (single source of truth: the project
   # tier owns these resources). Image and repo are per-template (each.value); the
-  # Vault paths and DB endpoint are project-wide. The portal then fills only the
-  # per-workspace placeholders (job_name/ssh_port/volume_name/identity).
+  # Vault paths are project-wide. The workspace no longer talks to Postgres directly
+  # — it reads the per-project MCP coordinates (virtual-server URL + client token)
+  # from mcp_kv_path and points Claude's REMOTE MCP at the gateway. The portal then
+  # fills only the per-workspace placeholders (job_name/ssh_port/volume_name/identity).
   data_json = jsonencode({
     jobspec = templatestring(local.job_templates[each.key], {
       namespace         = nomad_namespace.project.name
@@ -36,8 +38,7 @@ resource "vault_kv_secret_v2" "job_template" {
       wif_role          = var.project_name
       ssh_ca_path       = "${vault_mount.ssh.path}/config/ca"
       github_token_path = "${vault_mount.github.path}/token/${local.github_permissionset_name}"
-      db_creds_path     = "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}"
-      db_endpoint       = "${local.f.instance_private_ip}:${local.demo_db_port}"
+      mcp_kv_path       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"
       deepseek_key_path = "${local.f.kv_mount_path}/data/projects/${var.project_name}/deepseek"
     })
   })

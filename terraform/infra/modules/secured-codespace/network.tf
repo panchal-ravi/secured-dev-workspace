@@ -146,6 +146,14 @@ resource "aws_security_group" "nlb" {
     cidr_blocks = [local.allowed_cidr]
   }
 
+  ingress {
+    description = "ContextForge MCP Gateway admin API"
+    from_port   = 4444
+    to_port     = 4444
+    protocol    = "tcp"
+    cidr_blocks = [local.allowed_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -206,6 +214,14 @@ resource "aws_security_group" "instance" {
     security_groups = [aws_security_group.nlb.id]
   }
 
+  ingress {
+    description     = "MCP gateway admin API from NLB"
+    from_port       = 4444
+    to_port         = 4444
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+  }
+
   # --- Intra-SG rules so the GPU worker node (same SG) can reach the main node ---
   # On the all-in-one node every component is co-located, so dev-workspace talks to
   # Vault/demo-db over loopback and the Boundary worker dials workspaces on-host —
@@ -240,6 +256,14 @@ resource "aws_security_group" "instance" {
     description = "Boundary worker (main node) to GPU workspace SSH (portgen range)"
     from_port   = 2222
     to_port     = 2399
+    protocol    = "tcp"
+    self        = true
+  }
+
+  ingress {
+    description = "MCP gateway (main node) reached by GPU workspaces (remote Claude MCP)"
+    from_port   = 4444
+    to_port     = 4444
     protocol    = "tcp"
     self        = true
   }
