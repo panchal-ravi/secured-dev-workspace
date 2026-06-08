@@ -105,6 +105,22 @@ EOH
         MCPGATEWAY_UI_ENABLED        = "true"
         AUTH_REQUIRED                = "true"
         DATABASE_URL                 = "sqlite:////data/mcp.db"
+        # The bootstrap admin password is a strong per-deploy random held in Vault (not a
+        # known default), so DON'T force an out-of-band rotation on first login. The
+        # default (true) seeds the admin with password_change_required=1, which makes
+        # /auth/email/login + the Admin UI return 403 "Password change required" even
+        # with the correct Vault password — and any change would diverge the login
+        # credential from the KV secret. False keeps Vault authoritative for the UI login.
+        ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP = "false"
+        # The gateway terminates no TLS (plaintext HTTP on :4444; NLB locked to the
+        # operator /32). Browsers drop Secure cookies over HTTP, so the Admin UI login
+        # sets its session cookie and the browser silently discards it → login bounces
+        # back. SECURE_COOKIES=false fixes that, but production mode force-enables secure
+        # cookies regardless, so ENVIRONMENT must also be development for the flag to take
+        # effect. (TLS in front of the gateway is the roadmap fix; until then this keeps
+        # the /32-locked Admin UI usable. Dev mode also relaxes CORS + exposes debug info.)
+        ENVIRONMENT    = "development"
+        SECURE_COOKIES = "false"
         # SSRF protection stays ON (and private networks OFF by default), but the VPC
         # CIDR is allowlisted so the gateway may federate per-project MCP peers on the
         # node-private network. JSON array per the pydantic List[str] env contract.
