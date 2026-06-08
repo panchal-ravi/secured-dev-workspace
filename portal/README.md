@@ -1,9 +1,11 @@
 # Developer Portal (`portal/`)
 
 A self-service web app where a developer logs in with **IBM Verify SaaS (OIDC)**, sees the
-**projects their IBM Verify groups grant**, and **creates / lists dev workspaces** — each
-workspace card carries copy-paste **VSCode Remote-SSH** instructions and an info section of the
-flavor's baked-in features (Claude Code → DeepSeek, read-only DB MCP, dynamic Git PAT).
+**projects their IBM Verify groups grant**, and **creates, lists, and manages (stop / start /
+delete) dev workspaces** — each workspace card carries copy-paste **VSCode Remote-SSH** instructions
+and an info section of the flavor's baked-in features (Claude Code → DeepSeek, a read-only DB MCP
+reached through the central ContextForge gateway, a short-lived GitHub App push token — no static
+PAT).
 
 It is the **direct-API equivalent of the `terraform/workspace` tier**: a Go backend calls Nomad,
 Boundary, and Vault to build the same per-workspace resource graph (dynamic host volume + job,
@@ -34,6 +36,7 @@ Carbon React SPA  ──►  Go backend (trusted)  ──►  Vault   (read proj
 ```
 backend/   Go module (cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api})
 frontend/  Vite + React + @carbon/react  (build output → backend/web, served by the binary)
+helper/    macOS secured-ws:// helper — runs the Boundary login + manages ~/.ssh/config (the Connect flow)
 ```
 
 ## Prerequisites
@@ -122,9 +125,13 @@ go run ./cmd/portal
 ```
 
 Open <http://localhost:8080>, sign in with IBM Verify, open a project, and create a workspace.
-The workspace card shows both connection methods — copy the **ProxyCommand** block into
-`~/.ssh/config`, run the shown `boundary authenticate oidc` command once, then connect from VSCode
-Remote-SSH.
+Because the backend is remote, connecting is driven by a small **local helper** (the macOS
+`secured-ws://` app in [`helper/`](helper/); a first-run install is offered in the UI): click
+**Authenticate** in the project's *Connect to your workspaces* panel to run the
+`boundary authenticate oidc` SSO login once per terminal session, then **Open** on a workspace card
+writes the `~/.ssh/config` block and launches your IDE (VSCode Remote-SSH). Each card also exposes
+the **ProxyCommand** block to copy manually, plus a transparent-session (Boundary Client Agent)
+method.
 
 ## Tests
 
@@ -148,9 +155,11 @@ cd portal/backend && go test ./...    # portgen, jobrender, descriptor authz, id
   **WIF** and read short-lived Nomad/Boundary creds from Vault instead of static admin tokens.
 - **Project Team owner persona**: portal flows to *create* projects (namespace, Boundary scope,
   Vault paths) that write the same descriptor this portal already reads.
-- **Workspace lifecycle**: stop / restart / **delete**, live status polling, quotas.
+- **Workspace lifecycle**: stop / start / **delete** and log tailing now ship (per-workspace,
+  owner-scoped); continuous status polling (today only while a workspace is still starting) and
+  quotas remain.
 - **Hardening**: persistence, concurrency/locking, port-allocation race safety, audit logging,
-  multi-flavor feature attribution for *listed* workspaces, full error states.
+  full error states.
 - **Multiple repos**: today the project pins one repo (`workspace_git_repo_url`) baked into the
   template; let a project publish several and have the developer pick one at create time.
 ```

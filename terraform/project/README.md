@@ -2,8 +2,7 @@
 
 The **project tier** of the three-tier model (`terraform/{infra,project,workspace}`).
 A **flat root** (no child module) applied **once per project**, using a separate
-**Terraform workspace** for each (the future portal will instead use a distinct backend
-key per project). It reads the **platform** root's outputs via `terraform_remote_state`
+**Terraform workspace** for each. It reads the **platform** root's outputs via `terraform_remote_state`
 (`../infra/terraform.tfstate`) — **no tokens or addresses go in tfvars**; just pick a
 project name, the IBM Verify developers group for it, and the project's GitHub App.
 
@@ -25,11 +24,23 @@ project:
 - A **GitHub App token broker** (`github/<project>` mount + config + a pre-scoped `dev-workspace`
   permission set, plus a WIF policy letting the workspace read a `contents:write` token from it) — the
   git push credential for every workspace in the project; no static PAT anywhere.
+- A throwaway **demo Postgres** (`demo-db`, seeded on every (re)start, node-local static port, **not**
+  on the NLB) plus a **per-project Vault database secrets engine** (`database/<project>` mount + a
+  `demo-db` connection + a SELECT-only `dev-workspace-ro` role) that mints **dynamic, auto-rotating
+  read-only** DB credentials — no static DB password.
+- The project's **MCP server** (`demo-db-mcp`) — a long-lived `postgres-mcp` SSE Nomad service that
+  connects to `demo-db` with the dynamic read-only role over WIF (replacing the old per-workspace
+  stdio Postgres MCP that used to be baked into every image).
+- The project's **virtual MCP server** in the shared **ContextForge** gateway: a `terraform_data` /
+  `scripts/mcp-provision.sh` orchestration registers `demo-db-mcp` as a gateway **peer**, composes a
+  per-project **virtual MCP server**, mints a **scoped client token**, and writes the virtual-server
+  URL + token to Vault KV (`secret/projects/<project>/mcp`) for the workspace to read over WIF and
+  point Claude's remote MCP at. (The gateway itself lives in the platform tier.)
 - The project's **Nomad job templates** ("flavors"), written as raw HCL to Vault KV at
   `secret/projects/<project>/job-templates/<name>`, **each with its OWN pinned image AND git
   repo** (from `workspace_templates`), plus an optional `node_pool` (`"gpu"` for the GPU
   flavor). At publish the project-static values (namespace, image, repo, WIF role, SSH CA path,
-  GitHub/DB/DeepSeek paths) are baked in, leaving only the per-workspace placeholders — so both
+  GitHub/MCP/DeepSeek paths) are baked in, leaving only the per-workspace placeholders — so both
   the developer tier and the Developer Portal render the **same** template and a developer never
   selects an image or repo.
 

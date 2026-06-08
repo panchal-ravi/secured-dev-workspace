@@ -2,9 +2,8 @@
 
 The **developer tier** of the three-tier model (`terraform/{infra,project,workspace}`).
 A **flat root** (no child module) applied **once per developer-workspace**, using a
-separate **Terraform workspace** for each (the future portal will instead use a distinct
-backend key per workspace). It only talks to Nomad + Boundary + Vault over the NLB, so it
-**re-applies without ever touching the foundation instance**.
+separate **Terraform workspace** for each. It only talks to Nomad + Boundary + Vault over
+the NLB, so it **re-applies without ever touching the foundation instance**.
 
 All connection details and project wiring are read automatically from the **foundation**
 and **project** states via `terraform_remote_state` (see `providers.tf`) — **no tokens or
@@ -160,12 +159,16 @@ workspace `sshd` stderr (`nomad alloc logs -stderr -namespace <project> <alloc> 
    from `/home/dev/project` an edit + `git commit` + `git push` succeeds with **no credential
    prompt** (author = the developer, pusher = the App bot). A push **after >1h** in one session
    still works — consul-template re-mints the token before expiry.
-6b. **DB MCP (use case B1):** `/secrets/db-uri` exists on tmpfs (not under `/home/dev`) and holds a
-   `postgresql://v-…@<node-ip>:15432/appdb` URI (a **Vault-minted, per-session** user, prefix `v-…`);
-   `sudo -u dev claude mcp list` shows `demo-db: /usr/local/bin/pg-mcp - ✓ Connected`; a `SELECT` via the
-   MCP server returns the seeded rows while `INSERT`/`UPDATE`/`DROP` are refused — at **both** the MCP
-   `--access-mode=restricted` layer and the DB-level SELECT-only grant. See
-   `docs/specs/vault-usecase-b1-db-mcp-dynamic-creds.md`, and the step-by-step
+6b. **DB MCP (use case B1):** `/secrets/mcp-url` and `/secrets/mcp-token` exist on tmpfs (not under
+   `/home/dev`) and hold the project's **virtual MCP server URL on the central ContextForge gateway**
+   plus a **per-project scoped client bearer token** (both rendered over WIF from
+   `secret/projects/<project>/mcp`); the workspace itself holds **no DB URI** — it never talks to
+   Postgres directly. `sudo -u dev claude mcp list` shows `demo-db` as a **remote SSE server** pointing
+   at the gateway URL, `✓ Connected` (the old local `/usr/local/bin/pg-mcp` stdio server is gone). A
+   `SELECT` through that remote MCP server returns the seeded rows while `INSERT`/`UPDATE`/`DROP` are
+   refused — at **both** the demo-db-mcp service's `--access-mode=restricted` layer and the DB-level
+   SELECT-only grant (the Vault-dynamic read-only role now lives on the **demo-db-mcp service** side, not
+   the workspace). See `docs/specs/vault-usecase-b1-db-mcp-dynamic-creds.md`, and the step-by-step
    TUI walkthrough under **Exercising gate 6b in the `claude` TUI** below.
 7. **Boundary positive:** as the developer, the `boundary connect ssh` above logs in with **no
    local key**; the cert `key_id` = the developer's email in the `sshd` stderr log.
@@ -185,10 +188,11 @@ Ada Lovelace, Alan Turing, Grace Hopper) in `appdb`. SSH into the workspace as `
 
 1. **Pre-flight** — confirm the wiring before launching the TUI:
    ```bash
-   ls -l /secrets/db-uri && mount | grep /secrets   # cred on tmpfs, not /home/dev
-   claude mcp list                                  # expect: demo-db ... ✓ Connected
+   ls -l /secrets/mcp-url /secrets/mcp-token && mount | grep /secrets  # gateway coords on tmpfs, not /home/dev
+   claude mcp list                                                     # expect: demo-db (remote SSE) ... ✓ Connected
    ```
-   `✓ Connected` here already proves the data path; the TUI steps make it visible.
+   `✓ Connected` here already proves the path to the gateway's virtual MCP server; the TUI steps
+   make it visible.
 
 2. **SELECT through the TUI** — run `claude`, then prompt it to use the tool:
    > Using the demo-db MCP server, list all rows in the `employees` table.
@@ -203,13 +207,13 @@ Ada Lovelace, Alan Turing, Grace Hopper) in `appdb`. SSH into the workspace as `
    Expect refusal at **both** layers: the MCP `--access-mode=restricted` rejects non-read
    SQL, and the DB grant is SELECT-only (`permission denied for table employees`).
 
-4. **Per-session cred (optional)** — confirm the URI carries a Vault/WIF-minted user
-   (password masked):
-   ```bash
-   sed -E 's#://([^:]+):[^@]+@#://\1:***@#' /secrets/db-uri
-   ```
-   Expect host `<node-ip>:15432`, db `appdb`, username prefixed `v-jwt-noma-…` — the
-   per-session SELECT-only role Vault drops on lease expiry.
+4. **Dynamic DB credential (where it lives now)** — the workspace no longer renders a DB URI. The
+   Vault-dynamic, SELECT-only Postgres role is held by the **demo-db-mcp service**
+   (`terraform/project/demo-db-mcp.tf`), which sources it as `DATABASE_URI` over WIF
+   (`postgresql://…@<node-ip>:15432/appdb`) and serves one shared connection for the whole project —
+   auto-rotated on lease (24h default / 7d max, `change_mode=restart`), not minted per developer
+   session. To inspect the live credential you look at that service, not the workspace; the workspace
+   only ever sees the gateway URL + scoped token (see `terraform/project/database.tf`).
 
 ## GPU flavor
 

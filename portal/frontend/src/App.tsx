@@ -36,7 +36,12 @@ export default function App() {
   }
 
   if (loading) return <Loading withOverlay description="Loading" />
-  if (!me) return <Login />
+  if (!me)
+    return (
+      <Theme theme={theme} className="app-shell">
+        <Login />
+      </Theme>
+    )
 
   return (
     <MeContext.Provider value={me}>

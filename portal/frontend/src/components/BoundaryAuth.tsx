@@ -86,12 +86,13 @@ export default function BoundaryAuth({
               </CodeSnippet>
             </div>
             {TERMINALS.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
                 <Dropdown
                   id={`term-${project}`}
                   size="md"
                   label="Terminal"
                   titleText="Terminal"
+                  hideLabel
                   items={TERMINALS}
                   itemToString={(t) => (t ? t.label : '')}
                   selectedItem={selected ?? null}
@@ -104,32 +105,35 @@ export default function BoundaryAuth({
               </div>
             )}
           </div>
-          <div style={{ fontSize: '0.75rem', marginTop: '0.75rem' }}>
-            <p style={{ color: 'var(--cds-text-secondary)', margin: '0 0 0.5rem' }}>
-              The Authenticate and Open buttons use the Secured Workspace helper. First time?
-            </p>
-            {OS === 'mac' && (
-              <>
-                <p style={{ color: 'var(--cds-text-secondary)', margin: '0 0 0.5rem' }}>
-                  <a href={HELPER_DOWNLOAD}>Download the helper</a>, then run these in Terminal (don&apos;t
-                  re-download after — a fresh download re-applies the quarantine flag):
-                </p>
-                <CodeSnippet type="multi" feedback="Copied!">
-                  {MAC_INSTALL}
-                </CodeSnippet>
-                <p style={{ color: 'var(--cds-text-secondary)', margin: '0.5rem 0 0' }}>
-                  The <code>xattr</code> step is required: the helper is ad-hoc signed, so without it macOS
-                  Gatekeeper blocks it as &quot;damaged&quot; / &quot;could not verify&quot;.
-                </p>
-              </>
-            )}
-            {OS !== 'mac' && (
-              <p style={{ color: 'var(--cds-text-secondary)', margin: 0 }}>
-                The helper is currently packaged for macOS only. {OS === 'win' ? 'Windows' : OS === 'linux' ? 'Linux' : 'Your OS'}{' '}
-                install steps (registry / <code>.desktop</code> handler) are documented in{' '}
-                <code>portal/helper/README.md</code>.
-              </p>
-            )}
+          <div style={{ marginTop: '0.75rem' }}>
+            <Accordion size="sm">
+              <AccordionItem title="First time? Set up the Secured Workspace helper">
+                <div style={{ fontSize: '0.75rem' }}>
+                  {OS === 'mac' && (
+                    <>
+                      <p style={{ color: 'var(--cds-text-secondary)', margin: '0 0 0.5rem' }}>
+                        <a href={HELPER_DOWNLOAD}>Download the helper</a>, then run these in Terminal (don&apos;t
+                        re-download after — a fresh download re-applies the quarantine flag):
+                      </p>
+                      <CodeSnippet type="multi" feedback="Copied!">
+                        {MAC_INSTALL}
+                      </CodeSnippet>
+                      <p style={{ color: 'var(--cds-text-secondary)', margin: '0.5rem 0 0' }}>
+                        The <code>xattr</code> step is required: the helper is ad-hoc signed, so without it macOS
+                        Gatekeeper blocks it as &quot;damaged&quot; / &quot;could not verify&quot;.
+                      </p>
+                    </>
+                  )}
+                  {OS !== 'mac' && (
+                    <p style={{ color: 'var(--cds-text-secondary)', margin: 0 }}>
+                      The helper is currently packaged for macOS only. {OS === 'win' ? 'Windows' : OS === 'linux' ? 'Linux' : 'Your OS'}{' '}
+                      install steps (registry / <code>.desktop</code> handler) are documented in{' '}
+                      <code>portal/helper/README.md</code>.
+                    </p>
+                  )}
+                </div>
+              </AccordionItem>
+            </Accordion>
           </div>
         </AccordionItem>
       </Accordion>
