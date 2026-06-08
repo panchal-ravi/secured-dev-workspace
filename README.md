@@ -7,6 +7,9 @@ coding agent already running inside it. The source code, the tools, the secrets,
 all stay protected on your own infrastructure — never on the laptop, never on the open
 internet.
 
+*For the technical architecture and how the system is built and operated, see
+[`ARCHITECTURE.md`](ARCHITECTURE.md).*
+
 ## Why it's more secure
 
 **Your source code never lives on a laptop.**
@@ -107,8 +110,3 @@ tooling. The same security guarantees above apply automatically, whichever path 
 
 What's next: maturing the portal, durable storage so a workspace survives a full machine
 replacement, and stronger per-workspace isolation.
-
----
-
-*For the technical architecture and how the system is built and operated, see
-[`ARCHITECTURE.md`](ARCHITECTURE.md).*
