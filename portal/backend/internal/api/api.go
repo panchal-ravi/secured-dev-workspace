@@ -3,50 +3,73 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
+	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
 
 type server struct {
-	auth *auth.Authenticator
-	svc  *workspace.Service
+	auth  *auth.Authenticator
+	svc   *workspace.Service
+	ready func(context.Context) error // readiness probe; nil = always ready
+}
+
+// Options configures the mux. Ready is the /readyz probe (dependency reachability)
+// and RateLimit throttles mutating endpoints per user.
+type Options struct {
+	Auth      *auth.Authenticator
+	Svc       *workspace.Service
+	StaticDir string
+	Ready     func(context.Context) error
+	RateLimit middleware.RateLimitConfig
 }
 
 // NewMux wires every route and returns the root handler.
-func NewMux(a *auth.Authenticator, svc *workspace.Service, staticDir string) http.Handler {
-	s := &server{auth: a, svc: svc}
+func NewMux(opts Options) http.Handler {
+	s := &server{auth: opts.Auth, svc: opts.Svc, ready: opts.Ready}
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /auth/login", a.LoginHandler)
-	mux.HandleFunc("GET /auth/callback", a.CallbackHandler)
-	mux.HandleFunc("POST /auth/logout", a.LogoutHandler)
+	// Liveness/readiness — public, no secrets. /health is the Nomad service check.
+	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /readyz", s.readyz)
 
-	protect := func(h http.HandlerFunc) http.Handler { return a.Require(h) }
+	mux.HandleFunc("GET /auth/login", opts.Auth.LoginHandler)
+	mux.HandleFunc("GET /auth/callback", opts.Auth.CallbackHandler)
+	mux.HandleFunc("POST /auth/logout", opts.Auth.LogoutHandler)
+
+	rl := middleware.NewRateLimiter(opts.RateLimit)
+	protect := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(h) }
+	// mutate adds per-user rate limiting on top of auth for state-changing routes.
+	mutate := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(rl.Wrap(http.HandlerFunc(h))) }
+
 	mux.Handle("GET /api/me", protect(s.me))
 	mux.Handle("GET /api/workspaces", protect(s.listAllWorkspaces))
 	mux.Handle("GET /api/projects", protect(s.listProjects))
 	mux.Handle("GET /api/projects/{name}/workspaces", protect(s.listWorkspaces))
-	mux.Handle("POST /api/projects/{name}/workspaces", protect(s.createWorkspace))
-	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/stop", protect(s.stopWorkspace))
-	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/start", protect(s.startWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces", mutate(s.createWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/stop", mutate(s.stopWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/start", mutate(s.startWorkspace))
 	mux.Handle("GET /api/projects/{name}/workspaces/{ws}/logs", protect(s.workspaceLogs))
-	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/ssh-config", protect(s.writeSSHConfig))
-	mux.Handle("DELETE /api/projects/{name}/workspaces/{ws}", protect(s.destroyWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/ssh-config", mutate(s.writeSSHConfig))
+	mux.Handle("DELETE /api/projects/{name}/workspaces/{ws}", mutate(s.destroyWorkspace))
 
 	// The secured-ws:// helper download. Served from a sibling of the SPA dir so the
 	// frontend build (which empties ./web) never deletes it. Public, no secrets.
-	helperDir := filepath.Join(filepath.Dir(staticDir), "helper-dist")
+	helperDir := filepath.Join(filepath.Dir(opts.StaticDir), "helper-dist")
 	mux.Handle("GET /helper/", http.StripPrefix("/helper/", http.FileServer(http.Dir(helperDir))))
 
-	mux.Handle("/", spaHandler(staticDir))
+	mux.Handle("/", spaHandler(opts.StaticDir))
 	return mux
 }
 
@@ -100,7 +123,7 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	ds, err := s.svc.ListProjects(r.Context(), u.Groups)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	out := make([]projectDTO, 0, len(ds))
@@ -114,7 +137,7 @@ func (s *server) listAllWorkspaces(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	wss, err := s.svc.ListAllWorkspaces(r.Context(), u.Groups, u.Handle)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workspaces": wss})
@@ -124,12 +147,12 @@ func (s *server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	d, err := s.svc.GetProject(r.Context(), r.PathValue("name"), u.Groups)
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	wss, err := s.svc.ListWorkspaces(r.Context(), d, u.Handle)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"project": toProjectDTO(d), "workspaces": wss})
@@ -139,7 +162,7 @@ func (s *server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	d, err := s.svc.GetProject(r.Context(), r.PathValue("name"), u.Groups)
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	var body struct {
@@ -148,7 +171,7 @@ func (s *server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	// The only field is flavor, optional for single-flavor projects, so an empty
 	// body is valid; reject only malformed JSON.
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "invalid request body")
+		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
 		return
 	}
 	ws, err := s.svc.Create(r.Context(), d, workspace.CreateInput{
@@ -158,7 +181,7 @@ func (s *server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		GitName: u.GitName,
 	})
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, ws)
@@ -170,11 +193,11 @@ func (s *server) lifecycleAction(w http.ResponseWriter, r *http.Request, fn func
 	u, _ := auth.UserFrom(r.Context())
 	d, err := s.svc.GetProject(r.Context(), r.PathValue("name"), u.Groups)
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	if err := fn(d, u.Handle, r.PathValue("ws")); err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -202,7 +225,7 @@ func (s *server) workspaceLogs(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	d, err := s.svc.GetProject(r.Context(), r.PathValue("name"), u.Groups)
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	logType := r.URL.Query().Get("type")
@@ -211,7 +234,7 @@ func (s *server) workspaceLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.svc.Logs(r.Context(), d, u.Handle, r.PathValue("ws"), logType)
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"logs": out})
@@ -221,31 +244,48 @@ func (s *server) writeSSHConfig(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	d, err := s.svc.GetProject(r.Context(), r.PathValue("name"), u.Groups)
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	host, err := s.svc.WriteSSHConfig(r.Context(), d, u.Handle, r.PathValue("ws"))
 	if err != nil {
-		writeErr(w, statusFor(err), err.Error())
+		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"host": host})
 }
 
+// ---- health ----
+
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *server) readyz(w http.ResponseWriter, r *http.Request) {
+	if s.ready != nil {
+		if err := s.ready(r.Context()); err != nil {
+			slog.Warn("readiness check failed", "err", err, "request_id", middleware.RequestID(r.Context()))
+			writeErr(w, http.StatusServiceUnavailable, "not ready", middleware.RequestID(r.Context()))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
 // ---- helpers ----
 
-func statusFor(err error) int {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "forbidden"):
-		return http.StatusForbidden
-	case strings.Contains(msg, "already exists"):
-		return http.StatusConflict
-	case strings.Contains(msg, "invalid") || strings.Contains(msg, "unknown flavor"):
-		return http.StatusBadRequest
-	default:
-		return http.StatusBadGateway
+// fail classifies err and responds. Known client-error classes (apperr) return
+// their safe message and status; anything else is an internal/upstream failure —
+// the detail is logged with the request id and the client gets only a generic
+// 502 so backend errors never leak (addresses, tokens, internal wording).
+func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
+	rid := middleware.RequestID(r.Context())
+	if status := apperr.Status(err); status != 0 {
+		writeErr(w, status, err.Error(), rid)
+		return
 	}
+	slog.Error("request failed", "err", err, "request_id", rid, "method", r.Method, "path", r.URL.Path)
+	writeErr(w, http.StatusBadGateway, "upstream service error", rid)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -254,8 +294,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func writeErr(w http.ResponseWriter, status int, msg, requestID string) {
+	writeJSON(w, status, map[string]string{"error": msg, "request_id": requestID})
 }
 
 // spaHandler serves static files from dir, falling back to index.html for

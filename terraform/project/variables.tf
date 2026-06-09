@@ -110,19 +110,11 @@ variable "workspace_templates" {
   }
 }
 
-# --- DeepSeek (the LLM the baked-in Claude Code CLI is pointed at) ---
-
-variable "deepseek_api_key" {
-  description = <<-EOT
-    DeepSeek API key. Stored only in Vault KV (secret/projects/<project>/deepseek),
-    rendered per session to the workspace `/secrets` tmpfs, and read by Claude Code's
-    apiKeyHelper — it never lands on the persistent /home/dev. The baked-in Claude is
-    configured (image managed-settings.json) to use DeepSeek's Anthropic-compatible
-    endpoint with this key. Supply via the gitignored <project>.tfvars (never commit).
-  EOT
-  type        = string
-  sensitive   = true
-}
+# --- LLM access ---
+# The project no longer holds a provider API key. Claude Code routes through the
+# shared LiteLLM AI gateway (terraform/infra/llm-gateway.tf) with a per-project
+# virtual key minted in llm-gateway.tf; the DeepSeek key lives only on the gateway
+# (set deepseek_api_key in the infra tier).
 
 # --- GitHub App (the per-project git push credential broker) ---
 

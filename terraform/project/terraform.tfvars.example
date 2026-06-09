@@ -36,11 +36,10 @@ workspace_templates = {
   }
 }
 
-# --- DeepSeek (the LLM the baked-in Claude Code CLI is pointed at) ---
-# Stored only in Vault KV, rendered per session to the workspace /secrets tmpfs and
-# read by Claude's apiKeyHelper — never persisted to /home/dev. From the DeepSeek
-# platform dashboard.
-deepseek_api_key = "sk-..."
+# --- LLM access ---
+# No provider key here: Claude Code routes through the shared LiteLLM AI gateway with
+# a per-project virtual key minted automatically (llm-gateway.tf). The DeepSeek key
+# lives only on the gateway — set `deepseek_api_key` in the infra tier instead.
 
 # --- GitHub App (per-project git push credential broker) ---
 # Create a GitHub App with repository permission Contents: Read & write (+ the

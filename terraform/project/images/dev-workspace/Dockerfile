@@ -27,32 +27,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
   && claude --version \
   && rm -rf /var/lib/apt/lists/*
 
-# Point Claude Code at DeepSeek instead of Anthropic. The non-secret config (the
-# Anthropic-compatible base URL + DeepSeek model names, per DeepSeek's Claude Code
-# integration docs) is baked here as enterprise-managed settings — highest
-# precedence, project-enforced, and OUTSIDE /home/dev (which the persistent volume
-# shadows). The API key is NOT baked: apiKeyHelper reads it at call time from the
-# Vault-minted /secrets/deepseek-key (rendered per session by the job template), so
-# the secret never lands on disk. Confirm the model ids against your DeepSeek
-# dashboard — they are easy to change here.
+# Route Claude Code through the shared LiteLLM AI gateway (not the model provider
+# directly). The gateway URL + model mapping live in Claude's enterprise-managed
+# settings, but those are rendered PER WORKSPACE at job launch (the gateway address
+# is deployment-specific) and installed to /etc/claude-code/managed-settings.json by
+# the job entrypoint — see terraform/project/templates/dev-workspace.nomad.hcl. Here
+# we only create the dir and the apiKeyHelper: it serves the per-project LiteLLM
+# virtual key from the Vault-minted /secrets/llm-key (rendered per session), so the
+# key is read at call time and never lands on disk. The real provider key never
+# reaches the workspace — it lives only on the gateway.
 RUN mkdir -p /etc/claude-code \
-  && printf '%s\n' \
-    '{' \
-    '  "apiKeyHelper": "/usr/local/bin/deepseek-key",' \
-    '  "env": {' \
-    '    "DISABLE_AUTOUPDATER": "1",' \
-    '    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",' \
-    '    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",' \
-    '    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",' \
-    '    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",' \
-    '    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",' \
-    '    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",' \
-    '    "CLAUDE_CODE_EFFORT_LEVEL": "max"' \
-    '  }' \
-    '}' \
-    > /etc/claude-code/managed-settings.json \
-  && printf '%s\n' '#!/bin/sh' 'cat /secrets/deepseek-key' > /usr/local/bin/deepseek-key \
-  && chmod 0755 /usr/local/bin/deepseek-key
+  && printf '%s\n' '#!/bin/sh' 'cat /secrets/llm-key' > /usr/local/bin/llm-key \
+  && chmod 0755 /usr/local/bin/llm-key
 
 # The demo-db MCP server is no longer embedded in the image. Claude connects to
 # the project's REMOTE virtual MCP server on the central ContextForge gateway —

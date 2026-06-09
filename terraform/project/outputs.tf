@@ -70,7 +70,7 @@ output "mcp_kv_path" {
   value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"
 }
 
-output "deepseek_key_path" {
-  description = "Vault path the workspace WIF task reads the DeepSeek API key from (KV v2, so /data/ prefixed: secret/data/projects/<project>/deepseek)."
-  value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/deepseek"
+output "llm_kv_path" {
+  description = "Vault KV path the workspace WIF task reads the project's LiteLLM virtual key from (KV v2, so /data/ prefixed: secret/data/projects/<project>/llm). Written by the gateway orchestration (llm-gateway.tf)."
+  value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/llm"
 }

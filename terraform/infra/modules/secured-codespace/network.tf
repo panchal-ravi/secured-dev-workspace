@@ -154,6 +154,22 @@ resource "aws_security_group" "nlb" {
     cidr_blocks = [local.allowed_cidr]
   }
 
+  ingress {
+    description = "LiteLLM AI Gateway admin API (virtual-key provisioning)"
+    from_port   = 4000
+    to_port     = 4000
+    protocol    = "tcp"
+    cidr_blocks = [local.allowed_cidr]
+  }
+
+  ingress {
+    description = "Developer Portal HTTPS"
+    from_port   = 8443
+    to_port     = 8443
+    protocol    = "tcp"
+    cidr_blocks = [local.allowed_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -222,6 +238,22 @@ resource "aws_security_group" "instance" {
     security_groups = [aws_security_group.nlb.id]
   }
 
+  ingress {
+    description     = "LiteLLM AI gateway from NLB (admin key provisioning)"
+    from_port       = 4000
+    to_port         = 4000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+  }
+
+  ingress {
+    description     = "Developer Portal HTTPS from NLB"
+    from_port       = 8443
+    to_port         = 8443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.nlb.id]
+  }
+
   # --- Intra-SG rules so the GPU worker node (same SG) can reach the main node ---
   # On the all-in-one node every component is co-located, so dev-workspace talks to
   # Vault/demo-db over loopback and the Boundary worker dials workspaces on-host —
@@ -264,6 +296,14 @@ resource "aws_security_group" "instance" {
     description = "MCP gateway (main node) reached by GPU workspaces (remote Claude MCP)"
     from_port   = 4444
     to_port     = 4444
+    protocol    = "tcp"
+    self        = true
+  }
+
+  ingress {
+    description = "LiteLLM gateway (main node) reached by GPU workspaces (Claude Code LLM traffic)"
+    from_port   = 4000
+    to_port     = 4000
     protocol    = "tcp"
     self        = true
   }

@@ -85,7 +85,7 @@ resource "nomad_dynamic_host_volume" "home" {
 }
 
 # The workspace job. The project tier already baked every project-static value
-# (namespace, image, git_repo_url, wif_role, ssh_ca_path, github/db/deepseek paths)
+# (namespace, image, git_repo_url, wif_role, ssh_ca_path, github/mcp/llm paths)
 # into the published jobspec at onboarding (kv.tf), leaving only the per-workspace
 # placeholders as literal `${...}`. We fill exactly those five — the same set the
 # Developer Portal renders — so the workspace tier and the portal produce an

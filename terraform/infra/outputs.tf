@@ -166,3 +166,20 @@ output "infra_namespace" {
   description = "Nomad namespace hosting the platform-tier MCP gateway."
   value       = nomad_namespace.infra.name
 }
+
+# --- LiteLLM AI Gateway (platform tier, see llm-gateway.tf) ---
+
+output "llm_gateway_addr" {
+  description = "LiteLLM AI Gateway admin API base URL via the NLB (locked to the operator /32). Plaintext HTTP — the gateway terminates no TLS (PoC). The project tier mints per-project virtual keys here with POST /key/generate using the master key."
+  value       = "http://${module.secured_codespace.nlb_dns_name}:4000"
+}
+
+output "llm_gateway_private_endpoint" {
+  description = "Node-private LiteLLM gateway base URL (http://<node-ip>:4000). Workspaces point Claude Code's ANTHROPIC_BASE_URL here; the gateway serves the Anthropic /v1/messages endpoint and routes to DeepSeek."
+  value       = "http://${module.secured_codespace.instance_private_ip}:4000"
+}
+
+output "llm_gateway_kv_path" {
+  description = "Vault KV v2 read path for the LiteLLM gateway secrets (master_key/salt_key/…). The project tier reads master_key here to mint per-project virtual keys."
+  value       = "${vault_mount.kv.path}/data/infra/llm-gateway"
+}

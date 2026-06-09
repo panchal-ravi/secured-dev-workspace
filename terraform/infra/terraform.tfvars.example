@@ -32,3 +32,12 @@ ibm_verify_api_client_secret = "" # set locally; never commit
 # Optional: override the Verify group names that map to admin / readonly.
 # admin_group_name    = "secured-codespace-admins"
 # readonly_group_name = "secured-codespace-readonly"
+
+# --- LiteLLM AI gateway (see llm-gateway.tf) ---
+# The ONE central provider key the gateway uses to reach DeepSeek. It lives only on
+# the gateway (Vault KV infra/llm-gateway); workspaces get per-project virtual keys,
+# never this. Sensitive — set locally, never commit. From the DeepSeek dashboard.
+deepseek_api_key = "" # set locally; never commit
+# Optional: pin concrete image tags rather than the floating defaults.
+# litellm_image          = "ghcr.io/berriai/litellm-database:main-stable"
+# litellm_postgres_image = "postgres:16-alpine"

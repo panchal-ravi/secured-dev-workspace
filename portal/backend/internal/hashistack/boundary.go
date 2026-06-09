@@ -30,10 +30,16 @@ type Boundary struct {
 }
 
 // NewBoundary builds a client and authenticates with the admin password method.
-func NewBoundary(ctx context.Context, addr, authMethodID, login, password string) (*Boundary, error) {
-	c, err := bapi.NewClient(&bapi.Config{Addr: addr, TLSConfig: &bapi.TLSConfig{Insecure: true}})
+func NewBoundary(ctx context.Context, addr, authMethodID, login, password string, tls TLSOptions) (*Boundary, error) {
+	c, err := bapi.NewClient(&bapi.Config{Addr: addr})
 	if err != nil {
 		return nil, fmt.Errorf("boundary: new client: %w", err)
+	}
+	// bapi.NewClient does not apply Config.TLSConfig; SetTLSConfig calls
+	// ConfigureTLS so the CA cert / skip-verify actually take effect on the
+	// transport (otherwise the self-signed loopback cert fails verification).
+	if err := c.SetTLSConfig(&bapi.TLSConfig{CACert: tls.CACertPath, Insecure: tls.SkipVerify}); err != nil {
+		return nil, fmt.Errorf("boundary: configure tls: %w", err)
 	}
 	res, err := authmethods.NewClient(c).Authenticate(ctx, authMethodID, "login", map[string]any{
 		"login_name": login,

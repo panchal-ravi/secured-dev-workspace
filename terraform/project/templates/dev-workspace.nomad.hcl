@@ -17,7 +17,8 @@
 #   ssh_ca_path       — per-project Vault SSH CA config path (ssh/<project>/config/ca)
 #   github_token_path — per-project Vault GitHub permission-set token path
 #   mcp_kv_path       — per-project Vault KV path for the virtual-MCP coordinates (secret/data/projects/<project>/mcp)
-#   deepseek_key_path — per-project Vault KV path for the DeepSeek API key (secret/data/projects/<project>/deepseek)
+#   llm_kv_path       — per-project Vault KV path for the LiteLLM virtual key (secret/data/projects/<project>/llm)
+#   llm_base_url      — node-private LiteLLM gateway base URL (Claude Code's ANTHROPIC_BASE_URL)
 #
 # Per-workspace placeholders (escaped "$$" here; filled by the portal at create):
 #   job_name ssh_port volume_name developer_email git_user_name
@@ -119,18 +120,46 @@ EOH
 EOH
       }
 
-      # DeepSeek API key (KV v2), minted into the /secrets tmpfs over WIF. The
-      # baked-in Claude Code CLI is pointed at DeepSeek (image managed-settings.json)
-      # and reads this via its apiKeyHelper (/usr/local/bin/deepseek-key), so the key
-      # is read at call time and never lands on the persistent /home/dev. 0644 so the
-      # dev user (Claude runs as dev) can read it; change_mode=noop so a re-render
-      # NEVER restarts sshd.
+      # Per-project LiteLLM virtual key (KV v2), minted into the /secrets tmpfs over
+      # WIF. Claude Code is pointed at the shared LiteLLM gateway (managed-settings.json
+      # below) and reads this via its apiKeyHelper (/usr/local/bin/llm-key), so the key
+      # is read at call time and never lands on the persistent /home/dev. This is a
+      # SCOPED virtual key (allowed models + budget + rpm), NOT the real provider key —
+      # that lives only on the gateway. 0644 so the dev user (Claude runs as dev) can
+      # read it; change_mode=noop so a re-render NEVER restarts sshd.
       template {
-        destination = "secrets/deepseek-key"
+        destination = "secrets/llm-key"
         perms       = "0644"
         change_mode = "noop"
         data        = <<EOH
-{{ with secret "${deepseek_key_path}" }}{{ .Data.data.api_key }}{{ end }}
+{{ with secret "${llm_kv_path}" }}{{ .Data.data.virtual_key }}{{ end }}
+EOH
+      }
+
+      # Claude Code's enterprise-managed settings, rendered with this project's
+      # LiteLLM gateway URL (llm_base_url) and installed by the entrypoint to
+      # /etc/claude-code/managed-settings.json — OUTSIDE /home/dev (which the
+      # persistent volume shadows) so it is enforced and the developer can't re-point
+      # the model. Non-secret (the key is served separately by apiKeyHelper), so it is
+      # static data; the model names match the gateway model_list. change_mode=noop.
+      template {
+        destination = "local/managed-settings.json"
+        perms       = "0644"
+        change_mode = "noop"
+        data        = <<EOH
+{
+  "apiKeyHelper": "/usr/local/bin/llm-key",
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "ANTHROPIC_BASE_URL": "${llm_base_url}",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  }
+}
 EOH
       }
 
@@ -143,6 +172,11 @@ set -euo pipefail
 
 # Trust the Vault SSH CA (re-rendered every launch from the template above).
 install -o root -g root -m 0644 /local/trusted_ca.pub /etc/ssh/trusted_ca.pub
+
+# Install Claude Code's enterprise-managed settings (rendered with this project's
+# LiteLLM gateway URL). /etc/claude-code is created in the image; this enforces the
+# governed gateway + model mapping and is outside the persistent /home/dev volume.
+install -o root -g root -m 0644 /local/managed-settings.json /etc/claude-code/managed-settings.json
 
 # The dynamic host volume mounts root-owned on first boot; hand it to the dev
 # user BEFORE the clone (run as dev) so the clone can write into it.

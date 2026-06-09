@@ -28,8 +28,11 @@ resource "vault_kv_secret_v2" "job_template" {
   # tier owns these resources). Image and repo are per-template (each.value); the
   # Vault paths are project-wide. The workspace no longer talks to Postgres directly
   # — it reads the per-project MCP coordinates (virtual-server URL + client token)
-  # from mcp_kv_path and points Claude's REMOTE MCP at the gateway. The portal then
-  # fills only the per-workspace placeholders (job_name/ssh_port/volume_name/identity).
+  # from mcp_kv_path and points Claude's REMOTE MCP at the gateway. Claude Code's LLM
+  # traffic routes through the shared LiteLLM gateway: llm_base_url is baked into the
+  # workspace's managed-settings.json, and llm_kv_path is where it reads the project's
+  # virtual key. The portal then fills only the per-workspace placeholders
+  # (job_name/ssh_port/volume_name/identity).
   data_json = jsonencode({
     jobspec = templatestring(local.job_templates[each.key], {
       namespace         = nomad_namespace.project.name
@@ -39,7 +42,8 @@ resource "vault_kv_secret_v2" "job_template" {
       ssh_ca_path       = "${vault_mount.ssh.path}/config/ca"
       github_token_path = "${vault_mount.github.path}/token/${local.github_permissionset_name}"
       mcp_kv_path       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"
-      deepseek_key_path = "${local.f.kv_mount_path}/data/projects/${var.project_name}/deepseek"
+      llm_kv_path       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/llm"
+      llm_base_url      = local.f.llm_gateway_private_endpoint
     })
   })
 }

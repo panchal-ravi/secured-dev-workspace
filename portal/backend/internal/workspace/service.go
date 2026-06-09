@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/hashistack"
 	"github.com/secured-dev-workspace/developer-portal/internal/jobrender"
@@ -21,8 +22,11 @@ const sessionMaxSeconds = 28800 // 8h, matching the workspace tier default
 
 // Config is the subset of portal config the service needs.
 type Config struct {
-	BoundaryAddr string
-	PortRange    portgen.Range
+	// BoundaryPublicAddr is the externally reachable Boundary address (the NLB)
+	// embedded in the developer-facing authenticate/connect commands — distinct
+	// from the loopback the portal's own on-node API client uses.
+	BoundaryPublicAddr string
+	PortRange          portgen.Range
 	// SSHConfigPath enables "Open in IDE" by writing per-workspace blocks into
 	// this local SSH config. Empty disables the feature (production mode).
 	SSHConfigPath string
@@ -94,7 +98,7 @@ func (s *Service) GetProject(ctx context.Context, name string, groups []string) 
 		return descriptor.Descriptor{}, err
 	}
 	if !d.AllowsGroups(groups) {
-		return descriptor.Descriptor{}, fmt.Errorf("forbidden: not a member of %q", d.DevelopersGroupName)
+		return descriptor.Descriptor{}, fmt.Errorf("not a member of %q: %w", d.DevelopersGroupName, apperr.ErrForbidden)
 	}
 	return d, nil
 }
@@ -145,7 +149,7 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 	}
 	flavor, ok := d.Flavor(in.Flavor)
 	if !ok {
-		return Workspace{}, fmt.Errorf("unknown flavor %q for project %q", in.Flavor, d.ProjectName)
+		return Workspace{}, fmt.Errorf("unknown flavor %q for project %q: %w", in.Flavor, d.ProjectName, apperr.ErrBadRequest)
 	}
 
 	// The workspace identity is machine-generated — the developer names nothing.
@@ -288,7 +292,7 @@ func (s *Service) WriteSSHConfig(ctx context.Context, d descriptor.Descriptor, h
 		return "", err
 	}
 	if s.cfg.SSHConfigPath == "" {
-		return "", fmt.Errorf("invalid: writing SSH config is disabled on this portal")
+		return "", fmt.Errorf("writing SSH config is disabled on this portal: %w", apperr.ErrBadRequest)
 	}
 	ws, err := s.findWorkspace(ctx, d, handle, jobName)
 	if err != nil {
@@ -312,14 +316,14 @@ func (s *Service) findWorkspace(ctx context.Context, d descriptor.Descriptor, ha
 			return w, nil
 		}
 	}
-	return Workspace{}, fmt.Errorf("workspace %q not found", jobName)
+	return Workspace{}, fmt.Errorf("workspace %q not found: %w", jobName, apperr.ErrNotFound)
 }
 
 // requireOwned guards that jobName belongs to handle (named ws-<handle>-...), so
 // a developer can only act on their own workspaces.
 func requireOwned(handle, jobName string) error {
 	if !strings.HasPrefix(jobName, "ws-"+handle+"-") {
-		return fmt.Errorf("forbidden: workspace %q does not belong to you", jobName)
+		return fmt.Errorf("workspace %q does not belong to you: %w", jobName, apperr.ErrForbidden)
 	}
 	return nil
 }
@@ -348,10 +352,10 @@ func (s *Service) view(d descriptor.Descriptor, name, wsName, status string, por
 		TargetID:                targetID,
 		Alias:                   alias,
 		Features:                features,
-		ProxyCommandConfig:      ProxyCommandConfig(name, user, s.cfg.BoundaryAddr, targetID),
+		ProxyCommandConfig:      ProxyCommandConfig(name, user, s.cfg.BoundaryPublicAddr, targetID),
 		TransparentConfig:       TransparentConfig(alias, user),
-		BoundaryAuthenticateCmd: BoundaryAuthenticateCmd(s.cfg.BoundaryAddr, d.BoundaryOIDCAuthMethodID),
-		BoundaryAddr:            s.cfg.BoundaryAddr,
+		BoundaryAuthenticateCmd: BoundaryAuthenticateCmd(s.cfg.BoundaryPublicAddr, d.BoundaryOIDCAuthMethodID),
+		BoundaryAddr:            s.cfg.BoundaryPublicAddr,
 		BoundaryAuthMethodID:    d.BoundaryOIDCAuthMethodID,
 		User:                    user,
 	}
@@ -386,7 +390,7 @@ func (s *Service) allocateName(namespace, handle string) (wsName, name, volume s
 			return wsName, name, volume, nil
 		}
 	}
-	return "", "", "", fmt.Errorf("could not allocate a unique workspace name after 5 attempts")
+	return "", "", "", fmt.Errorf("could not allocate a unique workspace name after 5 attempts: %w", apperr.ErrConflict)
 }
 
 // suffixAlphabet is lowercase alphanumerics — safe in a Nomad job ID, a Boundary

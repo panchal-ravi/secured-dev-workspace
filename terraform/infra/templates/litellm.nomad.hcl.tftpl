@@ -1,0 +1,113 @@
+# LiteLLM AI Gateway jobspec (platform tier). Rendered by terraform/infra/
+# llm-gateway.tf templatefile(). consul-template "{{ ... }}" is left literal (a
+# different delimiter from Terraform interpolation, so no escaping is needed).
+#
+# Serves the Anthropic /v1/messages endpoint that every workspace's Claude Code
+# points ANTHROPIC_BASE_URL at, translating Anthropic-in to DeepSeek-out per the
+# model_list below. The provider key lives only here (from Vault); callers present a
+# per-project virtual key. Spend/audit logs land in Postgres.
+job "litellm-gateway" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "service"
+
+  group "gateway" {
+    count = 1
+
+    # A slow Postgres start (first-boot initdb) can outlast the migration's first
+    # try; restart the task a few times rather than failing the deploy.
+    restart {
+      attempts = 5
+      interval = "5m"
+      delay    = "15s"
+      mode     = "delay"
+    }
+
+    network {
+      port "http" {
+        static = ${port}
+        to     = ${port}
+      }
+    }
+
+    task "gateway" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = true
+        ports      = ["http"]
+        args       = ["--config", "/local/config.yaml", "--host", "0.0.0.0", "--port", "${port}"]
+      }
+
+      # WIF: exchange the Nomad task JWT for a short Vault token that may read ONLY
+      # the gateway secret path (the infra-llm-gateway role/policy).
+      vault {
+        role = "${wif_role}"
+      }
+
+      # Secrets from Vault -> task env. env=true sources the rendered KEY=VALUE file
+      # as environment; change_mode=restart so a secret rotation restarts the gateway.
+      # KV v2 ⇒ the read path is /data/-prefixed and values are under .Data.data.*.
+      # DATABASE_URL embeds the Vault-held Postgres password (so it is not in the
+      # jobspec); the config.yaml references the rest via os.environ/.
+      template {
+        destination = "secrets/gateway.env"
+        env         = true
+        change_mode = "restart"
+        data        = <<EOH
+{{ with secret "${kv_path}" }}
+LITELLM_MASTER_KEY={{ .Data.data.master_key }}
+LITELLM_SALT_KEY={{ .Data.data.salt_key }}
+DEEPSEEK_API_KEY={{ .Data.data.deepseek_api_key }}
+DATABASE_URL=postgresql://litellm:{{ .Data.data.pg_password }}@${db_host}/litellm
+{{ end }}
+EOH
+      }
+
+      # The proxy config. No secrets (everything is os.environ/), so it is static
+      # data. model_list maps the names Claude Code asks for (the managed-settings
+      # model slots) to the real backend — swap DeepSeek for watsonx.ai here later.
+      # store_prompts_in_spend_logs keeps prompt/response content in the DB for audit.
+      template {
+        destination = "local/config.yaml"
+        change_mode = "restart"
+        data        = <<EOH
+model_list:
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: deepseek/deepseek-chat   # confirm the real id on the DeepSeek dashboard
+      api_key: os.environ/DEEPSEEK_API_KEY
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: deepseek/deepseek-chat   # point at a cheaper/faster id when available
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+litellm_settings:
+  drop_params: true   # drop Anthropic params DeepSeek does not accept (vs erroring)
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_prompts_in_spend_logs: true   # audit: retain prompt/response in spend logs
+EOH
+      }
+
+      service {
+        name     = "llm-gateway"
+        provider = "nomad"
+        port     = "http"
+        check {
+          type     = "http"
+          path     = "/health/liveliness"
+          interval = "10s"
+          timeout  = "2s"
+        }
+      }
+
+      resources {
+        cpu    = 1000
+        memory = 2048
+      }
+    }
+  }
+}

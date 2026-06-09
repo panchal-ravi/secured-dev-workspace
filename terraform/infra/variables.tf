@@ -113,3 +113,30 @@ variable "mcp_gateway_image" {
   type        = string
   default     = "ghcr.io/ibm/mcp-context-forge:latest"
 }
+
+# --- LiteLLM AI Gateway (see llm-gateway.tf) ---
+
+variable "litellm_image" {
+  description = "LiteLLM proxy container image. The `-database` variant runs the Prisma DB migrations on start (needed for virtual keys + spend logs). Pin a concrete release tag at apply rather than relying on :main-stable."
+  type        = string
+  default     = "ghcr.io/berriai/litellm-database:main-stable"
+}
+
+variable "litellm_postgres_image" {
+  description = "Postgres image backing the LiteLLM proxy (virtual keys, budgets, spend/audit logs)."
+  type        = string
+  default     = "postgres:16-alpine"
+}
+
+variable "deepseek_api_key" {
+  description = <<-EOT
+    The ONE central DeepSeek API key the LiteLLM gateway uses to reach DeepSeek.
+    Stored only in Vault KV (infra/llm-gateway), read by the gateway job over WIF —
+    it never reaches a workspace (workspaces get a per-project LiteLLM virtual key
+    instead). Moving the provider key here (from the old per-project project tier)
+    is the point: swapping to watsonx.ai later is a one-line model_list change.
+    Supply via the gitignored infra tfvars (never commit).
+  EOT
+  type        = string
+  sensitive   = true
+}

@@ -59,7 +59,7 @@ tls {
   verify_https_client    = false
 }
 
-# Nomad↔Vault WIF: tasks placed on this client render their secrets (deepseek key,
+# Nomad↔Vault WIF: tasks placed on this client render their secrets (LLM virtual key,
 # db-uri, git PAT) by exchanging a workload-identity JWT at the main node's Vault.
 # Vault is on the all-in-one node; reach it over the VPC at its private IP. Its
 # cert SANs are localhost/127.0.0.1/NLB-DNS (not this private IP), so skip verify.

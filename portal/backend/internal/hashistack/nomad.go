@@ -1,6 +1,7 @@
 package hashistack
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -16,16 +17,24 @@ type Nomad struct {
 	c *napi.Client
 }
 
-func NewNomad(addr, token string) (*Nomad, error) {
+func NewNomad(addr, token string, tls TLSOptions) (*Nomad, error) {
 	cfg := napi.DefaultConfig()
 	cfg.Address = addr
 	cfg.SecretID = token
-	cfg.TLSConfig = &napi.TLSConfig{Insecure: true}
+	cfg.TLSConfig = &napi.TLSConfig{CACert: tls.CACertPath, Insecure: tls.SkipVerify}
 	c, err := napi.NewClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("nomad: new client: %w", err)
 	}
 	return &Nomad{c: c}, nil
+}
+
+// Ping checks Nomad is reachable (leader lookup), for readiness.
+func (n *Nomad) Ping(ctx context.Context) error {
+	if _, err := n.c.Status().Leader(); err != nil {
+		return fmt.Errorf("nomad: leader: %w", err)
+	}
+	return nil
 }
 
 // CreateHostVolume creates the persistent /home/dev dynamic host volume (mkdir
@@ -58,11 +67,43 @@ func (n *Nomad) CreateHostVolume(namespace, name, nodePool string) error {
 			AttachmentMode: napi.HostVolumeAttachmentModeFilesystem,
 		}},
 	}
-	_, _, err = n.c.HostVolumes().Create(&napi.HostVolumeCreateRequest{Volume: vol}, &napi.WriteOptions{Namespace: namespace})
+	resp, _, err := n.c.HostVolumes().Create(&napi.HostVolumeCreateRequest{Volume: vol}, &napi.WriteOptions{Namespace: namespace})
 	if err != nil {
 		return fmt.Errorf("nomad: create host volume %q: %w", name, err)
 	}
+	// Create returns as soon as the request is accepted; the mkdir plugin then
+	// materializes the volume on the node asynchronously (pending -> ready). The
+	// scheduler excludes the node while the volume is pending, so a job registered
+	// in that window fails placement with "missing compatible host volumes" and
+	// lands in a blocked eval that a later volume-ready transition does not
+	// reliably re-trigger. Wait for ready here so the caller registers the job
+	// only once placement can actually succeed.
+	if err := n.waitHostVolumeReady(resp.Volume.ID, name, namespace); err != nil {
+		return err
+	}
 	return nil
+}
+
+// waitHostVolumeReady polls a dynamic host volume until it reports ready, so the
+// workspace job is registered only after the volume can satisfy placement.
+// Bounded: a stuck/misconfigured plugin surfaces a clear error instead of hanging.
+func (n *Nomad) waitHostVolumeReady(id, name, namespace string) error {
+	qo := &napi.QueryOptions{Namespace: namespace}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		vol, _, err := n.c.HostVolumes().Get(id, qo)
+		if err != nil {
+			return fmt.Errorf("nomad: get host volume %q: %w", name, err)
+		}
+		switch vol.State {
+		case napi.HostVolumeStateReady:
+			return nil
+		case napi.HostVolumeStateUnavailable:
+			return fmt.Errorf("nomad: host volume %q is unavailable", name)
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("nomad: host volume %q not ready after 30s", name)
 }
 
 // readyNodeInPool returns the ID of a ready, eligible, non-draining client node

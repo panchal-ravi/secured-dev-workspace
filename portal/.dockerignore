@@ -1,0 +1,12 @@
+# Keep secrets and build artifacts out of the image build context.
+.git
+**/.git
+*.env
+**/.env
+frontend/node_modules
+backend/web
+backend/portal
+backend/helper-dist
+helper
+scripts
+*.md

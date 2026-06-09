@@ -145,7 +145,7 @@ resource "vault_jwt_auth_backend_role" "project" {
   bound_audiences         = ["vault.io"]
   user_claim              = "/nomad_job_id"
   user_claim_json_pointer = true
-  token_policies          = [vault_policy.nomad_ca_read.name, vault_policy.nomad_github_token.name, vault_policy.nomad_db_creds.name, vault_policy.nomad_deepseek_key.name, vault_policy.nomad_mcp_read.name]
+  token_policies          = [vault_policy.nomad_ca_read.name, vault_policy.nomad_github_token.name, vault_policy.nomad_db_creds.name, vault_policy.nomad_llm_read.name, vault_policy.nomad_mcp_read.name]
   token_ttl               = 1800
   token_max_ttl           = 3600
   token_type              = "service"

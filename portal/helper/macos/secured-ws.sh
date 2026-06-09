@@ -74,7 +74,7 @@ write_ssh_config() {
 Host ${host}
     HostName ${host}
     User ${user}
-    ProxyCommand sh -c "PATH=/usr/local/bin:/opt/homebrew/bin:\$PATH BOUNDARY_ADDR=${addr} boundary connect -target-id ${target} -tls-insecure -exec nc -- {{boundary.ip}} {{boundary.port}}"
+    ProxyCommand sh -c "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin BOUNDARY_ADDR=${addr} boundary connect -target-id ${target} -tls-insecure -exec nc -- {{boundary.ip}} {{boundary.port}}"
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
     ControlMaster auto

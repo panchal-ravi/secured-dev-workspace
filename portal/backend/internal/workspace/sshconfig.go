@@ -7,16 +7,20 @@ import "fmt"
 // daemon and no DNS interception (better throughput). Boundary's worker injects
 // the Vault-signed cert, so there is deliberately no IdentityFile.
 //
-// The ProxyCommand prepends the usual Boundary install dirs to PATH because
-// VSCode Remote-SSH (launched from the macOS Dock) spawns ssh with the launchd
-// default PATH (/usr/bin:/bin:/usr/sbin:/sbin), which omits /usr/local/bin and
-// /opt/homebrew/bin — so a bare `boundary` would be "command not found" and the
-// connection would fail even though it works from a terminal shell.
+// The ProxyCommand sets a fixed PATH containing the usual Boundary install dirs
+// plus the base system dirs (for `nc`), because VSCode Remote-SSH (launched from
+// the macOS Dock) spawns ssh with the launchd default PATH, which omits
+// /usr/local/bin and /opt/homebrew/bin — so a bare `boundary` would be "command
+// not found". We deliberately do NOT append the inherited $PATH: ssh runs the
+// ProxyCommand through /bin/sh, which expands $PATH and re-parses it inside the
+// inner `sh -c`, so a PATH entry containing a space (e.g. ".../VMware Fusion.app/...")
+// splits the line and the proxy dies with "File name too long". A fixed,
+// space-free PATH that locates `boundary` + `nc` is all this command needs.
 func ProxyCommandConfig(hostLabel, user, boundaryAddr, targetID string) string {
 	return fmt.Sprintf(`Host %[1]s
     HostName %[1]s
     User %[2]s
-    ProxyCommand sh -c "PATH=/usr/local/bin:/opt/homebrew/bin:$PATH BOUNDARY_ADDR=%[3]s boundary connect -target-id %[4]s -tls-insecure -exec nc -- {{boundary.ip}} {{boundary.port}}"
+    ProxyCommand sh -c "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin BOUNDARY_ADDR=%[3]s boundary connect -target-id %[4]s -tls-insecure -exec nc -- {{boundary.ip}} {{boundary.port}}"
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
     ControlMaster auto
