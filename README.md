@@ -12,10 +12,9 @@ internet.
 
 ## The product in 90 seconds
 
-<!-- To embed the animated short: edit this README in the GitHub web editor and
-     drag demo/animated-short/short/out/short.mp4 onto the line below — GitHub
-     uploads it as a user-attachment and inserts an inline video player.
-     (Re-render locally with: cd demo/animated-short/short && node record.mjs) -->
+<!-- Video below is a user-attachment of demo/animated-short/short/out/short.mp4.
+     Re-render with: cd demo/animated-short/short && node record.mjs — then replace
+     the attachment by dragging the new mp4 onto this line in the GitHub web editor. -->
 
 https://github.ibm.com/user-attachments/assets/966aff49-3582-4dbe-bbde-00cc033a44f9
 
