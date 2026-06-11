@@ -17,6 +17,8 @@ internet.
      uploads it as a user-attachment and inserts an inline video player.
      (Re-render locally with: cd demo/animated-short/short && node record.mjs) -->
 
+https://github.ibm.com/user-attachments/assets/966aff49-3582-4dbe-bbde-00cc033a44f9
+
 ## Why it's more secure
 
 **Your source code never lives on a laptop.**
