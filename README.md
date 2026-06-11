@@ -14,8 +14,9 @@ internet.
 
 <!-- The video is a user-attachment of demo/animated-short/short/out/short.mp4.
      Re-render with: cd demo/animated-short/short && node record.mjs — then drag the
-     new mp4 into the GitHub web editor to upload it, and put the generated URL into
-     the video tag's src (a bare URL would show the filename above the player). -->
+     new mp4 into the GitHub web editor and put the generated URL into the video tag's
+     src. GitHub always shows the uploaded file's name in a header above the player
+     (not removable), so give the file a presentable name before uploading. -->
 
 <video src="https://github.ibm.com/user-attachments/assets/966aff49-3582-4dbe-bbde-00cc033a44f9" controls></video>
 
@@ -108,8 +109,11 @@ the workspace's AI assistant can reach — all tied to your company's single sig
 ## How a developer uses it
 
 1. Sign in with your normal company login (single sign-on).
-2. Open your workspace directly from your IDE (for example, VS Code).
-3. Start coding. Your project is already there, the tools are installed, git is set up
+2. Create your workspace from the self-service portal — pick the ready-made template
+   that fits the job: standard, GPU-backed for heavier workloads, or microVM for
+   hardware-grade isolation.
+3. Open your workspace directly from your IDE (for example, VS Code).
+4. Start coding. Your project is already there, the tools are installed, git is set up
    as you, and the AI coding assistant is ready — connected to your project's
    approved tools and data. Your work is saved between sessions; commit and push as you
    normally would.
