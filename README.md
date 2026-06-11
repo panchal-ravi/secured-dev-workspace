@@ -105,8 +105,10 @@ Workspaces can be set up by the platform team — and, increasingly, by develope
 themselves. A **self-service developer portal** (currently a working preview) lets
 developers request, start, stop, and manage their own secured workspaces from a simple
 web interface, choosing from ready-made workspace types — including **GPU-backed** ones for
-heavier workloads — with no need to understand or run any of the underlying infrastructure
-tooling. The same security guarantees above apply automatically, whichever path is used.
+heavier workloads and **microVM-isolated** ones that run the AI agent's code behind a
+hardware-virtualization boundary — with no need to understand or run any of the underlying
+infrastructure tooling. The same security guarantees above apply automatically, whichever
+path is used.
 
 What's next: maturing the portal, durable storage so a workspace survives a full machine
-replacement, and stronger per-workspace isolation.
+replacement, and making the hardware-isolated workspace the default.

@@ -18,8 +18,9 @@ developers_group_name = "project-acme-developers"
 # git repo (cloned into the workspace), picker label/description, and optional Nomad
 # node_pool. The map KEY must match a templates/<name>.nomad.hcl file. Only listed
 # templates are published, so this map is opt-in per project.
-#   - node_pool = ""    -> default pool (the all-in-one node); standard CPU workspace
-#   - node_pool = "gpu" -> the NVIDIA T4 GPU worker node (gpu-workspace template)
+#   - node_pool = ""        -> default pool (the all-in-one node); standard CPU workspace
+#   - node_pool = "gpu"     -> the NVIDIA T4 GPU worker node (gpu-workspace template)
+#   - node_pool = "microvm" -> the bare-metal Kata microVM worker node (microvm-workspace template)
 workspace_templates = {
   "dev-workspace" = {
     image        = "panchalravi/dev-workspace:poc"
@@ -33,6 +34,16 @@ workspace_templates = {
     label        = "GPU Workspace (NVIDIA T4)"
     description  = "Everything in the standard workspace plus a CUDA toolchain on an NVIDIA T4 GPU."
     node_pool    = "gpu"
+  }
+  # Hardened microVM flavor: the SAME image as dev-workspace, but each container runs
+  # inside a Kata Containers microVM (own guest kernel, KVM boundary) on a dedicated
+  # bare-metal node. Requires enable_microvm_node = true in the infra tier.
+  "microvm-workspace" = {
+    image        = "panchalravi/dev-workspace:poc"
+    git_repo_url = "https://github.com/<org>/<repo>"
+    label        = "Hardened Workspace (microVM)"
+    description  = "Everything in the standard workspace, isolated in a Kata microVM (separate guest kernel) on a bare-metal node."
+    node_pool    = "microvm"
   }
 }
 

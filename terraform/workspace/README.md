@@ -14,13 +14,13 @@ What each instance creates:
 
 SSH auth is **JIT Vault-signed certificates injected by Boundary** — the developer holds **no SSH key**. The workspace `sshd` trusts only the project's Vault SSH CA (`TrustedUserCAKeys` + `AuthorizedKeysFile none`); on each session Boundary signs a short-lived (5m) ed25519 cert via the **project's** credential library and injects it. The CA public key reaches the container over Nomad↔Vault workload identity. Identity is the existing **IBM Verify OIDC** login — no password accounts; the `/token/email` claim is also stamped as the cert `key_id` for audit.
 
-> **Scope (PoC):** single all-in-one node + an optional GPU worker; Docker isolation. **Private-repo clone/push via Vault-minted GitHub App tokens is implemented** (the project must have a GitHub App configured — see `terraform/project`). The **Developer Portal** (`portal/`) is a working PoC that provisions the same workspaces over the HashiStack APIs directly — this Terraform tier and the portal are two paths to the **same** Vault-KV job templates. Durable storage (CSI/EBS), multi-node, and microVM isolation remain roadmap.
+> **Scope (PoC):** single all-in-one node + an optional GPU worker + an optional bare-metal **microVM worker** (Kata Containers — hardware isolation for the `microvm-workspace` flavor). Standard and GPU flavors use Docker isolation; the microVM flavor adds a KVM boundary. **Private-repo clone/push via Vault-minted GitHub App tokens is implemented** (the project must have a GitHub App configured — see `terraform/project`). The **Developer Portal** (`portal/`) is a working PoC that provisions the same workspaces over the HashiStack APIs directly — this Terraform tier and the portal are two paths to the **same** Vault-KV job templates. Durable storage (CSI/EBS) and multi-node remain roadmap.
 
 ## Prerequisites
 
 1. **Foundation applied and running** (`terraform/infra/`) and **Vault unsealed** — the workspace `sshd` trusts the Vault SSH CA and Boundary signs each session's cert through Vault, so a sealed Vault breaks login. Re-unseal after a reboot (see `terraform/infra/README.md`).
 2. **The project applied** (`terraform/project/`) under a Terraform workspace **named after the project**, e.g. `project-acme`. That tier creates the Boundary project scope, the Nomad namespace, the per-project Vault SSH CA + signing role, the shared Boundary credential library, the WIF role, the **GitHub App token broker** (the git push credential source), and writes the project's **job templates (flavors) + their pinned images to Vault KV**. This tier reads that project's state at `../project/terraform.tfstate.d/<project_name>/terraform.tfstate`.
-3. **A workspace flavor published by the project.** The project tier **owns each flavor's image AND git repo**: every job template ("flavor") is built and pushed by the project team and pinned — in `workspace_templates` — to its image, its git repo, and an optional `node_pool` (the build steps live in `terraform/project/README.md`). The developer just picks a flavor via `job_template_name` (default `dev-workspace`) — **there is no image or repo to set here**, so every workspace in the project runs the project-blessed toolchain against the flavor's repo. A flavor with `node_pool = "gpu"` (e.g. `gpu-workspace`) is placed on the GPU node automatically (see [GPU flavor](#gpu-flavor) below).
+3. **A workspace flavor published by the project.** The project tier **owns each flavor's image AND git repo**: every job template ("flavor") is built and pushed by the project team and pinned — in `workspace_templates` — to its image, its git repo, and an optional `node_pool` (the build steps live in `terraform/project/README.md`). The developer just picks a flavor via `job_template_name` (default `dev-workspace`) — **there is no image or repo to set here**, so every workspace in the project runs the project-blessed toolchain against the flavor's repo. A flavor with `node_pool = "gpu"` (e.g. `gpu-workspace`) is placed on the GPU node automatically (see [GPU flavor](#gpu-flavor) below); a flavor with `node_pool = "microvm"` (e.g. `microvm-workspace`) is placed on the bare-metal Kata-microVM node automatically (see [microVM flavor](#microvm-flavor) below).
 4. **An IBM Verify developer** whose `email` claim matches `developer_email`, able to log in through the existing Boundary OIDC method.
 
 ## Apply (one Terraform workspace per developer-workspace)
@@ -45,7 +45,7 @@ ssh_port         = 2222                   # DISTINCT static host port per worksp
 
 There is **no `git_repo_url` or `image`** here — both are pinned to the chosen flavor by the project tier (`workspace_templates`), so the developer tier renders only the per-workspace placeholders (`job_name`, `ssh_port`, `volume_name`, `developer_email`, `git_user_name`) — the **same set the Developer Portal fills**, from the **same** published template.
 
-Connection inputs are **not** here either — `providers.tf` reads `nomad_addr`, `boundary_addr`, `vault_addr`, the admin/management/root credentials, `boundary_oidc_auth_method_id`, and both node IPs (`instance_private_ip` + `gpu_instance_private_ip`) from the foundation state, and the project scope, namespace, credential library, WIF role, SSH CA path, and the per-flavor `job_template_node_pools` map from the project state.
+Connection inputs are **not** here either — `providers.tf` reads `nomad_addr`, `boundary_addr`, `vault_addr`, the admin/management/root credentials, `boundary_oidc_auth_method_id`, and the node IPs (`instance_private_ip` + `gpu_instance_private_ip` + `microvm_instance_private_ip`) from the foundation state, and the project scope, namespace, credential library, WIF role, SSH CA path, and the per-flavor `job_template_node_pools` map from the project state.
 
 > **Apply order:** foundation → project (its workspace) → here. Each new developer-workspace is `terraform workspace new <handle>-<name>` + `apply -var-file=<handle>-<name>.tfvars`.
 
@@ -125,6 +125,23 @@ Verify inside the workspace, over the same Boundary SSH path:
 nvidia-smi                              # the T4 is visible
 cd ~/project && make && ./vectorAdd     # bundled CUDA sample -> "Test PASSED"
 ```
+
+## microVM flavor
+
+A project can publish a hardware-isolated flavor (`microvm-workspace`) whose `workspace_templates` entry sets `node_pool = "microvm"`. It runs the **same `dev-workspace` image** (no CUDA, no separate build) but inside a **Kata Containers microVM** — its own guest kernel behind a KVM boundary — for running untrusted AI-agent code with stronger isolation than shared-kernel containers. Selecting it here is a single line:
+
+```hcl
+job_template_name = "microvm-workspace"
+```
+
+Nothing else changes. The developer tier reads the flavor's pool from the project state (`job_template_node_pools`) and automatically (1) pins the `/home/dev` dynamic host volume to the `microvm` pool and (2) points the Boundary host at the **microVM node's** private IP (`microvm_instance_private_ip`, from the foundation state) — so the workspace lands on the `c5.metal` Kata node. The full credential stack (JIT SSH cert, Vault-minted GitHub App token, remote MCP, governed LLM, tmpfs secrets) is byte-identical to `dev-workspace`; only the runtime boundary is upgraded. The microVM node is a Nomad **client in the `microvm` node pool** provisioned by the platform tier — see [`../infra/README.md`](../infra/README.md#microvm-worker-node).
+
+Verify inside the workspace, over the same Boundary SSH path — the proof is that the workspace runs a **different kernel than the host node** (a microVM, not a shared-kernel container):
+```bash
+uname -r                      # the Kata guest kernel (e.g. 6.1.62) — NOT the host node's kernel
+mount | grep /home/dev        # 'virtiofs' — the home volume is shared into the guest over virtio-fs
+```
+If `uname -r` matched the host node's kernel, the task would have fallen back to `runc` (shared kernel) — a distinct guest kernel can only happen inside the Kata microVM. Everything else (`git push`, remote `demo-db` MCP, the governed LLM gateway) works exactly as in the standard flavor.
 
 ## VSCode Remote-SSH via transparent sessions
 

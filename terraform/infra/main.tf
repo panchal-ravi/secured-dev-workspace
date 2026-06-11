@@ -7,8 +7,13 @@ module "secured_codespace" {
   enable_gpu_node      = var.enable_gpu_node
   gpu_instance_type    = var.gpu_instance_type
   gpu_root_volume_size = var.gpu_root_volume_size
-  boundary_version     = var.boundary_version
-  boundary_license     = file("${path.root}/config/boundary_license.hclic")
+
+  enable_microvm_node      = var.enable_microvm_node
+  microvm_instance_type    = var.microvm_instance_type
+  microvm_root_volume_size = var.microvm_root_volume_size
+
+  boundary_version = var.boundary_version
+  boundary_license = file("${path.root}/config/boundary_license.hclic")
 
   nomad_version = var.nomad_version
   nomad_license = file("${path.root}/config/nomad_license.hclic")

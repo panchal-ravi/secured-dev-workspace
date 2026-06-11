@@ -24,6 +24,7 @@ The architecture is organized around a small set of security properties. Each co
 - **No code or credentials on the laptop.** The source tree, the build toolchain, and the AI coding tools all live in a central container. A lost or compromised laptop carries no repo and no long-lived secret.
 - **Tenant isolation by construction.** Each project gets its own **Vault path** (`ssh/<project>`, or optionally a dedicated **Vault namespace**), its own **Boundary project scope**, and its own **Nomad namespace**. Cross-project access is structurally impossible, not just policy-gated.
 - **Defense in depth.** A namespace-scoped Nomad ACL policy + binding rule backstops the design even though developers never receive a Nomad token.
+- **Hardware-isolated workspaces for untrusted agent code.** Beyond shared-kernel container namespaces, a workspace flavor can run inside a **Kata Containers microVM** — its own guest kernel behind a hardware-virtualization (KVM) boundary — on a dedicated bare-metal Nomad node pool (`microvm`). The same OCI image and the entire credential stack are reused unchanged; isolation is added strictly at the runtime layer, so a kernel or container escape from AI-agent code is contained by the VM boundary, not just by Linux namespaces.
 
 **Centralized AI egress — tools, data, and models**
 
@@ -39,9 +40,11 @@ IBM Verify (SSO)
 Developer client (VSCode Remote-SSH · ssh · JetBrains)
       │  Boundary transparent session  (Client Agent / boundary connect ssh)
       ▼
-Boundary worker proxy ──────────────► Dev workspace (Nomad job, Docker container)
-      │  injects short-lived Vault-signed cert   sshd trusts only the Vault SSH CA
-      ▼                                          /home/dev on a persistent host volume
+Boundary worker proxy ──────────────► Dev workspace (Nomad job)
+      │  injects short-lived Vault-signed cert   Docker container, or a Kata microVM
+      ▼                                          (own guest kernel) for isolated agent code
+                                                 sshd trusts only the Vault SSH CA
+                                                 /home/dev on a persistent host volume
 Vault  ── signs SSH cert per session (key_id = developer email)
        ── SSH CA per project (ssh/<project>), reached by Nomad over WIF
 ```
@@ -68,7 +71,7 @@ Each product in the stack owns one part of the security model:
 
 - **Vault — central credential authority & secrets store.** Far more than a certificate authority — Vault mints every short-lived credential and holds the platform's secrets. As the **SSH certificate authority** it signs a fresh, short-lived, per-session SSH certificate (`key_id` = developer email, for audit) from a per-project CA (`ssh/<project>`), so credentials never cross project boundaries. As the **git push credential authority** the external GitHub secrets plugin mints short-lived GitHub App installation tokens from a per-project, pre-scoped permission set, so no static PAT is stored anywhere and the App private key never leaves Vault. It also issues **dynamic, auto-rotating database credentials** (a per-project read-only Postgres role — no static password), and its **KV store** holds each project's job templates and the gateway's scoped MCP token (`secret/projects/<project>/…`). Nomad reaches Vault over **workload-identity federation** (no static token) for these; Boundary's credential store uses a dedicated least-privilege periodic token rather than the root token.
 
-- **Nomad — workload scheduler / isolation boundary.** Runs each developer workspace as a managed container with a persistent host volume (work survives stop/start + reboot), and partitions tenants by **namespace** (one per project) backstopped by a namespace-scoped ACL. It pulls each project's CA public key from Vault at launch via workload identity, so the trust chain is established without embedding secrets. The same model maps directly onto **Kubernetes** — namespaces, scheduled pods, and persistent volumes — wherever that is the house scheduler.
+- **Nomad — workload scheduler / isolation boundary.** Runs each developer workspace as a managed container with a persistent host volume (work survives stop/start + reboot), and partitions tenants by **namespace** (one per project) backstopped by a namespace-scoped ACL. It also partitions hardware by **node pool** — a `default` (standard), an optional `gpu`, and an optional bare-metal `microvm` pool — so a flavor lands on the right node (a GPU box, or a Kata-microVM box for hardware-isolated agent code) by opting into a pool, and other jobs can't drift onto it. It pulls each project's CA public key from Vault at launch via workload identity, so the trust chain is established without embedding secrets. The same model maps directly onto **Kubernetes** — namespaces, scheduled pods, and persistent volumes — wherever that is the house scheduler.
 
 - **IBM Verify — identity provider.** The SSO source of truth. Both Boundary and Nomad trust it via OIDC; per-developer authorization is derived from the `/token/email` claim (also the certificate `key_id`), so access is always bound to a named person. Any OIDC-compliant IdP can stand in its place — the design relies only on standard OIDC claims, not on a specific vendor.
 
@@ -116,16 +119,16 @@ The architecture composes **cumulatively** across three layers — a platform fo
 
 ### Platform Admin — foundation
 
-The foundation provides identity, the HashiStack security authorities, a Nomad cluster of standard and GPU worker nodes, and the centralized **AI gateways** (MCP + LLM). IBM Verify is the identity provider both Boundary and Nomad trust; Boundary is the single, identity-aware entry to every workspace; Vault is the authority for all just-in-time credentials; and the gateways are the one policy point governing which MCP servers, tools, and LLMs any workload may reach.
+The foundation provides identity, the HashiStack security authorities, a Nomad cluster of standard, GPU, and microVM worker nodes, and the centralized **AI gateways** (MCP + LLM). IBM Verify is the identity provider both Boundary and Nomad trust; Boundary is the single, identity-aware entry to every workspace; Vault is the authority for all just-in-time credentials; and the gateways are the one policy point governing which MCP servers, tools, and LLMs any workload may reach.
 
-![Logical foundation: IBM Verify, Boundary, Vault, the AI / MCP and AI / LLM gateways, and a Nomad cluster of standard and GPU worker nodes](diagrams/01-platform-admin.png)
+![Logical foundation: IBM Verify, Boundary, Vault, the AI / MCP and AI / LLM gateways, and a Nomad cluster of standard, GPU, and microVM worker nodes](diagrams/01-platform-admin.png)
 
 | Component | Role in the security model |
 |---|---|
 | **IBM Verify (SaaS)** | OIDC/SSO identity provider that both Boundary and Nomad trust; every access is bound to a named person (the `/token/email` claim). |
 | **Boundary** | Identity-aware access broker — the org scope + OIDC auth method; brokers each workspace session and injects its credential, so no workspace is directly network-reachable. |
 | **Vault** | Central credential authority & secrets store — the `secret/` KV mount and the `jwt-nomad` workload-identity auth method; mints every short-lived credential for SSH, database, Git, and MCP access. |
-| **Nomad cluster** | Workload scheduler and isolation boundary — standard and `gpu` node pools that run every workload, including the gateway itself. |
+| **Nomad cluster** | Workload scheduler and isolation boundary — `default` (standard), `gpu`, and bare-metal `microvm` node pools that run every workload, including the gateway itself; the `microvm` pool runs workspaces inside Kata Containers microVMs for hardware-level isolation. |
 | **AI / MCP Gateway (ContextForge)** | The centralized MCP policy point (Nomad job, namespace `infra`) — governs which MCP servers and tools a workspace may reach. |
 | **AI / LLM Gateway (LiteLLM)** | The centralized model-egress policy point (Nomad job + Postgres, namespace `infra`) — holds the one central provider key, issues per-project virtual keys (model scope + budget + rate limit), and audits every prompt/response. |
 | **Workload identity** | Nomad reaches Vault over workload-identity federation, so no static tokens are baked into jobs. |
@@ -212,6 +215,7 @@ The developer provisions their own workspace from a selected project flavor. The
 | What the developer chooses | A project flavor card | `job_template_name` (default `dev-workspace`) |
 | Image & repo | Pinned by the project — nothing to set | Pinned by the project — nothing to set |
 | GPU flavor | Lands on a GPU node automatically | Lands on a GPU node automatically |
+| microVM flavor | Lands on a bare-metal Kata-microVM node automatically | Lands on a bare-metal Kata-microVM node automatically |
 | Produces | Workspace container + Boundary target/alias + per-developer managed group/role | The same resources |
 
 For the **self-service path**, see [Developer Portal](#developer-portal). For the **operator path**, full instructions and verification gates are in [`terraform/workspace/README.md`](terraform/workspace/README.md):
@@ -243,7 +247,7 @@ The negative-isolation gate (a second developer is **denied** the first's target
 Developers don't run Terraform to get a workspace — they use the **Developer Portal** (`portal/`), a self-service web app that provisions a workspace in a few clicks. It is the everyday developer interface, producing the same per-workspace result as the `terraform/workspace` tier.
 
 - **Sign in.** The developer authenticates with **IBM Verify SSO** and sees only the projects they are entitled to — nothing they cannot access.
-- **Pick a flavor.** Each project offers one or more **flavor cards** (a label, description, and capability tags); the developer picks one and creates the workspace. The repository and image are pinned by the project, so there is nothing to configure — no image, no repo, no Terraform. A GPU flavor lands on a GPU node automatically.
+- **Pick a flavor.** Each project offers one or more **flavor cards** (a label, description, and capability tags); the developer picks one and creates the workspace. The repository and image are pinned by the project, so there is nothing to configure — no image, no repo, no Terraform. A GPU flavor lands on a GPU node automatically; a microVM flavor lands on a hardware-isolated bare-metal Kata-microVM node automatically.
 - **Connect.** Each workspace card carries copy-paste **VSCode Remote-SSH** instructions; a small local helper runs the Boundary login and manages the SSH config entry for you.
 
 ## Teardown (destroy the environment)
@@ -297,13 +301,14 @@ Once a tier's resources are gone, the now-empty per-instance state can be droppe
 │   │   │               #   GitHub secrets-plugin registration (vault-github-plugin.tf), and the
 │   │   │               #   AI gateways: mcp-gateway.tf (ContextForge MCP) · llm-gateway.tf (LiteLLM + Postgres)
 │   │   ├── ami/        # Packer images: base_image (Boundary/Nomad/Vault/Consul +ent + baked
-│   │   │               #   GitHub plugin) and gpu_image (NVIDIA driver + toolkit + device plugin)
+│   │   │               #   GitHub plugin), gpu_image (NVIDIA driver + toolkit + device plugin),
+│   │   │               #   and microvm_image (Kata Containers + pinned Docker 27.5.1, KVM gates)
 │   │   ├── config/     # cluster HCL, systemd units, licenses
-│   │   └── modules/    # secured-codespace (+ GPU worker, node_pool "gpu") · identity · nomad-vault-wif
+│   │   └── modules/    # secured-codespace (+ GPU worker "gpu" + microVM worker "microvm") · identity · nomad-vault-wif
 │   ├── project/        # PROJECT tier (per project) — FLAT root (no child module);
 │   │   │               #   github.tf = per-project GitHub App token broker
-│   │   ├── templates/  #   Nomad job templates (raw HCL → Vault KV) — dev-workspace, gpu-workspace
-│   │   └── images/     #   Dockerfile per flavor: dev-workspace/ + gpu-workspace/ (CUDA)
+│   │   ├── templates/  #   Nomad job templates (raw HCL → Vault KV) — dev-workspace, gpu-workspace, microvm-workspace
+│   │   └── images/     #   Dockerfile per flavor: dev-workspace/ + gpu-workspace/ (CUDA) — microVM reuses the dev-workspace image
 │   └── workspace/      # DEVELOPER tier (per workspace) — FLAT root (no child module)
 └── portal/             # DEVELOPER PORTAL — self-service web app (direct-API equivalent of terraform/workspace)
     ├── backend/        #   Go: cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api}; serves the SPA from web/

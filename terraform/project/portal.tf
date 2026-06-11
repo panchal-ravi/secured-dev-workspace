@@ -56,6 +56,28 @@ locals {
         description = "git is pre-configured with your identity and a short-lived GitHub App token as the push credential — no static PAT anywhere."
       },
     ]
+    "microvm-workspace" = [
+      {
+        key         = "kata-microvm-isolation"
+        label       = "Hardware-isolated microVM"
+        description = "Runs inside a Kata Containers microVM with its own guest kernel on a dedicated bare-metal node — a hardware-virtualization (KVM) boundary around AI-agent code, not just shared-kernel namespaces."
+      },
+      {
+        key         = "claude-deepseek"
+        label       = "Claude Code CLI (governed model)"
+        description = "Pre-configured AI coding assistant. The API key is injected per session from Vault and never lands on the persistent home volume."
+      },
+      {
+        key         = "db-mcp-readonly"
+        label       = "Database MCP (read-only)"
+        description = "A read-only Postgres MCP server, federated through the central ContextForge MCP gateway as this project's virtual MCP server. Backed by a Vault-dynamic, read-only database credential."
+      },
+      {
+        key         = "git-dynamic-pat"
+        label       = "Git push (dynamic PAT)"
+        description = "git is pre-configured with your identity and a short-lived GitHub App token as the push credential — no static PAT anywhere."
+      },
+    ]
   }
 
   # The descriptor carries what the portal needs that is NOT a Vault-secret layout:

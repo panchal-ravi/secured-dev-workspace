@@ -52,6 +52,24 @@ variable "gpu_root_volume_size" {
   default     = 60
 }
 
+variable "enable_microvm_node" {
+  description = "Provision the Kata microVM Nomad client EC2 (bare metal). Off by default — metal instances are costly, so opt in only when hardware-isolated microVM workspaces are needed."
+  type        = bool
+  default     = false
+}
+
+variable "microvm_instance_type" {
+  description = "EC2 instance type for the microVM Nomad client node. MUST be bare metal (e.g. c5.metal) — Kata needs /dev/kvm, which Nitro guests do not expose."
+  type        = string
+  default     = "c5.metal"
+}
+
+variable "microvm_root_volume_size" {
+  description = "Root EBS volume size (GiB) for the microVM node — room for the Kata guest kernel/rootfs + images"
+  type        = number
+  default     = 60
+}
+
 variable "boundary_version" {
   description = "Boundary Enterprise version baked into the AMI (informational; must end with +ent)"
   type        = string

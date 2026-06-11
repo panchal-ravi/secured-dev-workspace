@@ -254,14 +254,14 @@ resource "aws_security_group" "instance" {
     security_groups = [aws_security_group.nlb.id]
   }
 
-  # --- Intra-SG rules so the GPU worker node (same SG) can reach the main node ---
+  # --- Intra-SG rules so worker nodes (same SG) can reach the main node ---
   # On the all-in-one node every component is co-located, so dev-workspace talks to
   # Vault/demo-db over loopback and the Boundary worker dials workspaces on-host —
-  # no SG rule was needed. The GPU node is a separate EC2 in this same SG, so that
-  # traffic now crosses the network. self=true scopes these to members of this SG
-  # (only the main + GPU nodes), nothing wider.
+  # no SG rule was needed. The GPU and microVM nodes are separate EC2s in this same
+  # SG, so that traffic now crosses the network. self=true scopes these to members
+  # of this SG (only the main + GPU + microVM nodes), nothing wider.
   ingress {
-    description = "Nomad RPC + serf between server and GPU client"
+    description = "Nomad RPC + serf between server and GPU/microVM clients"
     from_port   = 4647
     to_port     = 4648
     protocol    = "tcp"
@@ -269,7 +269,7 @@ resource "aws_security_group" "instance" {
   }
 
   ingress {
-    description = "Vault API from the GPU client (Nomad-Vault WIF + template secrets)"
+    description = "Vault API from the GPU/microVM clients (Nomad-Vault WIF + template secrets)"
     from_port   = 8200
     to_port     = 8200
     protocol    = "tcp"
@@ -277,7 +277,7 @@ resource "aws_security_group" "instance" {
   }
 
   ingress {
-    description = "demo-db Postgres from GPU workspaces"
+    description = "demo-db Postgres from GPU/microVM workspaces"
     from_port   = 15432
     to_port     = 15432
     protocol    = "tcp"
@@ -285,7 +285,7 @@ resource "aws_security_group" "instance" {
   }
 
   ingress {
-    description = "Boundary worker (main node) to GPU workspace SSH (portgen range)"
+    description = "Boundary worker (main node) to GPU/microVM workspace SSH (portgen range)"
     from_port   = 2222
     to_port     = 2399
     protocol    = "tcp"
@@ -293,7 +293,7 @@ resource "aws_security_group" "instance" {
   }
 
   ingress {
-    description = "MCP gateway (main node) reached by GPU workspaces (remote Claude MCP)"
+    description = "MCP gateway (main node) reached by GPU/microVM workspaces (remote Claude MCP)"
     from_port   = 4444
     to_port     = 4444
     protocol    = "tcp"
@@ -301,7 +301,7 @@ resource "aws_security_group" "instance" {
   }
 
   ingress {
-    description = "LiteLLM gateway (main node) reached by GPU workspaces (Claude Code LLM traffic)"
+    description = "LiteLLM gateway (main node) reached by GPU/microVM workspaces (Claude Code LLM traffic)"
     from_port   = 4000
     to_port     = 4000
     protocol    = "tcp"

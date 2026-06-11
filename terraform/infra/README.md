@@ -7,6 +7,7 @@ Provisions **HashiCorp Boundary Enterprise** as a single all-in-one node on AWS:
 1. A **Packer** base image (`ami/base_image/`) that bakes the Boundary, Consul, Nomad and Vault Enterprise binaries onto the org base AMI.
 2. A **Terraform** module (`modules/secured-codespace/`) that launches one EC2 instance from that AMI running, on the same host: the Boundary **controller + worker** (backed by a **local PostgreSQL**, static **AEAD KMS keys**) and a single combined **Nomad server + client** agent (TLS + ACLs enabled).
 3. *(opt-in)* A second **Packer** GPU image (`ami/gpu_image/`) and a second EC2 — a **GPU worker** (`g4dn.xlarge`, NVIDIA T4) — that joins the cluster as a **Nomad client in the `gpu` node pool** for GPU workspaces. Gated by `enable_gpu_node` (off by default). See [GPU worker node](#gpu-worker-node).
+4. *(opt-in)* A third **Packer** microVM image (`ami/microvm_image/`) and a bare-metal EC2 — a **microVM worker** (`c5.metal`, Kata Containers) — that joins the cluster as a **Nomad client in the `microvm` node pool** for hardware-isolated workspaces. Gated by `enable_microvm_node` (off by default). See [microVM worker node](#microvm-worker-node).
 
 The Boundary controller API (`9200`), Boundary worker proxy (`9202`), the Nomad HTTP API/UI (`4646`) and the Vault API/UI (`8200`) are all reached through a public **Network Load Balancer**. SSH is direct to the instance. **All ingress — every NLB listener and SSH — is locked to the public IP of the machine running Terraform (`/32`)**, auto-detected via `https://checkip.amazonaws.com`.
 
@@ -30,7 +31,7 @@ What this platform tier provisions and the order it applies in (the project and 
 
 1. **Add your licenses** — Boundary at `config/boundary_license.hclic`, Nomad at `config/nomad_license.hclic` and Vault at `config/vault_license.hclic` (replace the placeholders). All are gitignored. Vault Enterprise will not start without its license.
 
-2. **Build the AMIs** — the base AMI, **and** (only when enabling the GPU node) the GPU AMI (its image is a prerequisite of `enable_gpu_node = true` — see [GPU worker node](#gpu-worker-node)):
+2. **Build the AMIs** — the base AMI, **and** the GPU AMI (only when enabling the GPU node — prerequisite of `enable_gpu_node = true`, see [GPU worker node](#gpu-worker-node)) **and** the microVM AMI (only when enabling the microVM node — prerequisite of `enable_microvm_node = true`, see [microVM worker node](#microvm-worker-node)):
    ```bash
    cd ami/base_image
    packer init .
@@ -38,8 +39,11 @@ What this platform tier provisions and the order it applies in (the project and 
    cd ../gpu_image
    packer init .
    packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-gpu-workspace-<ts>
+   cd ../microvm_image
+   packer init .
+   packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-microvm-workspace-<ts>  (build on c5.metal)
    ```
-The base AMI is tagged with the four binary versions; the GPU AMI bakes the NVIDIA driver + container toolkit + Nomad + the `nomad-device-nvidia` plugin.
+The base AMI is tagged with the four binary versions; the GPU AMI bakes the NVIDIA driver + container toolkit + Nomad + the `nomad-device-nvidia` plugin; the microVM AMI bakes Kata Containers + a pinned Docker 27.5.1 + Nomad and self-gates on `kata-runtime check` + a `docker run --runtime=kata` smoke test (so it **must** build on a bare-metal `c5.metal`).
 
 3. **Configure variables:**
    ```bash
@@ -149,6 +153,18 @@ For GPU workspaces, the platform tier can provision a **second EC2** (opt-in via
 The GPU node's private IP surfaces as the `gpu_instance_private_ip` output. The project tier publishes the `gpu-workspace` flavor (`node_pool = "gpu"`, CUDA image) and the developer tier (or the portal) places the workspace there — see [`../project/README.md`](../project/README.md) and [`../workspace/README.md`](../workspace/README.md#gpu-flavor).
 
 > **The GPU node is opt-in** — gated by `var.enable_gpu_node` (`gpu.tf`: `count = var.enable_gpu_node ? 1 : 0`), **off by default** because the `g4dn` instance is costly. Set `enable_gpu_node = true` in `terraform.tfvars` to provision it; a plain `terraform apply` then looks up the GPU AMI and creates the GPU instance, and its `remote-exec` **blocks the apply** until the node finishes bootstrapping and `nvidia-smi` works — so the **GPU AMI (`ami/gpu_image/`) is a prerequisite whenever GPU is enabled** (build it in step 2 above). With `enable_gpu_node = false` the base node comes up on its own.
+
+## microVM worker node
+
+For **hardware-isolated** workspaces — running untrusted AI-agent code behind a virtualization boundary rather than shared-kernel container namespaces — the platform tier can provision a **third EC2** (opt-in via `enable_microvm_node`, off by default) that joins the all-in-one node as a **Nomad client in the `microvm` node pool**. The main node stays in the implicit `default` pool, so only a flavor that opts into `node_pool = "microvm"` is placed there. It mirrors the GPU node pattern exactly, swapping the NVIDIA stack for Kata Containers.
+
+- **Separate microVM AMI** (`ami/microvm_image/`, built with `packer build` like the base image): an Ubuntu 24.04 base with **Kata Containers** (a `kata-static` tarball: its own QEMU + guest kernel + rootfs, pinned to **QEMU + virtio-fs**), a docker runtime named **`kata`**, Nomad `+ent`, and **docker-ce pinned to `27.5.1`** (Docker 28/29 break the Kata shim with `invalid namespace type`). The build self-gates on a **KVM check** (`/dev/kvm` + `kata-runtime check`) and a **smoke test** (`docker run --runtime=kata hello-world`), so a broken image never ships. The microVM node's Nomad client config adds `plugin "docker" { config { allow_runtimes = ["runc", "kata"] } }` — without it a `runtime = "kata"` job is rejected.
+- **`aws_instance.microvm`** (`microvm.tf`, type `var.microvm_instance_type` = `c5.metal`, root `var.microvm_root_volume_size` = 60 GiB) in the same VPC/subnet/SG, with a **public IP** for image egress. **Bare metal is required** — Kata needs `/dev/kvm`, and Nitro guests (t3/g4dn-non-metal) expose no nested virtualization. New SG rules are **self-referencing/intra-SG only** (same set as the GPU node) — no new public ingress.
+- **Reuses the existing Boundary worker** (which dials the microVM node's private IP over the VPC) and the **same Nomad TLS cert**. No Vault/Boundary/Postgres runs on the microVM node.
+
+The microVM node's private IP surfaces as the `microvm_instance_private_ip` output. The project tier publishes the `microvm-workspace` flavor (`node_pool = "microvm"`, `runtime = "kata"`, the **same image as `dev-workspace`**) and the developer tier (or the portal) places the workspace there — see [`../project/README.md`](../project/README.md) and [`../workspace/README.md`](../workspace/README.md#microvm-flavor).
+
+> **The microVM node is opt-in** — gated by `var.enable_microvm_node` (`microvm.tf`: `count = var.enable_microvm_node ? 1 : 0`), **off by default** because `c5.metal` is costly (~$4/hr). Set `enable_microvm_node = true` in `terraform.tfvars` to provision it; a plain `terraform apply` then looks up the microVM AMI and creates the instance, and its `remote-exec` **blocks the apply** until the node bootstraps and `kata-runtime check` + a `--runtime=kata` container run succeed — so the **microVM AMI (`ami/microvm_image/`) is a prerequisite whenever microVM is enabled** (build it in step 2 above). With `enable_microvm_node = false` the base node comes up on its own.
 
 ## Verify the MCP Gateway
 

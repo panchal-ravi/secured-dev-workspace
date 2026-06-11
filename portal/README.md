@@ -164,11 +164,11 @@ writes the `~/.ssh/config` block and launches your IDE (VSCode Remote-SSH). Each
 the **ProxyCommand** block to copy manually, plus a transparent-session (Boundary Client Agent)
 method.
 
-## Verifying a workspace (Git, Claude Code, MCP, LLM gateway, GPU)
+## Verifying a workspace (Git, Claude Code, MCP, LLM gateway, GPU, microVM)
 
 After you connect with VSCode Remote-SSH you land in the workspace as **`dev`**. Open a terminal
 there and run the checks below — each confirms one feature baked into the workspace job template
-(`terraform/project/templates/{dev,gpu}-workspace.nomad.hcl`). None of them print a secret.
+(`terraform/project/templates/{dev,gpu,microvm}-workspace.nomad.hcl`). None of them print a secret.
 
 ### 0. Workspace is up
 
@@ -271,6 +271,22 @@ ls /dev/nvidia*        # nvidia0 / nvidiactl present
 ```
 If `nvidia-smi` is absent you're on a **CPU flavor** (a non-GPU workspace has no `/dev/nvidia*`), or
 the GPU node is off — it's gated by `enable_gpu_node` in `terraform/infra/terraform.tfvars`.
+
+### 6. microVM (microvm-workspace flavor only)
+
+Workspaces created from the **microvm-workspace** flavor schedule on the `microvm` Nomad node pool and
+run inside a **Kata Containers microVM** (`runtime = "kata"`) — the same `dev-workspace` image, but
+behind a hardware-virtualization (KVM) boundary with its own guest kernel. The proof is that the
+workspace runs a **different kernel than the host node**:
+
+```bash
+uname -r                 # the Kata guest kernel (e.g. 6.1.62), NOT the host node's kernel
+mount | grep /home/dev   # 'virtiofs' — the home volume is shared into the guest over virtio-fs
+```
+A standard (shared-kernel) workspace would report the host node's kernel and a non-`virtiofs` home
+mount. If you're on a CPU flavor or the microVM node is off (gated by `enable_microvm_node` in
+`terraform/infra/terraform.tfvars`), `uname -r` matches the host. Everything else (Git push, the
+`demo-db` MCP, the LLM gateway) behaves exactly as in sections 1–4 — only the runtime boundary differs.
 
 ## Tests
 

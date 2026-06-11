@@ -1,0 +1,7 @@
+owner             = "rp"
+aws_region        = "ap-southeast-1"
+aws_instance_type = "c5.metal"
+nomad_version     = "1.11.6+ent"
+kata_version      = "3.10.1"
+docker_version    = "5:27.5.1-1~ubuntu.24.04~noble"
+cni_version       = "v1.9.0"
