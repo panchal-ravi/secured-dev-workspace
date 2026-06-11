@@ -10,6 +10,13 @@ internet.
 *For the technical architecture and how the system is built and operated, see
 [`ARCHITECTURE.md`](ARCHITECTURE.md).*
 
+## The product in 90 seconds
+
+<!-- To embed the animated short: edit this README in the GitHub web editor and
+     drag demo/animated-short/short/out/short.mp4 onto the line below — GitHub
+     uploads it as a user-attachment and inserts an inline video player.
+     (Re-render locally with: cd demo/animated-short/short && node record.mjs) -->
+
 ## Why it's more secure
 
 **Your source code never lives on a laptop.**
