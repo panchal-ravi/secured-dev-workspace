@@ -10,13 +10,14 @@ internet.
 *For the technical architecture and how the system is built and operated, see
 [`ARCHITECTURE.md`](ARCHITECTURE.md).*
 
-## The product in 90 seconds
+## The solution in 90 seconds
 
-<!-- Video below is a user-attachment of demo/animated-short/short/out/short.mp4.
-     Re-render with: cd demo/animated-short/short && node record.mjs — then replace
-     the attachment by dragging the new mp4 onto this line in the GitHub web editor. -->
+<!-- The video is a user-attachment of demo/animated-short/short/out/short.mp4.
+     Re-render with: cd demo/animated-short/short && node record.mjs — then drag the
+     new mp4 into the GitHub web editor to upload it, and put the generated URL into
+     the video tag's src (a bare URL would show the filename above the player). -->
 
-https://github.ibm.com/user-attachments/assets/966aff49-3582-4dbe-bbde-00cc033a44f9
+<video src="https://github.ibm.com/user-attachments/assets/966aff49-3582-4dbe-bbde-00cc033a44f9" controls></video>
 
 ## Why it's more secure
 
@@ -51,6 +52,14 @@ broker that checks who you are first.
 **Each project is walled off from every other.**
 Every project runs in its own isolated space. One project — and one developer — cannot
 see or touch another's workspace, data, or credentials.
+
+**The riskiest work can run behind a hardware wall.**
+For the strongest isolation, a workspace can run inside a microVM — a lightweight
+virtual machine with its own operating-system kernel, the same kind of boundary cloud
+providers use to keep different customers apart. Everything inside it — including any
+code the AI agent writes and runs — is contained by hardware virtualization, not just
+container walls, so even a misbehaving workload cannot reach the host machine or other
+workspaces.
 
 **The AI assistant's reach is controlled and contained.**
 The AI coding assistant runs inside the workspace — never on the laptop — and reaches its
