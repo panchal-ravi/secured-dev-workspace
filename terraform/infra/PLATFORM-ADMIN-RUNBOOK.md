@@ -38,7 +38,8 @@ What this changes (all additive):
 | `vault_policy.infra_platform_admin` | grants the portal WIF role: read `mcp-gateway` + `llm-gateway`, rw `llm-providers/*`, write `mcp-servers/*` (**never** the LiteLLM master key) |
 | `terraform_data.litellm_portal_admin_key` | runs `scripts/litellm-portal-admin-key.sh` → mints a **proxy-admin** (non-master) key → `secret/infra/llm-gateway.portal_admin_key` |
 | `litellm.nomad.hcl.tftpl` | flips `STORE_MODEL_IN_DB=true` (redeploys the litellm job) |
-| `developer-portal` job | redeploys with `PORTAL_MCP_GATEWAY_ADDR=http://127.0.0.1:4444`, `PORTAL_LLM_GATEWAY_ADDR=http://127.0.0.1:4000`, `PORTAL_MCP_NAMESPACE=infra-mcp`, `PORTAL_AGENT_NODE_POOL=agents` |
+| `nomad_acl_policy.portal_service_discovery` | job-scoped read of `infra`-namespace Nomad services, bound to the `developer-portal` workload identity (gateway discovery) |
+| `developer-portal` job | redeploys with `PORTAL_MCP_NAMESPACE=infra-mcp`, `PORTAL_AGENT_NODE_POOL=agents`, and a `nomadService` template that resolves `PORTAL_MCP_GATEWAY_ADDR` / `PORTAL_LLM_GATEWAY_ADDR` from the `mcp-gateway` / `llm-gateway` Nomad services at runtime (no loopback/co-location requirement) |
 
 > If the key-bootstrap `local-exec` can't reach the gateway, the apply still
 > succeeds; the portal logs a warning and disables only the admin plane. Manual
@@ -52,6 +53,17 @@ What this changes (all additive):
 - Portal boot log: `admin plane: using in-memory control-plane store …` (or postgres,
   once `PORTAL_DB_DSN` is wired — see the (c) follow-up). A warning + disabled plane
   means a Vault read failed; check the `infra-platform-admin` policy attach.
+- **Gateway service discovery** — the portal resolves the gateway addresses from Nomad
+  services (not loopback). Confirm both resolve:
+  ```bash
+  nomad service info -namespace infra mcp-gateway   # expect 1 healthy instance
+  nomad service info -namespace infra llm-gateway
+  ```
+  If the portal log shows the plane disabled with empty gateway addresses, the
+  `nomadService` lookup returned nothing — verify the `infra-portal-service-discovery`
+  ACL policy applied and is bound to the `developer-portal` job (`nomad acl policy info
+  infra-portal-service-discovery`). The gateways must be in the **same namespace**
+  (`infra`) as the portal for the workload-identity read to resolve.
 - Identity / RBAC:
   ```bash
   curl -s https://<portal>/api/me        # platform-admin user → "roles":["platform-admin"]

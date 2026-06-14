@@ -130,14 +130,13 @@ resource "nomad_job" "developer_portal" {
     nomad_addr              = "https://127.0.0.1:4646"
     vault_addr              = "https://127.0.0.1:8200"
 
-    # Platform Admin onboarding plane. Reached over loopback on the all-in-one node
-    # (the portal runs host-networked); empty when the plane is disabled, which
-    # leaves the env unset so the portal starts the plane off.
+    # Platform Admin onboarding plane. When disabled, the gateway service-discovery
+    # template + admin env are omitted entirely, so the portal starts the plane off.
     enable_platform_admin = var.enable_platform_admin
-    mcp_gateway_addr      = var.enable_platform_admin ? "http://127.0.0.1:4444" : ""
-    llm_gateway_addr      = var.enable_platform_admin ? "http://127.0.0.1:${local.litellm_port}" : ""
-    mcp_namespace         = var.enable_platform_admin ? nomad_namespace.infra_mcp[0].name : ""
-    agent_node_pool       = var.platform_admin_mcp_node_pool
+    # Gateway addresses are resolved at runtime via Nomad service discovery in the
+    # jobspec (nomadService "mcp-gateway"/"llm-gateway"), not injected here.
+    mcp_namespace   = var.enable_platform_admin ? nomad_namespace.infra_mcp[0].name : ""
+    agent_node_pool = var.platform_admin_mcp_node_pool
   })
 
   depends_on = [vault_kv_secret_v2.developer_portal]

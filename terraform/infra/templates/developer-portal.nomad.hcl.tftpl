@@ -76,6 +76,27 @@ EOH
 {{ with secret "${kv_path}" }}{{ .Data.data.tls_key }}{{ end }}
 EOH
       }
+%{ if enable_platform_admin ~}
+      # Platform Admin onboarding plane: resolve the MCP + LLM gateway base URLs from
+      # Nomad-native service discovery — the gateways register provider="nomad" services
+      # "mcp-gateway" / "llm-gateway", both in this job's "infra" namespace. This drops
+      # the loopback co-location requirement (the portal may run on any node). env=true
+      # publishes them as PORTAL_*_GATEWAY_ADDR; change_mode=restart re-reads a gateway
+      # that moved node/port. Consul DNS for fully dynamic resolution is a roadmap item.
+      template {
+        destination = "secrets/gateways.env"
+        env         = true
+        change_mode = "restart"
+        data        = <<EOH
+{{ range nomadService "mcp-gateway" }}
+PORTAL_MCP_GATEWAY_ADDR=http://{{ .Address }}:{{ .Port }}
+{{ end }}
+{{ range nomadService "llm-gateway" }}
+PORTAL_LLM_GATEWAY_ADDR=http://{{ .Address }}:{{ .Port }}
+{{ end }}
+EOH
+      }
+%{ endif ~}
 
       env {
         PORTAL_LISTEN_ADDR             = ":${port}"
@@ -101,11 +122,11 @@ EOH
         PORTAL_SSH_CONFIG_PATH = ""
         PORTAL_LOG_LEVEL       = "info"
 %{ if enable_platform_admin ~}
-        # Platform Admin onboarding plane (gateways reached over loopback on-node).
-        PORTAL_MCP_GATEWAY_ADDR = "${mcp_gateway_addr}"
-        PORTAL_LLM_GATEWAY_ADDR = "${llm_gateway_addr}"
-        PORTAL_MCP_NAMESPACE    = "${mcp_namespace}"
-        PORTAL_AGENT_NODE_POOL  = "${agent_node_pool}"
+        # Platform Admin onboarding plane. Gateway base URLs (PORTAL_MCP_GATEWAY_ADDR /
+        # PORTAL_LLM_GATEWAY_ADDR) come from the Nomad service-discovery template block
+        # above — not co-location — so they are not set here.
+        PORTAL_MCP_NAMESPACE   = "${mcp_namespace}"
+        PORTAL_AGENT_NODE_POOL = "${agent_node_pool}"
 %{ endif ~}
       }
 

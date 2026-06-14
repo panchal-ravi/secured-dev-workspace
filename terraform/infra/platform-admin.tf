@@ -71,3 +71,28 @@ resource "terraform_data" "litellm_portal_admin_key" {
 
   depends_on = [nomad_job.litellm_gateway, vault_kv_secret_v2.llm_gateway]
 }
+
+# The portal resolves the MCP + LLM gateway addresses via Nomad-native service
+# discovery (a nomadService template in the portal jobspec) instead of loopback, so
+# it no longer needs to be co-located with the gateways. With Nomad ACLs enabled the
+# portal's workload identity must be allowed to READ service registrations in the
+# "infra" namespace (where both gateways run). This job-scoped, read-only policy is
+# bound to the developer-portal job's workload identity via job_acl — nothing else
+# gains access. (It may overlap the implicit same-namespace workload policy; keeping
+# it explicit makes discovery deterministic regardless of that default.)
+resource "nomad_acl_policy" "portal_service_discovery" {
+  count       = local.platform_admin_count
+  name        = "infra-portal-service-discovery"
+  description = "Developer Portal WI: read Nomad service registrations in the infra namespace (gateway discovery)."
+
+  rules_hcl = <<-EOT
+    namespace "infra" {
+      capabilities = ["list-jobs", "read-job"]
+    }
+  EOT
+
+  job_acl {
+    namespace = "infra"
+    job_id    = "developer-portal"
+  }
+}
