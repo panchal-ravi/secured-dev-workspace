@@ -129,6 +129,9 @@ resource "nomad_job" "litellm_gateway" {
     wif_role  = vault_jwt_auth_backend_role.infra_llm.role_name
     kv_path   = "${vault_mount.kv.path}/data/infra/llm-gateway"
     db_host   = "${module.secured_codespace.instance_private_ip}:${local.litellm_pg_port}"
+    # Enable DB-stored models so the Platform Admin plane can add/manage models via
+    # the admin API. Off by default — config-list models are unchanged either way.
+    store_model_in_db = var.enable_platform_admin
   })
 
   depends_on = [nomad_job.litellm_postgres, vault_kv_secret_v2.llm_gateway]

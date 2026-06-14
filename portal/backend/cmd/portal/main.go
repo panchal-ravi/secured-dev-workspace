@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,12 +16,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/admin"
 	"github.com/secured-dev-workspace/developer-portal/internal/api"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/config"
 	"github.com/secured-dev-workspace/developer-portal/internal/hashistack"
+	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/logging"
+	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
 
@@ -75,9 +80,24 @@ func run() error {
 		staticDir = "./web"
 	}
 
+	// Platform Admin onboarding plane — additive and optional. Enabled only when
+	// the MCP/LLM gateway addresses are configured; its admin credentials are read
+	// from Vault at startup so no secret material lives in the portal's env.
+	var adminHandlers *admin.Handlers
+	if cfg.AdminEnabled() {
+		adminHandlers, err = buildAdminPlane(startCtx, cfg, vault, nomad)
+		if err != nil {
+			return err
+		}
+		logger.Info("platform-admin onboarding plane enabled", "mcp_gateway", cfg.MCPGatewayAddr, "llm_gateway", cfg.LLMGatewayAddr)
+	} else {
+		logger.Info("platform-admin onboarding plane disabled (set PORTAL_MCP_GATEWAY_ADDR and PORTAL_LLM_GATEWAY_ADDR to enable)")
+	}
+
 	mux := api.NewMux(api.Options{
 		Auth:      authn,
 		Svc:       svc,
+		Admin:     adminHandlers,
 		StaticDir: staticDir,
 		Ready:     newReadinessCheck(vault, nomad),
 		RateLimit: middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
@@ -134,6 +154,34 @@ func run() error {
 		defer cancel()
 		return srv.Shutdown(shutCtx)
 	}
+}
+
+// buildAdminPlane wires the Platform Admin onboarding service: it reads the MCP
+// gateway admin JWT secret/email and the LiteLLM portal-admin key from Vault (the
+// portal never holds them in env), constructs the gateway/LLM clients and the
+// in-memory store, and returns the HTTP handlers.
+func buildAdminPlane(ctx context.Context, cfg config.Config, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, error) {
+	jwtSecret, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "jwt_secret_key")
+	if err != nil {
+		return nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
+	}
+	adminEmail, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "admin_email")
+	if err != nil {
+		return nil, fmt.Errorf("admin plane: read mcp-gateway admin email: %w", err)
+	}
+	llmKey, err := vault.ReadKVField(ctx, "infra/llm-gateway", "portal_admin_key")
+	if err != nil {
+		return nil, fmt.Errorf("admin plane: read llm-gateway portal-admin key: %w", err)
+	}
+
+	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
+	llm := llmgw.New(cfg.LLMGatewayAddr, llmKey, nil)
+	svc := admin.New(store.NewMemory(), nomad, gateway, llm, vault, admin.Config{
+		MCPNamespace:    cfg.MCPNamespace,
+		NodePool:        cfg.AgentNodePool,
+		MCPJobVaultRole: cfg.MCPJobVaultRole,
+	})
+	return admin.NewHandlers(svc), nil
 }
 
 // newReadinessCheck returns a /readyz probe that pings Vault and Nomad, caching

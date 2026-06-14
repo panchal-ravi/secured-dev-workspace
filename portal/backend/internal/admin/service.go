@@ -1,0 +1,510 @@
+// Package admin is the Platform Admin onboarding plane: it deploys existing MCP
+// servers as Nomad jobs and onboards LLM models into the LiteLLM gateway, and
+// verifies each the way a Project Admin will consume it (a ContextForge virtual
+// server + scoped token for MCP; a scoped budgeted/rate-limited key for LLM).
+//
+// All onboarding logic lives in Service (API-first): the HTTP handlers are thin
+// adapters over these methods, so the same operations can back a programmatic
+// onboarding API later. Every mutation writes an audit event.
+package admin
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"regexp"
+	"time"
+
+	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
+	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
+	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
+)
+
+// NomadClient is the subset of the Nomad API the admin plane uses (satisfied by
+// *hashistack.Nomad). Defined here so the service can be tested with a fake.
+type NomadClient interface {
+	RegisterJob(namespace, jobHCL, flavor string) (string, error)
+	ResolvePlacementIP(namespace, jobID string) (string, error)
+	PurgeJob(namespace, jobID string) error
+	UsedPorts() ([]int, error)
+}
+
+// VaultClient is the KV access the admin plane needs (satisfied by *hashistack.Vault).
+type VaultClient interface {
+	// ReadKVField reads a single field from a KV-v2 secret at relPath.
+	ReadKVField(ctx context.Context, relPath, field string) (string, error)
+	// WriteKV writes data to a KV-v2 secret at relPath.
+	WriteKV(ctx context.Context, relPath string, data map[string]any) error
+}
+
+// Config tunes the onboarding plane. Namespaces/pools/paths are platform-wide.
+type Config struct {
+	MCPNamespace       string // namespace for deployed MCP servers (e.g. "infra-mcp")
+	NodePool           string // node pool for MCP jobs (e.g. "agents"; "" = default)
+	MCPJobVaultRole    string // WIF role stamped on MCP jobs that reference secrets
+	MCPServersKVPath   string // KV path prefix for published descriptors (e.g. "infra/mcp-servers")
+	LLMProvidersKVPath string // KV path prefix for provider keys (e.g. "infra/llm-providers")
+}
+
+func (c Config) withDefaults() Config {
+	if c.MCPNamespace == "" {
+		c.MCPNamespace = "infra-mcp"
+	}
+	if c.MCPServersKVPath == "" {
+		c.MCPServersKVPath = "infra/mcp-servers"
+	}
+	if c.LLMProvidersKVPath == "" {
+		c.LLMProvidersKVPath = "infra/llm-providers"
+	}
+	return c
+}
+
+// Service orchestrates the onboarding flows over the store, Nomad, the MCP
+// gateway, the LLM gateway, and Vault.
+type Service struct {
+	store   store.Store
+	nomad   NomadClient
+	gateway mcpgw.Client
+	llm     llmgw.Client
+	vault   VaultClient
+	cfg     Config
+}
+
+// New builds the onboarding service.
+func New(st store.Store, nomad NomadClient, gateway mcpgw.Client, llm llmgw.Client, vault VaultClient, cfg Config) *Service {
+	return &Service{store: st, nomad: nomad, gateway: gateway, llm: llm, vault: vault, cfg: cfg.withDefaults()}
+}
+
+var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
+
+// ---- MCP server onboarding ----
+
+// DeployMCPInput is a request to deploy an existing MCP server as a Nomad job.
+type DeployMCPInput struct {
+	Name       string            `json:"name"`
+	Image      string            `json:"image"`
+	Command    []string          `json:"command,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	SecretRefs map[string]string `json:"secret_refs,omitempty"`
+	Transport  string            `json:"transport"`
+	Port       int               `json:"port"`
+	Path       string            `json:"path,omitempty"`
+}
+
+func (in DeployMCPInput) validate() error {
+	if !nameRE.MatchString(in.Name) {
+		return fmt.Errorf("name must be 3-40 chars, lowercase alphanumeric or dashes: %w", apperr.ErrBadRequest)
+	}
+	if in.Image == "" {
+		return fmt.Errorf("image is required: %w", apperr.ErrBadRequest)
+	}
+	if _, ok := defaultPaths[in.Transport]; !ok {
+		return fmt.Errorf("transport must be sse or streamable-http (stdio needs the auth wrapper): %w", apperr.ErrBadRequest)
+	}
+	if in.Port < 1 || in.Port > 65535 {
+		return fmt.Errorf("port must be 1-65535: %w", apperr.ErrBadRequest)
+	}
+	return nil
+}
+
+// DeployMCPServer renders and registers the Nomad job, resolves its placement to
+// build the gateway peer URL, and records the server as "deployed" (not yet
+// published — it must pass the consumption-mirror test first).
+func (s *Service) DeployMCPServer(ctx context.Context, actor string, in DeployMCPInput) (store.MCPServer, error) {
+	if err := in.validate(); err != nil {
+		return store.MCPServer{}, err
+	}
+	if err := s.ensurePortFree(in.Port, in.Name); err != nil {
+		return store.MCPServer{}, err
+	}
+
+	prev, _ := s.store.GetMCPServer(ctx, in.Name)
+	srv := store.MCPServer{
+		Name:       in.Name,
+		Image:      in.Image,
+		Command:    in.Command,
+		Env:        in.Env,
+		SecretRefs: in.SecretRefs,
+		Transport:  in.Transport,
+		Port:       in.Port,
+		Path:       in.Path,
+		Namespace:  s.cfg.MCPNamespace,
+		Status:     store.StatusDeployed,
+		Version:    prev.Version + 1,
+		CreatedBy:  actor,
+	}
+
+	jobID, err := s.nomad.RegisterJob(s.cfg.MCPNamespace, renderMCPJobHCL(srv, s.cfg), "")
+	if err != nil {
+		s.audit(ctx, actor, "mcp-server.deploy", in.Name, "error")
+		return store.MCPServer{}, err
+	}
+	srv.JobID = jobID
+
+	ip, err := s.nomad.ResolvePlacementIP(s.cfg.MCPNamespace, jobID)
+	if err != nil {
+		s.audit(ctx, actor, "mcp-server.deploy", in.Name, "error")
+		return store.MCPServer{}, err
+	}
+	srv.GatewayURL = peerURL(ip, srv)
+
+	saved, err := s.store.UpsertMCPServer(ctx, srv)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+	s.audit(ctx, actor, "mcp-server.deploy", in.Name, "ok")
+	return saved, nil
+}
+
+// TestMCPServer runs the consumption-mirror verification: register the deployed
+// server as a gateway peer, discover its tools, compose a (temporary) virtual
+// server scoped to them, mint a scoped token, and confirm the token reaches only
+// its own server (200) and is denied admin and a decoy server (403). The temporary
+// virtual servers and token are torn down; the peer registration is kept for publish.
+func (s *Service) TestMCPServer(ctx context.Context, actor, name string) (store.MCPServer, error) {
+	srv, err := s.store.GetMCPServer(ctx, name)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+
+	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(name), srv.GatewayURL)
+	if err != nil {
+		s.audit(ctx, actor, "mcp-server.test", name, "error")
+		return store.MCPServer{}, err
+	}
+	srv.PeerID = peerID
+
+	toolIDs, err := s.gateway.DiscoverTools(ctx, peerID)
+	if err != nil {
+		s.audit(ctx, actor, "mcp-server.test", name, "error")
+		return store.MCPServer{}, err
+	}
+
+	vsID, err := s.gateway.CreateVirtualServer(ctx, serviceName(name)+"-test", "consumption-mirror test for "+name, toolIDs)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+	decoyID, err := s.gateway.CreateVirtualServer(ctx, serviceName(name)+"-decoy", "isolation decoy for "+name, toolIDs)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+	tokenName := serviceName(name) + "-test-" + randHex(4)
+	token, err := s.gateway.CreateScopedToken(ctx, tokenName, 1, vsID)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+
+	probe, err := s.gateway.ProbeScopedToken(ctx, token, vsID, decoyID)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+
+	// Teardown the temporary verification artifacts; the deployed server and its
+	// peer registration stay (publish reuses the peer).
+	_ = s.gateway.RevokeTokensByPrefix(ctx, serviceName(name)+"-test-")
+	_ = s.gateway.DeleteVirtualServer(ctx, vsID)
+	_ = s.gateway.DeleteVirtualServer(ctx, decoyID)
+
+	result := &store.MCPTestResult{
+		Passed:             probe.Passed() && len(toolIDs) > 0,
+		ToolsDiscovered:    len(toolIDs),
+		OwnServerOK:        probe.OwnServerOK,
+		AdminDenied:        probe.AdminDenied,
+		OtherServerDenied:  probe.OtherServerDenied,
+		OtherServerChecked: probe.OtherServerChecked,
+		At:                 time.Now(),
+	}
+	if !result.Passed {
+		result.Message = "consumption-mirror checks did not all pass"
+	}
+	srv.TestResult = result
+
+	saved, err := s.store.UpsertMCPServer(ctx, srv)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+	s.audit(ctx, actor, "mcp-server.test", name, outcome(result.Passed))
+	return saved, nil
+}
+
+// PublishMCPServer makes a tested server discoverable by Project Admins: it
+// requires a green consumption-mirror test, ensures the gateway peer is
+// registered, writes the deploy descriptor to Vault KV, and flips to published.
+func (s *Service) PublishMCPServer(ctx context.Context, actor, name string) (store.MCPServer, error) {
+	srv, err := s.store.GetMCPServer(ctx, name)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+	if srv.Status == store.StatusPublished {
+		return srv, nil
+	}
+	if srv.TestResult == nil || !srv.TestResult.Passed {
+		return store.MCPServer{}, fmt.Errorf("server %q must pass the consumption-mirror test before publish: %w", name, apperr.ErrConflict)
+	}
+
+	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(name), srv.GatewayURL)
+	if err != nil {
+		s.audit(ctx, actor, "mcp-server.publish", name, "error")
+		return store.MCPServer{}, err
+	}
+	srv.PeerID = peerID
+
+	descriptor := map[string]any{
+		"image":        srv.Image,
+		"transport":    srv.Transport,
+		"gateway_url":  srv.GatewayURL,
+		"peer_id":      srv.PeerID,
+		"version":      srv.Version,
+		"published_by": actor,
+		"published_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.vault.WriteKV(ctx, s.cfg.MCPServersKVPath+"/"+name, descriptor); err != nil {
+		s.audit(ctx, actor, "mcp-server.publish", name, "error")
+		return store.MCPServer{}, err
+	}
+
+	srv.Status = store.StatusPublished
+	saved, err := s.store.UpsertMCPServer(ctx, srv)
+	if err != nil {
+		return store.MCPServer{}, err
+	}
+	s.audit(ctx, actor, "mcp-server.publish", name, "ok")
+	return saved, nil
+}
+
+// ListMCPServers returns every server the platform has deployed.
+func (s *Service) ListMCPServers(ctx context.Context) ([]store.MCPServer, error) {
+	return s.store.ListMCPServers(ctx)
+}
+
+// DeleteMCPServer purges the Nomad job, removes the gateway peer, and drops the
+// store row. Best-effort on the external systems so a partial state can be cleaned.
+func (s *Service) DeleteMCPServer(ctx context.Context, actor, name string) error {
+	srv, err := s.store.GetMCPServer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if srv.JobID != "" {
+		_ = s.nomad.PurgeJob(s.cfg.MCPNamespace, srv.JobID)
+	}
+	if srv.PeerID != "" {
+		_ = s.gateway.DeletePeer(ctx, srv.PeerID)
+	}
+	if err := s.store.DeleteMCPServer(ctx, name); err != nil {
+		return err
+	}
+	s.audit(ctx, actor, "mcp-server.delete", name, "ok")
+	return nil
+}
+
+// ---- LLM model onboarding ----
+
+// OnboardLLMInput is a request to onboard a model into the LiteLLM gateway.
+type OnboardLLMInput struct {
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	BackendModel string `json:"backend_model"`
+}
+
+func (in OnboardLLMInput) validate() error {
+	if in.Name == "" || in.Provider == "" || in.BackendModel == "" {
+		return fmt.Errorf("name, provider and backend_model are required: %w", apperr.ErrBadRequest)
+	}
+	return nil
+}
+
+// OnboardLLMModel reads the provider key from Vault (never stored), registers the
+// model in LiteLLM, and records it as "draft". The provider key never touches the
+// store — only the provider name.
+func (s *Service) OnboardLLMModel(ctx context.Context, actor string, in OnboardLLMInput) (store.LLMModel, error) {
+	if err := in.validate(); err != nil {
+		return store.LLMModel{}, err
+	}
+	apiKey, err := s.vault.ReadKVField(ctx, s.cfg.LLMProvidersKVPath+"/"+in.Provider, "api_key")
+	if err != nil {
+		s.audit(ctx, actor, "llm-model.onboard", in.Name, "error")
+		return store.LLMModel{}, err
+	}
+	if err := s.llm.AddModel(ctx, llmgw.AddModelInput{
+		ModelName:     in.Name,
+		LiteLLMParams: map[string]any{"model": in.BackendModel, "api_key": apiKey},
+	}); err != nil {
+		s.audit(ctx, actor, "llm-model.onboard", in.Name, "error")
+		return store.LLMModel{}, err
+	}
+
+	model := store.LLMModel{
+		Name:         in.Name,
+		Provider:     in.Provider,
+		BackendModel: in.BackendModel,
+		Status:       store.StatusDraft,
+		CreatedBy:    actor,
+		LiteLLMID:    s.resolveLiteLLMID(ctx, in.Name),
+	}
+	saved, err := s.store.UpsertLLMModel(ctx, model)
+	if err != nil {
+		return store.LLMModel{}, err
+	}
+	s.audit(ctx, actor, "llm-model.onboard", in.Name, "ok")
+	return saved, nil
+}
+
+// TestLLMModel runs the scoped-key consumption-mirror verification: mint a
+// budgeted, rpm-limited key, confirm a completion succeeds (200), observe the rpm
+// limit (429), revoke the key, and confirm revocation is enforced (401).
+func (s *Service) TestLLMModel(ctx context.Context, actor, name string) (store.LLMModel, error) {
+	model, err := s.store.GetLLMModel(ctx, name)
+	if err != nil {
+		return store.LLMModel{}, err
+	}
+
+	alias := "llm-test-" + name
+	key, err := s.llm.GenerateKey(ctx, llmgw.KeySpec{
+		Alias:     alias,
+		Models:    []string{name},
+		MaxBudget: 1,
+		RPMLimit:  1,
+		Metadata:  map[string]string{"purpose": "onboarding-test"},
+	})
+	if err != nil {
+		s.audit(ctx, actor, "llm-model.test", name, "error")
+		return store.LLMModel{}, err
+	}
+	// Ensure the test key is revoked even if a step below fails.
+	defer func() { _ = s.llm.DeleteKeyByAlias(ctx, alias) }()
+
+	result := &store.LLMTestResult{At: time.Now()}
+
+	st, err := s.llm.TestCompletion(ctx, key, name, "ping")
+	if err != nil {
+		s.audit(ctx, actor, "llm-model.test", name, "error")
+		return store.LLMModel{}, err
+	}
+	result.CompletionOK = st == 200
+
+	// Best-effort rpm observation: a second immediate call should be rate-limited.
+	if st2, err := s.llm.TestCompletion(ctx, key, name, "ping"); err == nil {
+		result.RateLimitEnforced = st2 == 429
+	}
+
+	// Revoke and confirm the key no longer authenticates.
+	if err := s.llm.DeleteKeyByAlias(ctx, alias); err == nil {
+		if st3, err := s.llm.TestCompletion(ctx, key, name, "ping"); err == nil {
+			result.RevokeEnforced = st3 == 401 || st3 == 403
+		}
+	}
+
+	result.Passed = result.CompletionOK && result.RevokeEnforced
+	if !result.Passed {
+		result.Message = "scoped-key completion or revocation check did not pass"
+	}
+	model.TestResult = result
+
+	saved, err := s.store.UpsertLLMModel(ctx, model)
+	if err != nil {
+		return store.LLMModel{}, err
+	}
+	s.audit(ctx, actor, "llm-model.test", name, outcome(result.Passed))
+	return saved, nil
+}
+
+// PublishLLMModel makes a tested model selectable by Project Admins' keys.
+func (s *Service) PublishLLMModel(ctx context.Context, actor, name string) (store.LLMModel, error) {
+	model, err := s.store.GetLLMModel(ctx, name)
+	if err != nil {
+		return store.LLMModel{}, err
+	}
+	if model.Status == store.StatusPublished {
+		return model, nil
+	}
+	if model.TestResult == nil || !model.TestResult.Passed {
+		return store.LLMModel{}, fmt.Errorf("model %q must pass the consumption-mirror test before publish: %w", name, apperr.ErrConflict)
+	}
+	model.Status = store.StatusPublished
+	saved, err := s.store.UpsertLLMModel(ctx, model)
+	if err != nil {
+		return store.LLMModel{}, err
+	}
+	s.audit(ctx, actor, "llm-model.publish", name, "ok")
+	return saved, nil
+}
+
+// ListLLMModels returns every onboarded model.
+func (s *Service) ListLLMModels(ctx context.Context) ([]store.LLMModel, error) {
+	return s.store.ListLLMModels(ctx)
+}
+
+// DeleteLLMModel removes the model from LiteLLM and drops the store row.
+func (s *Service) DeleteLLMModel(ctx context.Context, actor, name string) error {
+	model, err := s.store.GetLLMModel(ctx, name)
+	if err != nil {
+		return err
+	}
+	if model.LiteLLMID != "" {
+		_ = s.llm.DeleteModel(ctx, model.LiteLLMID)
+	}
+	if err := s.store.DeleteLLMModel(ctx, name); err != nil {
+		return err
+	}
+	s.audit(ctx, actor, "llm-model.delete", name, "ok")
+	return nil
+}
+
+// ListAudit returns the most recent admin audit events.
+func (s *Service) ListAudit(ctx context.Context, limit int) ([]store.AuditEvent, error) {
+	return s.store.ListAudit(ctx, limit)
+}
+
+// ---- helpers ----
+
+// ensurePortFree rejects a static host port already reserved by another job. A
+// re-deploy of the same server keeps its own port.
+func (s *Service) ensurePortFree(port int, name string) error {
+	used, err := s.nomad.UsedPorts()
+	if err != nil {
+		return err
+	}
+	existing, _ := s.store.GetMCPServer(context.Background(), name)
+	for _, p := range used {
+		if p == port && p != existing.Port {
+			return fmt.Errorf("host port %d is already in use: %w", port, apperr.ErrConflict)
+		}
+	}
+	return nil
+}
+
+// resolveLiteLLMID looks up the LiteLLM id assigned to a model name (best-effort;
+// an empty id just means delete will fall back to a no-op).
+func (s *Service) resolveLiteLLMID(ctx context.Context, name string) string {
+	models, err := s.llm.ListModels(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, m := range models {
+		if m.Name == name {
+			return m.ID
+		}
+	}
+	return ""
+}
+
+func (s *Service) audit(ctx context.Context, actor, action, target, outcome string) {
+	_ = s.store.AppendAudit(ctx, store.AuditEvent{Actor: actor, Action: action, Target: target, Outcome: outcome})
+}
+
+func outcome(passed bool) string {
+	if passed {
+		return "passed"
+	}
+	return "failed"
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "xxxxxxxx"[:2*n]
+	}
+	return hex.EncodeToString(b)
+}

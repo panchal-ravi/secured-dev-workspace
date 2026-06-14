@@ -68,6 +68,20 @@ type Config struct {
 	// Per-user rate limit on mutating endpoints. RPS<=0 disables.
 	RateLimitRPS   float64 // PORTAL_RATE_LIMIT_RPS (default 5)
 	RateLimitBurst int     // PORTAL_RATE_LIMIT_BURST (default 10)
+
+	// Platform Admin onboarding plane (all optional). The plane is enabled only
+	// when both gateway addresses are set; the admin JWT secret / admin email /
+	// LiteLLM portal-admin key are read from Vault at startup, not from env.
+	MCPGatewayAddr  string // PORTAL_MCP_GATEWAY_ADDR (ContextForge admin URL, e.g. http://<node>:4444)
+	LLMGatewayAddr  string // PORTAL_LLM_GATEWAY_ADDR (LiteLLM admin URL, e.g. http://<node>:4000)
+	MCPNamespace    string // PORTAL_MCP_NAMESPACE (default "infra-mcp")
+	AgentNodePool   string // PORTAL_AGENT_NODE_POOL (default "agents")
+	MCPJobVaultRole string // PORTAL_MCP_JOB_VAULT_ROLE (WIF role for MCP jobs that reference Vault secrets)
+}
+
+// AdminEnabled reports whether the Platform Admin onboarding plane is configured.
+func (c Config) AdminEnabled() bool {
+	return c.MCPGatewayAddr != "" && c.LLMGatewayAddr != ""
 }
 
 // Load reads the configuration from the environment, returning an error that
@@ -100,6 +114,11 @@ func Load() (Config, error) {
 		TLSSkipVerify:        envBool("PORTAL_TLS_SKIP_VERIFY", true),
 		RateLimitRPS:         envFloat("PORTAL_RATE_LIMIT_RPS", 5),
 		RateLimitBurst:       envInt("PORTAL_RATE_LIMIT_BURST", 10),
+		MCPGatewayAddr:       os.Getenv("PORTAL_MCP_GATEWAY_ADDR"),
+		LLMGatewayAddr:       os.Getenv("PORTAL_LLM_GATEWAY_ADDR"),
+		MCPNamespace:         env("PORTAL_MCP_NAMESPACE", "infra-mcp"),
+		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
+		MCPJobVaultRole:      os.Getenv("PORTAL_MCP_JOB_VAULT_ROLE"),
 	}
 
 	// Secure cookies: explicit override, else inferred from the redirect scheme.

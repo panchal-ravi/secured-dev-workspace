@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/admin"
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
 
@@ -26,10 +28,12 @@ type server struct {
 }
 
 // Options configures the mux. Ready is the /readyz probe (dependency reachability)
-// and RateLimit throttles mutating endpoints per user.
+// and RateLimit throttles mutating endpoints per user. Admin is the optional
+// Platform Admin onboarding plane; when nil its routes are simply not mounted.
 type Options struct {
 	Auth      *auth.Authenticator
 	Svc       *workspace.Service
+	Admin     *admin.Handlers
 	StaticDir string
 	Ready     func(context.Context) error
 	RateLimit middleware.RateLimitConfig
@@ -63,6 +67,18 @@ func NewMux(opts Options) http.Handler {
 	mux.Handle("GET /api/projects/{name}/workspaces/{ws}/logs", protect(s.workspaceLogs))
 	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/ssh-config", mutate(s.writeSSHConfig))
 	mux.Handle("DELETE /api/projects/{name}/workspaces/{ws}", mutate(s.destroyWorkspace))
+
+	// Platform Admin onboarding plane (optional). Every route is gated by
+	// auth.Require + rbac.RequirePlatformAdmin; mutations also rate-limit per user.
+	if opts.Admin != nil {
+		adminProtect := func(h http.HandlerFunc) http.Handler {
+			return opts.Auth.Require(rbac.RequirePlatformAdmin(http.HandlerFunc(h)))
+		}
+		adminMutate := func(h http.HandlerFunc) http.Handler {
+			return opts.Auth.Require(rbac.RequirePlatformAdmin(rl.Wrap(http.HandlerFunc(h))))
+		}
+		opts.Admin.Register(mux, adminProtect, adminMutate)
+	}
 
 	// The secured-ws:// helper download. Served from a sibling of the SPA dir so the
 	// frontend build (which empties ./web) never deletes it. Public, no secrets.
@@ -115,6 +131,7 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 		"email":     u.Email,
 		"handle":    u.Handle,
 		"groups":    u.Groups,
+		"roles":     rbac.RolesFor(u.Groups),
 		"local_ssh": s.svc.LocalSSHEnabled(),
 	})
 }

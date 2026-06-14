@@ -56,10 +56,38 @@ Carbon React SPA  ──►  Go backend (trusted)  ──►  Vault   (read proj
 ## Layout
 
 ```
-backend/   Go module (cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api})
+backend/   Go module (cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api}
+           + onboarding plane: rbac, store, mcpgw, llmgw, admin)
 frontend/  Vite + React + @carbon/react  (build output → backend/web, served by the binary)
 helper/    macOS secured-ws:// helper — runs the Boundary login + manages ~/.ssh/config (the Connect flow)
 ```
+
+## Platform Admin onboarding plane (optional)
+
+A Platform Admin (IBM Verify group `platform-admins`) can onboard *capabilities* into the platform:
+**deploy an existing MCP server** (internal/third-party, e.g. `hashicorp/vault-mcp-server`) **as a
+Nomad job**, and **onboard an LLM model** into the LiteLLM gateway. Each is verified the way a Project
+Admin consumes it:
+
+- **MCP** — deploy → portal renders + runs a Docker Nomad job in `infra-mcp` → registers a ContextForge
+  peer → composes a **virtual server + scoped token** → tool call returns **200** while the same token
+  on another server returns **403** (scope isolation) → **Publish** writes a Vault KV descriptor.
+- **LLM** — add model (provider key read from Vault at call time → `/model/new`) → mint a **scoped key
+  with a budget + rpm limit** → completion **200**, rpm breach **429**, revoke **401** → **Publish**.
+
+The plane is **additive and optional**: it mounts only when the gateway addresses are configured, its
+admin credentials come from Vault (never env), and a failed init disables the plane without affecting
+developer flows. Backend logic lives in a reusable service (`internal/admin`); the `/api/admin/*` routes
+(gated by `rbac.RequirePlatformAdmin`) are the contract a future programmatic onboarding API will
+formalize. UI: `frontend/src/pages/platformadmin/` (role-gated nav).
+
+**Enable it (cloud):** set `enable_platform_admin = true` in `terraform/infra` (creates the `infra-mcp`
+namespace, the `infra-platform-admin` Vault policy, flips LiteLLM to `STORE_MODEL_IN_DB`, and bootstraps
+the portal-admin key) and apply. Relevant portal env (set by the Nomad job when enabled):
+`PORTAL_MCP_GATEWAY_ADDR`, `PORTAL_LLM_GATEWAY_ADDR`, `PORTAL_MCP_NAMESPACE`, `PORTAL_AGENT_NODE_POOL`.
+
+> Persistence is in-memory for this slice (`internal/store`); the deployed Nomad jobs, ContextForge
+> peers, and LiteLLM models persist in their own systems. A Postgres-backed `store.Store` is a drop-in.
 
 ## Prerequisites
 

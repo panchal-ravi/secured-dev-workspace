@@ -8,10 +8,19 @@ import {
   SideNavItems,
   SideNavLink,
 } from '@carbon/react'
-import { Logout, Dashboard, Folders, Application, Asleep, Light } from '@carbon/icons-react'
+import {
+  Logout,
+  Dashboard,
+  Folders,
+  Application,
+  Catalog,
+  MachineLearningModel,
+  Asleep,
+  Light,
+} from '@carbon/icons-react'
 import type { MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { logout, Me } from '../api/client'
+import { isPlatformAdmin, logout, Me } from '../api/client'
 
 export default function AppHeader({
   me,
@@ -41,6 +50,13 @@ export default function AppHeader({
     { label: 'Projects', path: '/projects', icon: Folders, current: pathname.startsWith('/projects') },
     { label: 'My Workspaces', path: '/workspaces', icon: Application, current: pathname.startsWith('/workspaces') },
   ]
+  // Platform Admin onboarding plane — shown only to platform admins.
+  if (isPlatformAdmin(me)) {
+    items.push(
+      { label: 'MCP servers', path: '/admin/mcp-servers', icon: Catalog, current: pathname.startsWith('/admin/mcp-servers') },
+      { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
+    )
+  }
 
   return (
     <Header aria-label="Secured Dev Workspace" className="cds--g100">

@@ -132,10 +132,13 @@ resource "vault_jwt_auth_backend_role" "infra_portal" {
   bound_audiences         = ["vault.io"]
   user_claim              = "/nomad_job_id"
   user_claim_json_pointer = true
-  token_policies          = [vault_policy.infra_portal_read[0].name]
-  token_ttl               = 1800
-  token_max_ttl           = 3600
-  token_type              = "service"
+  token_policies = concat(
+    [vault_policy.infra_portal_read[0].name],
+    var.enable_platform_admin ? [vault_policy.infra_platform_admin[0].name] : [],
+  )
+  token_ttl     = 1800
+  token_max_ttl = 3600
+  token_type    = "service"
 }
 
 # detach=false waits for the alloc to become healthy on apply. The portal reaches
@@ -160,6 +163,15 @@ resource "nomad_job" "developer_portal" {
     boundary_auth_method_id = module.secured_codespace.admin_auth_method_id
     nomad_addr              = "https://127.0.0.1:4646"
     vault_addr              = "https://127.0.0.1:8200"
+
+    # Platform Admin onboarding plane. Reached over loopback on the all-in-one node
+    # (the portal runs host-networked); empty when the plane is disabled, which
+    # leaves the env unset so the portal starts the plane off.
+    enable_platform_admin = var.enable_platform_admin
+    mcp_gateway_addr      = var.enable_platform_admin ? "http://127.0.0.1:4444" : ""
+    llm_gateway_addr      = var.enable_platform_admin ? "http://127.0.0.1:${local.litellm_port}" : ""
+    mcp_namespace         = var.enable_platform_admin ? nomad_namespace.infra_mcp[0].name : ""
+    agent_node_pool       = var.platform_admin_mcp_node_pool
   })
 
   depends_on = [vault_kv_secret_v2.developer_portal]

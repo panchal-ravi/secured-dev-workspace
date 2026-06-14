@@ -100,6 +100,13 @@ EOH
         # local SSH-config "Open in IDE" writes (the secured-ws:// helper drives that).
         PORTAL_SSH_CONFIG_PATH = ""
         PORTAL_LOG_LEVEL       = "info"
+%{ if enable_platform_admin ~}
+        # Platform Admin onboarding plane (gateways reached over loopback on-node).
+        PORTAL_MCP_GATEWAY_ADDR = "${mcp_gateway_addr}"
+        PORTAL_LLM_GATEWAY_ADDR = "${llm_gateway_addr}"
+        PORTAL_MCP_NAMESPACE    = "${mcp_namespace}"
+        PORTAL_AGENT_NODE_POOL  = "${agent_node_pool}"
+%{ endif ~}
       }
 
       service {

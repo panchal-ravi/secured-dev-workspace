@@ -53,7 +53,12 @@ export interface Me {
   email: string
   handle: string
   groups: string[]
+  roles: string[]
   local_ssh: boolean
+}
+
+export function isPlatformAdmin(me: Me | null): boolean {
+  return !!me && (me.roles || []).includes('platform-admin')
 }
 
 async function asJSON(r: Response) {
@@ -184,4 +189,137 @@ export function disconnectLink(host: string): string {
 
 export function logout(): Promise<Response> {
   return fetch('/auth/logout', { method: 'POST', credentials: 'include' })
+}
+
+// ---- Platform Admin onboarding plane ----
+
+export interface McpTestResult {
+  passed: boolean
+  tools_discovered: number
+  own_server_ok: boolean
+  admin_denied: boolean
+  other_server_denied: boolean
+  other_server_checked: boolean
+  message?: string
+  at: string
+}
+
+export interface McpServer {
+  name: string
+  image: string
+  command?: string[]
+  env?: Record<string, string>
+  secret_refs?: Record<string, string>
+  transport: string
+  port: number
+  path?: string
+  namespace: string
+  job_id?: string
+  peer_id?: string
+  gateway_url?: string
+  status: string
+  version: number
+  test_result?: McpTestResult
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DeployMcpInput {
+  name: string
+  image: string
+  command?: string[]
+  env?: Record<string, string>
+  secret_refs?: Record<string, string>
+  transport: string
+  port: number
+  path?: string
+}
+
+export interface LlmTestResult {
+  passed: boolean
+  completion_ok: boolean
+  rate_limit_enforced: boolean
+  revoke_enforced: boolean
+  message?: string
+  at: string
+}
+
+export interface LlmModel {
+  name: string
+  provider: string
+  backend_model: string
+  litellm_id?: string
+  status: string
+  test_result?: LlmTestResult
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface OnboardLlmInput {
+  name: string
+  provider: string
+  backend_model: string
+}
+
+const adminBase = '/api/admin'
+
+function post<T>(url: string, body?: unknown): Promise<T> {
+  return fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }).then(asJSON)
+}
+
+export function listMcpServers(): Promise<McpServer[]> {
+  return fetch(`${adminBase}/mcp-servers`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.servers as McpServer[]) || [])
+}
+
+export function deployMcpServer(input: DeployMcpInput): Promise<McpServer> {
+  return post(`${adminBase}/mcp-servers`, input)
+}
+
+export function testMcpServer(name: string): Promise<McpServer> {
+  return post(`${adminBase}/mcp-servers/${encodeURIComponent(name)}/test`)
+}
+
+export function publishMcpServer(name: string): Promise<McpServer> {
+  return post(`${adminBase}/mcp-servers/${encodeURIComponent(name)}/publish`)
+}
+
+export function deleteMcpServer(name: string): Promise<void> {
+  return fetch(`${adminBase}/mcp-servers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}
+
+export function listLlmModels(): Promise<LlmModel[]> {
+  return fetch(`${adminBase}/llm/models`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.models as LlmModel[]) || [])
+}
+
+export function onboardLlmModel(input: OnboardLlmInput): Promise<LlmModel> {
+  return post(`${adminBase}/llm/models`, input)
+}
+
+export function testLlmModel(name: string): Promise<LlmModel> {
+  return post(`${adminBase}/llm/models/${encodeURIComponent(name)}/test`)
+}
+
+export function publishLlmModel(name: string): Promise<LlmModel> {
+  return post(`${adminBase}/llm/models/${encodeURIComponent(name)}/publish`)
+}
+
+export function deleteLlmModel(name: string): Promise<void> {
+  return fetch(`${adminBase}/llm/models/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
 }

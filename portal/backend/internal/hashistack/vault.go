@@ -163,6 +163,36 @@ func (v *Vault) ReadJobTemplate(ctx context.Context, project, flavor string) (st
 	return jobspec, nil
 }
 
+// ReadKVField reads one string field from a KV-v2 secret at relPath (under the
+// mount). Used by the admin plane to read LLM provider keys at call time — the
+// value is injected into a downstream call and never persisted.
+func (v *Vault) ReadKVField(ctx context.Context, relPath, field string) (string, error) {
+	if err := v.refreshToken(); err != nil {
+		return "", err
+	}
+	sec, err := v.c.KVv2(v.mount).Get(ctx, relPath)
+	if err != nil {
+		return "", fmt.Errorf("vault: read %q: %w", relPath, err)
+	}
+	val, ok := sec.Data[field].(string)
+	if !ok {
+		return "", fmt.Errorf("vault: secret %q missing string field %q", relPath, field)
+	}
+	return val, nil
+}
+
+// WriteKV writes data to a KV-v2 secret at relPath (under the mount). Used by the
+// admin plane to publish an MCP server's deploy descriptor for downstream consumers.
+func (v *Vault) WriteKV(ctx context.Context, relPath string, data map[string]any) error {
+	if err := v.refreshToken(); err != nil {
+		return err
+	}
+	if _, err := v.c.KVv2(v.mount).Put(ctx, relPath, data); err != nil {
+		return fmt.Errorf("vault: write %q: %w", relPath, err)
+	}
+	return nil
+}
+
 // ListDescriptors reads every project that has a portal descriptor. Projects
 // without one (or unreadable) are skipped so one bad project can't hide the rest.
 func (v *Vault) ListDescriptors(ctx context.Context) ([]descriptor.Descriptor, error) {

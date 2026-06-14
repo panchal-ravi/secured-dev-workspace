@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Loading, Theme } from '@carbon/react'
-import { getMe, Me } from './api/client'
+import { getMe, isPlatformAdmin, Me } from './api/client'
 import { MeContext } from './me'
 import AppHeader from './components/AppHeader'
 import Login from './pages/Login'
@@ -9,6 +9,8 @@ import Home from './pages/Home'
 import Projects from './pages/Projects'
 import ProjectPage from './pages/Project'
 import Workspaces from './pages/Workspaces'
+import McpServers from './pages/platformadmin/McpServers'
+import LlmModels from './pages/platformadmin/LlmModels'
 
 type ThemeName = 'white' | 'g100'
 
@@ -68,6 +70,8 @@ export default function App() {
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:name" element={<ProjectPage />} />
           <Route path="/workspaces" element={<Workspaces />} />
+          {isPlatformAdmin(me) && <Route path="/admin/mcp-servers" element={<McpServers />} />}
+          {isPlatformAdmin(me) && <Route path="/admin/llm-models" element={<LlmModels />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </main>
