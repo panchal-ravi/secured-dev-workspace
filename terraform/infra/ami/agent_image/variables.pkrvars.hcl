@@ -1,0 +1,5 @@
+owner             = "rp"
+aws_region        = "ap-southeast-1"
+aws_instance_type = "t3.large"
+nomad_version     = "1.11.6+ent"
+cni_version       = "v1.9.0"

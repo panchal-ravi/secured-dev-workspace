@@ -8,6 +8,11 @@ module "secured_codespace" {
   gpu_instance_type    = var.gpu_instance_type
   gpu_root_volume_size = var.gpu_root_volume_size
 
+  enable_agent_nodes     = var.enable_agent_nodes
+  agent_node_count       = var.agent_node_count
+  agent_instance_type    = var.agent_instance_type
+  agent_root_volume_size = var.agent_root_volume_size
+
   enable_microvm_node      = var.enable_microvm_node
   microvm_instance_type    = var.microvm_instance_type
   microvm_root_volume_size = var.microvm_root_volume_size
