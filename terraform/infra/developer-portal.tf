@@ -11,41 +11,7 @@
 # Vault KV. The Verify OIDC app is still registered manually (var.portal_oidc_*);
 # moving it into the identity module is the remaining roadmap item.
 # ---------------------------------------------------------------------------
-
-# Deploy the portal as a Nomad job? Off by default: it requires the image pushed
-# (portal/scripts/build-image.sh), the Verify OIDC app registered with the NLB
-# `:8443` redirect URI, and the portal_oidc_* vars set. The base stack + the NLB
-# `:8443` listener provision regardless; flip this true for the portal job itself.
-variable "enable_developer_portal" {
-  description = "Deploy the Developer Portal Nomad job (needs the image + Verify app + portal_oidc_* vars)."
-  type        = bool
-  default     = false
-}
-
-variable "developer_portal_image" {
-  description = "Developer Portal container image (amd64). Build/push with portal/scripts/build-image.sh and pin a concrete tag."
-  type        = string
-  default     = "panchalravi/developer-portal:poc"
-}
-
-variable "portal_oidc_issuer" {
-  description = "The portal's IBM Verify OIDC issuer (full endpoint, e.g. https://<tenant>.verify.ibm.com/oidc/endpoint/default). Required only when enable_developer_portal = true."
-  type        = string
-  default     = ""
-}
-
-variable "portal_oidc_client_id" {
-  description = "Client id of the portal's IBM Verify OIDC app (registered manually). Required only when enable_developer_portal = true."
-  type        = string
-  default     = ""
-}
-
-variable "portal_oidc_client_secret" {
-  description = "Client secret of the portal's IBM Verify OIDC app. Required only when enable_developer_portal = true."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
+# Variables for this feature are declared in variables.tf (Developer Portal group).
 
 locals {
   developer_portal_port = 8443
@@ -175,9 +141,4 @@ resource "nomad_job" "developer_portal" {
   })
 
   depends_on = [vault_kv_secret_v2.developer_portal]
-}
-
-output "developer_portal_addr" {
-  description = "Developer Portal URL (NLB :8443), or null when enable_developer_portal = false. Register this host's /auth/callback as the Verify app redirect URI."
-  value       = var.enable_developer_portal ? "https://${module.secured_codespace.nlb_dns_name}:${local.developer_portal_port}" : null
 }

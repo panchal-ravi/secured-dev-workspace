@@ -182,3 +182,79 @@ variable "deepseek_api_key" {
   type        = string
   sensitive   = true
 }
+
+# --- Developer Portal (see developer-portal.tf) ---
+
+# Deploy the portal as a Nomad job? Off by default: it requires the image pushed
+# (portal/scripts/build-image.sh), the Verify OIDC app registered with the NLB
+# `:8443` redirect URI, and the portal_oidc_* vars set. The base stack + the NLB
+# `:8443` listener provision regardless; flip this true for the portal job itself.
+variable "enable_developer_portal" {
+  description = "Deploy the Developer Portal Nomad job (needs the image + Verify app + portal_oidc_* vars)."
+  type        = bool
+  default     = false
+}
+
+variable "developer_portal_image" {
+  description = "Developer Portal container image (amd64). Build/push with portal/scripts/build-image.sh and pin a concrete tag."
+  type        = string
+  default     = "panchalravi/developer-portal:poc"
+}
+
+variable "portal_oidc_issuer" {
+  description = "The portal's IBM Verify OIDC issuer (full endpoint, e.g. https://<tenant>.verify.ibm.com/oidc/endpoint/default). Required only when enable_developer_portal = true."
+  type        = string
+  default     = ""
+}
+
+variable "portal_oidc_client_id" {
+  description = "Client id of the portal's IBM Verify OIDC app (registered manually). Required only when enable_developer_portal = true."
+  type        = string
+  default     = ""
+}
+
+variable "portal_oidc_client_secret" {
+  description = "Client secret of the portal's IBM Verify OIDC app. Required only when enable_developer_portal = true."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# --- Platform Admin onboarding plane (see platform-admin.tf) ---
+
+variable "enable_platform_admin" {
+  description = "Enable the Platform Admin onboarding plane (MCP-server deploy + LLM-model onboarding in the portal). Requires enable_developer_portal and the MCP + LLM gateways; flips LiteLLM to STORE_MODEL_IN_DB and mints a portal-admin key."
+  type        = bool
+  default     = false
+}
+
+variable "platform_admin_mcp_node_pool" {
+  description = "Node pool for portal-deployed MCP servers. Defaults to \"agents\" (needs enable_agent_nodes); set to \"\" to run them on the all-in-one node instead."
+  type        = string
+  default     = "agents"
+}
+
+# --- Agent-platform identity (see agent-identity.tf) ---
+
+# Static org-context claims stamped into every actor JWT (overview §3 step 4).
+# Values are cosmetic identity context that Verify copies into the OBO `act`
+# claim; functionally inert. (Spike 2/3 used ibm/platform/secured-dev ad hoc —
+# these spec defaults supersede them.)
+variable "agent_identity_claims" {
+  type    = object({ org = string, bu = string, department = string, service_group = string })
+  default = { org = "ibm-demo", bu = "techsales", department = "advanced-sa", service_group = "agent-platform" }
+}
+
+# --- Vault GitHub secrets plugin (see vault-github-plugin.tf) ---
+
+variable "github_plugin_version" {
+  description = "vault-plugin-secrets-github release version (no leading v). Must match the AMI's baked binary."
+  type        = string
+  default     = "2.3.2"
+}
+
+variable "github_plugin_sha256" {
+  description = "SHA-256 of the baked linux-amd64 plugin binary. MUST match ami/base_image github_plugin_sha256."
+  type        = string
+  default     = "72cb1f2775ee2abf12ffb725e469d0377fe7bbb93cd7aaa6921c141eddecab87"
+}

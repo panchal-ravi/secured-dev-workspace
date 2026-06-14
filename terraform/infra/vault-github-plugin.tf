@@ -12,18 +12,7 @@
 # The sha256 here MUST equal the sha256 the AMI verified the download against
 # (ami/base_image/variables.pkr.hcl github_plugin_sha256). Keep them in lockstep.
 # ---------------------------------------------------------------------------
-
-variable "github_plugin_version" {
-  description = "vault-plugin-secrets-github release version (no leading v). Must match the AMI's baked binary."
-  type        = string
-  default     = "2.3.2"
-}
-
-variable "github_plugin_sha256" {
-  description = "SHA-256 of the baked linux-amd64 plugin binary. MUST match ami/base_image github_plugin_sha256."
-  type        = string
-  default     = "72cb1f2775ee2abf12ffb725e469d0377fe7bbb93cd7aaa6921c141eddecab87"
-}
+# Variables for this feature are declared in variables.tf (Vault GitHub plugin group).
 
 # The catalog read returns `sha256` (different shape from the write's `sha256`
 # param) which would show perpetual drift, so disable_read. Deregisters on destroy.

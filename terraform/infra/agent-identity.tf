@@ -33,15 +33,6 @@ resource "vault_identity_oidc" "server" {
   issuer = module.secured_codespace.vault_addr
 }
 
-# Static org-context claims stamped into every actor JWT (overview §3 step 4).
-# Values are cosmetic identity context that Verify copies into the OBO `act`
-# claim; functionally inert. (Spike 2/3 used ibm/platform/secured-dev ad hoc —
-# these spec defaults supersede them.)
-variable "agent_identity_claims" {
-  type    = object({ org = string, bu = string, department = string, service_group = string })
-  default = { org = "ibm-demo", bu = "techsales", department = "advanced-sa", service_group = "agent-platform" }
-}
-
 resource "vault_identity_oidc_key" "agent_identity" {
   name             = "agent-identity"
   algorithm        = "RS256"

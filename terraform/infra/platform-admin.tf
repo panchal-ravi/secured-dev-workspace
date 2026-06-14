@@ -10,18 +10,7 @@
 # Off by default — existing developer flows are byte-identical until an operator
 # opts in (and the portal degrades gracefully if the plane can't initialize).
 # ---------------------------------------------------------------------------
-
-variable "enable_platform_admin" {
-  description = "Enable the Platform Admin onboarding plane (MCP-server deploy + LLM-model onboarding in the portal). Requires enable_developer_portal and the MCP + LLM gateways; flips LiteLLM to STORE_MODEL_IN_DB and mints a portal-admin key."
-  type        = bool
-  default     = false
-}
-
-variable "platform_admin_mcp_node_pool" {
-  description = "Node pool for portal-deployed MCP servers. Defaults to \"agents\" (needs enable_agent_nodes); set to \"\" to run them on the all-in-one node instead."
-  type        = string
-  default     = "agents"
-}
+# Variables for this feature are declared in variables.tf (Platform Admin group).
 
 locals {
   platform_admin_count = var.enable_platform_admin ? 1 : 0

@@ -183,3 +183,10 @@ output "llm_gateway_kv_path" {
   description = "Vault KV v2 read path for the LiteLLM gateway secrets (master_key/salt_key/…). The project tier reads master_key here to mint per-project virtual keys."
   value       = "${vault_mount.kv.path}/data/infra/llm-gateway"
 }
+
+# --- Developer Portal (see developer-portal.tf) ---
+
+output "developer_portal_addr" {
+  description = "Developer Portal URL (NLB :8443), or null when enable_developer_portal = false. Register this host's /auth/callback as the Verify app redirect URI."
+  value       = var.enable_developer_portal ? "https://${module.secured_codespace.nlb_dns_name}:${local.developer_portal_port}" : null
+}
