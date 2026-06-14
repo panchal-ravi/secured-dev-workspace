@@ -176,7 +176,22 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, vault *hashistack.V
 
 	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
 	llm := llmgw.New(cfg.LLMGatewayAddr, llmKey, nil)
-	svc := admin.New(store.NewMemory(), nomad, gateway, llm, vault, admin.Config{
+
+	// Durable control-plane store when a DSN is configured (portal-postgres),
+	// otherwise the in-memory store. Both satisfy store.Store.
+	var st store.Store = store.NewMemory()
+	if cfg.DBDSN != "" {
+		pg, err := store.NewPostgres(ctx, cfg.DBDSN)
+		if err != nil {
+			return nil, fmt.Errorf("admin plane: connect control-plane store: %w", err)
+		}
+		st = pg
+		slog.Info("admin plane: using postgres control-plane store")
+	} else {
+		slog.Info("admin plane: using in-memory control-plane store (set PORTAL_DB_DSN for durability)")
+	}
+
+	svc := admin.New(st, nomad, gateway, llm, vault, admin.Config{
 		MCPNamespace:    cfg.MCPNamespace,
 		NodePool:        cfg.AgentNodePool,
 		MCPJobVaultRole: cfg.MCPJobVaultRole,

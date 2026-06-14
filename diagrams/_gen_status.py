@@ -76,7 +76,7 @@ lanes = [
         ("Vault agent-identity\n+ jwt-obo mount", GREEN),
         ("token-exchange svc :4460\ncode + container ✓ → deploy", AMBER),
         ("Agent worker nodes\nnode pool: agents", GREEN),
-        ("Portal rbac/ + store/\ncode ✓ (in-mem; pg later)", AMBER),
+        ("Portal rbac/ + store/\ncode ✓ (in-mem + postgres)", AMBER),
     ]),
     ("Developer\n(shipped\nbaseline)", 280, [
         ("Developer Portal\nGo + Carbon React", GREEN),

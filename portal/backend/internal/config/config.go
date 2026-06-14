@@ -77,6 +77,7 @@ type Config struct {
 	MCPNamespace    string // PORTAL_MCP_NAMESPACE (default "infra-mcp")
 	AgentNodePool   string // PORTAL_AGENT_NODE_POOL (default "agents")
 	MCPJobVaultRole string // PORTAL_MCP_JOB_VAULT_ROLE (WIF role for MCP jobs that reference Vault secrets)
+	DBDSN           string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
 }
 
 // AdminEnabled reports whether the Platform Admin onboarding plane is configured.
@@ -119,6 +120,7 @@ func Load() (Config, error) {
 		MCPNamespace:         env("PORTAL_MCP_NAMESPACE", "infra-mcp"),
 		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
 		MCPJobVaultRole:      os.Getenv("PORTAL_MCP_JOB_VAULT_ROLE"),
+		DBDSN:                os.Getenv("PORTAL_DB_DSN"),
 	}
 
 	// Secure cookies: explicit override, else inferred from the redirect scheme.
