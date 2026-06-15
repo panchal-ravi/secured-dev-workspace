@@ -17,12 +17,13 @@ resource "nomad_job" "demo_db_mcp" {
   purge_on_destroy = true
 
   jobspec = templatefile("${path.module}/templates-static/demo-db-mcp.nomad.tpl", {
-    namespace     = nomad_namespace.project.name
-    image         = local.postgres_mcp_image
-    sse_port      = local.demo_db_mcp_port
-    wif_role      = vault_jwt_auth_backend_role.project.role_name
-    db_creds_path = "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}"
-    db_endpoint   = "${local.f.instance_private_ip}:${local.demo_db_port}"
+    namespace       = nomad_namespace.project.name
+    vault_namespace = vault_namespace.project.path
+    image           = local.postgres_mcp_image
+    sse_port        = local.demo_db_mcp_port
+    wif_role        = vault_jwt_auth_backend_role.project.role_name
+    db_creds_path   = "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}"
+    db_endpoint     = "${local.f.instance_private_ip}:${local.demo_db_port}"
   })
 
   # The DB role/connection must exist (so the WIF read works) and the Postgres job

@@ -39,7 +39,8 @@ job "demo-db-mcp" {
       # WIF: the project's Nomad↔Vault role (its policy allows reading the read-only
       # DB creds path). Same role the workspace job uses.
       vault {
-        role = "${wif_role}"
+        namespace = "${vault_namespace}"
+        role      = "${wif_role}"
       }
 
       # Per-project, read-only, Vault-DYNAMIC Postgres credential -> task env as
