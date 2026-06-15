@@ -57,7 +57,10 @@ resource "vault_kv_secret_v2" "developer_portal" {
   count = local.portal_count
   mount = vault_mount.kv.path
   name  = "infra/developer-portal"
-  data_json = jsonencode({
+  # The portal-postgres password is copied here (when the admin plane is on) so the
+  # portal can assemble PORTAL_DB_DSN in its jobspec over its existing WIF read of
+  # this path — no second WIF role for the portal.
+  data_json = jsonencode(merge({
     oidc_client_secret = var.portal_oidc_client_secret
     session_secret     = random_password.portal_session_secret[0].result
     boundary_login     = module.secured_codespace.admin_login_name
@@ -65,7 +68,9 @@ resource "vault_kv_secret_v2" "developer_portal" {
     nomad_token        = module.secured_codespace.nomad_management_token
     tls_cert           = tls_self_signed_cert.portal[0].cert_pem
     tls_key            = tls_private_key.portal[0].private_key_pem
-  })
+    }, var.enable_platform_admin ? {
+    pg_password = random_password.portal_pg[0].result
+  } : {}))
 }
 
 # WIF read policy + role: the portal job may read its own secret path and the
@@ -137,7 +142,11 @@ resource "nomad_job" "developer_portal" {
     # jobspec (nomadService "mcp-gateway"/"llm-gateway"), not injected here.
     mcp_namespace   = var.enable_platform_admin ? nomad_namespace.infra_mcp[0].name : ""
     agent_node_pool = var.platform_admin_mcp_node_pool
+    # Postgres reachable on the all-in-one node (host-network); the portal builds
+    # PORTAL_DB_DSN from this + the pg_password it reads over WIF. Unused when the
+    # admin plane is off (the jobspec omits the DSN line entirely).
+    db_host = "${module.secured_codespace.instance_private_ip}:${local.portal_pg_port}"
   })
 
-  depends_on = [vault_kv_secret_v2.developer_portal]
+  depends_on = [vault_kv_secret_v2.developer_portal, nomad_job.portal_postgres]
 }

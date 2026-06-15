@@ -57,6 +57,9 @@ PORTAL_SESSION_SECRET={{ .Data.data.session_secret }}
 PORTAL_BOUNDARY_LOGIN={{ .Data.data.boundary_login }}
 PORTAL_BOUNDARY_PASSWORD={{ .Data.data.boundary_password }}
 PORTAL_NOMAD_TOKEN={{ .Data.data.nomad_token }}
+%{ if enable_platform_admin ~}
+PORTAL_DB_DSN=postgres://portal:{{ .Data.data.pg_password }}@${db_host}/portal?sslmode=disable
+%{ endif ~}
 {{ end }}
 EOH
       }

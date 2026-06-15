@@ -234,6 +234,12 @@ variable "platform_admin_mcp_node_pool" {
   default     = "agents"
 }
 
+variable "portal_postgres_image" {
+  description = "Postgres image backing the portal's onboarding control plane (mcp_servers, llm_models, audit_events, blueprints). Deployed only when enable_platform_admin = true."
+  type        = string
+  default     = "postgres:16-alpine"
+}
+
 # --- Agent-platform identity (see agent-identity.tf) ---
 
 # Static org-context claims stamped into every actor JWT (overview §3 step 4).

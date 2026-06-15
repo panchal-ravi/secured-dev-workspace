@@ -1,0 +1,125 @@
+# Postgres backing the Developer Portal's Platform Admin onboarding plane (control
+# plane: mcp_servers, llm_models, audit_events, blueprints). Holds onboarding state
+# + the audit trail, so it gets a persistent host volume. Rendered by terraform/
+# infra/portal-postgres.tf templatefile(). consul-template "{{ ... }}" is left
+# literal (a different delimiter from Terraform interpolation, so no escaping is
+# needed). Mirrors litellm-postgres.nomad.hcl.tftpl.
+job "portal-postgres" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "service"
+
+  group "db" {
+    count = 1
+
+    network {
+      port "pg" {
+        static = ${port}
+        to     = 5432
+      }
+    }
+
+    # Persistent data — onboarding state + audit log survive a restart.
+    volume "data" {
+      type            = "host"
+      source          = "${volume}"
+      read_only       = false
+      access_mode     = "single-node-writer"
+      attachment_mode = "file-system"
+    }
+
+    # The mkdir dynamic host volume is created root-owned (0755), but the
+    # postgres:*-alpine image runs initdb as the postgres user (uid 70), which
+    # cannot create the PGDATA subdir under the root-owned mount — initdb aborts
+    # with "mkdir: ... Permission denied" and the alloc never goes healthy. This
+    # prestart task (root, busybox) hands the volume to uid 70 before Postgres
+    # starts. Idempotent across restarts. (70 = the alpine postgres uid:gid; if
+    # portal_postgres_image is swapped to the Debian postgres image, use 999.)
+    task "init-data-perms" {
+      driver = "docker"
+
+      lifecycle {
+        hook    = "prestart"
+        sidecar = false
+      }
+
+      config {
+        image      = "busybox:1.37"
+        force_pull = true
+        command    = "sh"
+        args       = ["-c", "chown -R 70:70 /data && chmod 0775 /data"]
+      }
+
+      volume_mount {
+        volume      = "data"
+        destination = "/data"
+        read_only   = false
+      }
+
+      resources {
+        cpu    = 50
+        memory = 32
+      }
+    }
+
+    task "postgres" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = true
+        ports      = ["pg"]
+      }
+
+      volume_mount {
+        volume      = "data"
+        destination = "/var/lib/postgresql/data"
+        read_only   = false
+      }
+
+      # WIF: read ONLY the portal-postgres secret path (the infra-portal-postgres
+      # role/policy) for the Postgres password. (The volume is pre-chowned to uid 70
+      # by the init-data-perms prestart task above.)
+      vault {
+        role = "${wif_role}"
+      }
+
+      template {
+        destination = "secrets/pg.env"
+        env         = true
+        change_mode = "restart"
+        data        = <<EOH
+{{ with secret "${kv_path}" }}
+POSTGRES_PASSWORD={{ .Data.data.pg_password }}
+{{ end }}
+EOH
+      }
+
+      env {
+        POSTGRES_USER = "portal"
+        POSTGRES_DB   = "portal"
+        # Subdir under the mount so initdb owns a clean dir on the host volume.
+        PGDATA = "/var/lib/postgresql/data/pgdata"
+      }
+
+      # Readiness: the alloc is "healthy" only once Postgres accepts TCP — so the
+      # portal's schema migration (depends_on this job) does not race the DB.
+      # provider = "nomad": this cluster runs Consul dormant.
+      service {
+        name     = "portal-postgres"
+        provider = "nomad"
+        port     = "pg"
+        check {
+          type     = "tcp"
+          interval = "10s"
+          timeout  = "2s"
+        }
+      }
+
+      resources {
+        cpu    = 250
+        memory = 512
+      }
+    }
+  }
+}
