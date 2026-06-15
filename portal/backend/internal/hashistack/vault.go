@@ -75,6 +75,10 @@ func (v *Vault) refreshToken() error {
 	return nil
 }
 
+// APIClient exposes the underlying Vault API client for privileged admin clients
+// (the blueprint engine) that need engine-lifecycle operations beyond KV.
+func (v *Vault) APIClient() *vapi.Client { return v.c }
+
 // Ping checks Vault is reachable (unauthenticated health endpoint), for readiness.
 func (v *Vault) Ping(ctx context.Context) error {
 	if _, err := v.c.Sys().HealthWithContext(ctx); err != nil {

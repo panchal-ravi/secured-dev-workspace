@@ -19,6 +19,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/admin"
 	"github.com/secured-dev-workspace/developer-portal/internal/api"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
+	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/config"
 	"github.com/secured-dev-workspace/developer-portal/internal/hashistack"
 	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
@@ -191,7 +192,15 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, vault *hashistack.V
 		slog.Info("admin plane: using in-memory control-plane store (set PORTAL_DB_DSN for durability)")
 	}
 
-	svc := admin.New(st, nomad, gateway, llm, vault, admin.Config{
+	vadmin := blueprint.NewVaultAdmin(vault.APIClient())
+	executor := blueprint.NewExecutor(vadmin, blueprint.ExecutorConfig{
+		AuthPath:      "jwt-nomad",
+		BoundAudience: "vault",
+		KVMount:       cfg.VaultKVMount,
+	})
+	validator := blueprint.NewValidator(vadmin, executor)
+
+	svc := admin.New(st, nomad, gateway, llm, vault, validator, admin.Config{
 		MCPNamespace:    cfg.MCPNamespace,
 		NodePool:        cfg.AgentNodePool,
 		MCPJobVaultRole: cfg.MCPJobVaultRole,
