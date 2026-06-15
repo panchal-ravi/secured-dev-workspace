@@ -46,6 +46,9 @@ func (r *recVault) MintTokenWithPolicies(_ context.Context, ns string, p []strin
 	return "tok", nil
 }
 func (r *recVault) Read(_ context.Context, ns, tok, path string) (bool, error) {
+	if strings.HasPrefix(path, "sys/") {
+		return false, nil // a scoped token is always denied sys/ (clean 403)
+	}
 	return !r.failRead, nil
 }
 

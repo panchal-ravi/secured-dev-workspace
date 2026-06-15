@@ -1,0 +1,144 @@
+package blueprint
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// ValidationResult is the outcome of validating a blueprint before publish.
+type ValidationResult struct {
+	Passed  bool      `json:"passed"`
+	Checks  []Check   `json:"checks"`
+	Message string    `json:"message,omitempty"`
+	At      time.Time `json:"at"`
+}
+
+// Check is one named gate result.
+type Check struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// Validator gates blueprint publishing: static lint, then a live consumption-mirror
+// test (instantiate into a throwaway namespace, probe 200/403, deprovision).
+type Validator struct {
+	v  VaultAdmin
+	ex *Executor
+	// now is injectable for deterministic tests / namespace naming.
+	now func() time.Time
+}
+
+// NewValidator builds a Validator over a VaultAdmin and an Executor.
+func NewValidator(v VaultAdmin, ex *Executor) *Validator {
+	return &Validator{v: v, ex: ex, now: time.Now}
+}
+
+// Validate runs the publish gate. It returns a ValidationResult (Passed=false on a
+// failed gate); it only returns a non-nil error on an unexpected transport failure.
+func (val *Validator) Validate(ctx context.Context, m BlueprintManifest) (ValidationResult, error) {
+	res := ValidationResult{At: val.now()}
+
+	// Gate 1: shape.
+	if err := m.Validate(); err != nil {
+		res.Checks = append(res.Checks, Check{Name: "shape", Passed: false, Detail: err.Error()})
+		res.Message = "manifest shape invalid"
+		return res, nil
+	}
+	res.Checks = append(res.Checks, Check{Name: "shape", Passed: true})
+
+	// Gate 2: render + lint (no Vault calls yet). Use a representative namespace.
+	const probeNS = "bp-validate"
+	mount := val.ex.cfg.KVMount
+	role := ""
+	if m.Class == ClassA {
+		mount = render(m.Engines[0].MountPathTpl, probeNS)
+		role = render(m.Role.NameTpl, probeNS)
+	}
+	policyHCL, err := RenderPolicy(m.PolicyTpl, PolicyVars{Namespace: probeNS, Mount: mount, Role: role})
+	if err != nil {
+		res.Checks = append(res.Checks, Check{Name: "policy-render", Passed: false, Detail: err.Error()})
+		res.Message = "policy render failed"
+		return res, nil
+	}
+	if err := LintPolicy(policyHCL, allowedPrefixes(m, probeNS, val.ex.cfg.KVMount, mount)); err != nil {
+		res.Checks = append(res.Checks, Check{Name: "policy-lint", Passed: false, Detail: err.Error()})
+		res.Message = "policy lint failed"
+		return res, nil
+	}
+	res.Checks = append(res.Checks, Check{Name: "policy-lint", Passed: true})
+
+	// Gate 3: live consumption-mirror in a throwaway namespace.
+	ns := fmt.Sprintf("%s-%s-%d", probeNS, m.ID, val.now().UnixNano())
+	if err := val.v.CreateNamespace(ctx, ns); err != nil {
+		return res, fmt.Errorf("blueprint: create throwaway namespace: %w", err)
+	}
+	defer func() { _ = val.v.DeleteNamespace(ctx, ns) }()
+
+	rec, err := val.ex.Instantiate(ctx, m, ns, syntheticParams(m))
+	if err != nil {
+		res.Checks = append(res.Checks, Check{Name: "instantiate", Passed: false, Detail: err.Error()})
+		res.Message = "instantiate failed"
+		return res, nil
+	}
+	defer func() { _ = val.ex.Deprovision(ctx, rec) }()
+
+	token, err := val.v.MintTokenWithPolicies(ctx, ns, rec.PolicyNames, "5m")
+	if err != nil {
+		return res, fmt.Errorf("blueprint: mint probe token: %w", err)
+	}
+
+	allowedPath, deniedPath := probePaths(m, ns, mount, role)
+	allowedOK, err := val.v.Read(ctx, ns, token, allowedPath)
+	if err != nil {
+		return res, fmt.Errorf("blueprint: allowed probe: %w", err)
+	}
+	deniedOK, err := val.v.Read(ctx, ns, token, deniedPath)
+	if err != nil {
+		return res, fmt.Errorf("blueprint: denied probe: %w", err)
+	}
+	res.Checks = append(res.Checks,
+		Check{Name: "allowed-read-200", Passed: allowedOK},
+		Check{Name: "denied-read-403", Passed: !deniedOK},
+	)
+	res.Passed = allowedOK && !deniedOK
+	if !res.Passed {
+		res.Message = "consumption-mirror probe failed"
+	}
+	return res, nil
+}
+
+// syntheticParams supplies throwaway values for a validation instantiate. Secret
+// params get a dummy value; required strings get a placeholder. Class A's
+// connection_url points at a non-routable address (the engine config does not
+// connect until a cred is requested, and the probe reads the role, not a cred).
+func syntheticParams(m BlueprintManifest) map[string]string {
+	p := map[string]string{}
+	for _, sp := range m.Params {
+		switch sp.Type {
+		case "secret":
+			p[sp.Name] = "validation-dummy-secret"
+		default:
+			p[sp.Name] = "validation-placeholder"
+		}
+	}
+	if m.Class == ClassA {
+		p["connection_url"] = "postgresql://v:v@127.0.0.1:1/postgres?sslmode=disable"
+		p["bootstrap_username"] = "v"
+	}
+	return p
+}
+
+// probePaths returns an allowed path (the brokered cred/KV the policy grants) and a
+// denied path (a sys/ read every token must be refused).
+func probePaths(m BlueprintManifest, ns, mount, role string) (allowed, denied string) {
+	denied = "sys/mounts"
+	switch m.Class {
+	case ClassA:
+		allowed = mount + "/creds/" + role
+	default:
+		allowed = mount + "/data/projects/" + ns + "/" + m.ID
+	}
+	return allowed, denied
+}
