@@ -51,6 +51,16 @@ resource "vault_kv_secret_v2" "llm_gateway" {
     pg_password      = random_password.litellm_pg.result             # Postgres password (DB-backed keys/logs)
     deepseek_api_key = var.deepseek_api_key                          # the ONE provider key, never reaches a workspace
   })
+
+  # portal_admin_key is minted + merge-patched into this secret OUT-OF-BAND by
+  # scripts/litellm-portal-admin-key.sh (terraform_data.litellm_portal_admin_key).
+  # Without this, every plan tries to revert data_json to the four keys above and
+  # DROP that out-of-band portal_admin_key — breaking the portal's LLM onboarding.
+  # The four managed keys are generated/stable, so suppressing post-create drift on
+  # the blob is safe (a key rotation is a deliberate taint/replace, not a silent edit).
+  lifecycle {
+    ignore_changes = [data_json]
+  }
 }
 
 # WIF read policy + role: the gateway + Postgres jobs (Nomad workload identity) may
