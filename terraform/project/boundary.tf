@@ -22,6 +22,7 @@ resource "boundary_credential_store_vault" "this" {
   description = "Vault credential store for ${var.project_name} (dedicated least-privilege token)"
   scope_id    = boundary_scope.project.id
 
+  namespace       = var.project_name
   address         = var.vault_cred_store_address
   token           = vault_token.boundary.client_token
   tls_skip_verify = true # base uses a self-signed cert
