@@ -34,7 +34,8 @@ data "vault_kv_secret_v2" "llm_gateway" {
 # key. KV v2 ⇒ the read path is prefixed with /data/. Attached to the project WIF
 # role's token_policies in vault.tf (replaces the old DeepSeek-key read policy).
 resource "vault_policy" "nomad_llm_read" {
-  name = "nomad-${var.project_name}-llm-read"
+  namespace = vault_namespace.project.path
+  name      = "nomad-${var.project_name}-llm-read"
 
   policy = <<-HCL
     path "${local.f.kv_mount_path}/data/projects/${var.project_name}/llm" {
@@ -63,10 +64,11 @@ resource "terraform_data" "llm_provision" {
     MAX_BUDGET   = tostring(local.llm_max_budget)
     RPM_LIMIT    = tostring(local.llm_rpm_limit)
     MASTER_KEY   = data.vault_kv_secret_v2.llm_gateway.data["master_key"]
-    VAULT_ADDR   = local.f.vault_addr
-    VAULT_TOKEN  = local.f.vault_root_token
-    KV_MOUNT     = local.f.kv_mount_path
-    KV_NAME      = local.llm_kv_name
+    VAULT_ADDR      = local.f.vault_addr
+    VAULT_TOKEN     = local.f.vault_root_token
+    KV_MOUNT        = local.f.kv_mount_path
+    KV_NAME         = local.llm_kv_name
+    VAULT_NAMESPACE = vault_namespace.project.path
   }
 
   provisioner "local-exec" {
@@ -80,4 +82,6 @@ resource "terraform_data" "llm_provision" {
     command     = "bash ${path.module}/scripts/llm-provision.sh deprovision"
     environment = self.input
   }
+
+  depends_on = [vault_mount.kv]
 }

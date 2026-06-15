@@ -20,7 +20,7 @@ set -euo pipefail
 VERB="${1:?usage: llm-provision.sh provision|deprovision}"
 
 : "${GW_ADMIN_URL:?}" "${PROJECT:?}" "${KEY_ALIAS:?}" "${MASTER_KEY:?}"
-: "${VAULT_ADDR:?}" "${VAULT_TOKEN:?}" "${KV_MOUNT:?}" "${KV_NAME:?}"
+: "${VAULT_ADDR:?}" "${VAULT_TOKEN:?}" "${KV_MOUNT:?}" "${KV_NAME:?}" "${VAULT_NAMESPACE:?}"
 
 # Authenticated gateway admin call: gw METHOD PATH [JSON-BODY].
 gw() {
@@ -62,6 +62,7 @@ provision() {
   # via the kv.tf llm_base_url placeholder (stored here too for completeness).
   curl -fsSk -X POST "$VAULT_ADDR/v1/$KV_MOUNT/data/$KV_NAME" \
     -H "X-Vault-Token: $VAULT_TOKEN" \
+    -H "X-Vault-Namespace: $VAULT_NAMESPACE" \
     -d "$(jq -n --arg u "$GW_BASE_URL" --arg k "$virtual_key" '{data:{base_url:$u,virtual_key:$k}}')" >/dev/null
   echo "wrote $KV_MOUNT/$KV_NAME (base_url + virtual key)"
 }
@@ -71,7 +72,8 @@ deprovision() {
   set +e
   revoke_key
   curl -sk -X DELETE "$VAULT_ADDR/v1/$KV_MOUNT/metadata/$KV_NAME" \
-    -H "X-Vault-Token: $VAULT_TOKEN" >/dev/null 2>&1
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    -H "X-Vault-Namespace: $VAULT_NAMESPACE" >/dev/null 2>&1
   echo "removed $KV_MOUNT/$KV_NAME"
   set -e
 }

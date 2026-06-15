@@ -33,7 +33,7 @@ set -euo pipefail
 VERB="${1:?usage: mcp-provision.sh provision|deprovision}"
 
 : "${GW_URL:?}" "${PROJECT:?}" "${PEER_NAME:?}" "${VS_NAME:?}" "${ADMIN_EMAIL:?}" "${JWT_SECRET:?}"
-: "${VAULT_ADDR:?}" "${VAULT_TOKEN:?}" "${KV_MOUNT:?}" "${KV_NAME:?}"
+: "${VAULT_ADDR:?}" "${VAULT_TOKEN:?}" "${KV_MOUNT:?}" "${KV_NAME:?}" "${VAULT_NAMESPACE:?}"
 
 b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
 
@@ -138,6 +138,7 @@ provision() {
   url="$GW_PRIVATE_URL/servers/$vs_id/sse"
   curl -fsSk -X POST "$VAULT_ADDR/v1/$KV_MOUNT/data/$KV_NAME" \
     -H "X-Vault-Token: $VAULT_TOKEN" \
+    -H "X-Vault-Namespace: $VAULT_NAMESPACE" \
     -d "$(jq -n --arg u "$url" --arg t "$client_token" '{data:{url:$u,token:$t}}')" >/dev/null
   echo "wrote $KV_MOUNT/$KV_NAME (url + scoped client token $client_name)"
 }
@@ -153,7 +154,8 @@ deprovision() {
   peer_id="$(gw GET /gateways 2>/dev/null | jq -r --arg n "$PEER_NAME" 'first(.[]? | select(.name==$n) | .id) // empty')"
   [ -n "$peer_id" ] && { gw DELETE "/gateways/$peer_id" >/dev/null 2>&1; echo "deleted peer $PEER_NAME"; }
   curl -sk -X DELETE "$VAULT_ADDR/v1/$KV_MOUNT/metadata/$KV_NAME" \
-    -H "X-Vault-Token: $VAULT_TOKEN" >/dev/null 2>&1
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    -H "X-Vault-Namespace: $VAULT_NAMESPACE" >/dev/null 2>&1
   echo "removed $KV_MOUNT/$KV_NAME"
   set -e
 }

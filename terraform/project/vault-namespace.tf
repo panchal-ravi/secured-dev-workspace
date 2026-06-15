@@ -37,3 +37,14 @@ resource "vault_jwt_auth_backend" "nomad" {
   jwks_url    = "https://127.0.0.1:4646/.well-known/jwks.json"
   jwks_ca_pem = local.f.nomad_ca_pem
 }
+
+# Namespace-local KV v2 for this project's runtime coordinates (MCP virtual-server
+# URL + client token, LLM virtual key). The workspace WIF token reads these; they
+# must live in the namespace because the token cannot reach root secret/.
+resource "vault_mount" "kv" {
+  namespace   = vault_namespace.project.path
+  path        = "secret"
+  type        = "kv"
+  options     = { version = "2" }
+  description = "Project runtime coordinates (MCP/LLM) for ${var.project_name}"
+}

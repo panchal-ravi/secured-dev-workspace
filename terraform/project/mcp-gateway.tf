@@ -61,6 +61,7 @@ resource "terraform_data" "mcp_provision" {
     VAULT_TOKEN     = local.f.vault_root_token
     KV_MOUNT        = local.f.kv_mount_path
     KV_NAME         = local.mcp_kv_name
+    VAULT_NAMESPACE = vault_namespace.project.path
   }
 
   provisioner "local-exec" {
@@ -76,5 +77,5 @@ resource "terraform_data" "mcp_provision" {
   }
 
   # The peer must be reachable for tool discovery before we register it.
-  depends_on = [nomad_job.demo_db_mcp]
+  depends_on = [nomad_job.demo_db_mcp, vault_mount.kv]
 }
