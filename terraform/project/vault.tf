@@ -8,6 +8,7 @@
 # private key and signs short-lived SSH USER certs; the project's workspace sshd
 # trusts only this CA via TrustedUserCAKeys.
 resource "vault_mount" "ssh" {
+  namespace   = vault_namespace.project.path
   path        = "ssh/${var.project_name}"
   type        = "ssh"
   description = "SSH client CA for project ${var.project_name} — signs short-lived workspace user certs"
@@ -16,6 +17,7 @@ resource "vault_mount" "ssh" {
 # Generate + hold the CA signing key inside Vault. ed25519 so OpenSSH accepts the
 # signature without the deprecated ssh-rsa (SHA-1) algorithm.
 resource "vault_ssh_secret_backend_ca" "ssh" {
+  namespace            = vault_namespace.project.path
   backend              = vault_mount.ssh.path
   generate_signing_key = true
   key_type             = "ed25519"
@@ -26,6 +28,7 @@ resource "vault_ssh_secret_backend_ca" "ssh" {
 # direct-tcpip channel), short TTLs. Boundary supplies key_id = the authenticated
 # developer's email for audit.
 resource "vault_ssh_secret_backend_role" "dev_workspace" {
+  namespace               = vault_namespace.project.path
   name                    = "dev-workspace"
   backend                 = vault_mount.ssh.path
   key_type                = "ca"
@@ -50,7 +53,8 @@ resource "vault_ssh_secret_backend_role" "dev_workspace" {
 # project's signing endpoint.
 # ---------------------------------------------------------------------------
 resource "vault_policy" "boundary" {
-  name = "boundary-${var.project_name}-cred-store"
+  namespace = vault_namespace.project.path
+  name      = "boundary-${var.project_name}-cred-store"
 
   policy = <<-HCL
     path "auth/token/lookup-self" {
@@ -81,6 +85,7 @@ resource "vault_policy" "boundary" {
 # periodic token so it can self-renew indefinitely; orphan so its lifecycle is
 # independent of the root token that created it.
 resource "vault_token" "boundary" {
+  namespace         = vault_namespace.project.path
   policies          = [vault_policy.boundary.name]
   period            = var.boundary_token_period
   no_parent         = true
@@ -100,7 +105,8 @@ resource "vault_token" "boundary" {
 # role in its `vault { role = ... }` stanza.
 # ---------------------------------------------------------------------------
 resource "vault_policy" "nomad_ca_read" {
-  name = "nomad-${var.project_name}-ca-read"
+  namespace = vault_namespace.project.path
+  name      = "nomad-${var.project_name}-ca-read"
 
   policy = <<-HCL
     path "${vault_mount.ssh.path}/config/ca" {
@@ -113,7 +119,8 @@ resource "vault_policy" "nomad_ca_read" {
 # demo-db-mcp service (demo-db-mcp.tf) — the centralized MCP server that holds the
 # shared connection — using this same project WIF role.
 resource "vault_policy" "nomad_db_creds" {
-  name = "nomad-${var.project_name}-db-creds"
+  namespace = vault_namespace.project.path
+  name      = "nomad-${var.project_name}-db-creds"
 
   policy = <<-HCL
     path "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}" {
@@ -126,7 +133,8 @@ resource "vault_policy" "nomad_db_creds" {
 # virtual-server URL + client bearer token) written by the gateway orchestration
 # (mcp-gateway.tf) to secret/projects/<project>/mcp. KV v2 ⇒ /data/ prefix.
 resource "vault_policy" "nomad_mcp_read" {
-  name = "nomad-${var.project_name}-mcp-read"
+  namespace = vault_namespace.project.path
+  name      = "nomad-${var.project_name}-mcp-read"
 
   policy = <<-HCL
     path "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp" {
@@ -139,7 +147,8 @@ resource "vault_policy" "nomad_mcp_read" {
 # default_identity.aud (config/nomad.hcl) and the job identity.aud — all three are
 # the fixed literal "vault.io"; a mismatch fails JWT verification with a silent 403.
 resource "vault_jwt_auth_backend_role" "project" {
-  backend                 = local.f.jwt_backend_path
+  namespace               = vault_namespace.project.path
+  backend                 = vault_jwt_auth_backend.nomad.path
   role_name               = var.project_name
   role_type               = "jwt"
   bound_audiences         = ["vault.io"]
