@@ -1,0 +1,26 @@
+{
+  "id": "postgres-mcp",
+  "version": 1,
+  "class": "A",
+  "description": "Postgres MCP server — dynamic SELECT-only DB creds brokered by Vault.",
+  "engines": [
+    { "type": "database", "plugin": "postgresql-database-plugin", "mount_path_tpl": "database/{{.Namespace}}-pg" }
+  ],
+  "role": {
+    "name_tpl": "mcp-ro",
+    "creation_statements": [
+      "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';",
+      "GRANT USAGE ON SCHEMA public TO \"{{name}}\";",
+      "GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";"
+    ],
+    "default_ttl_seconds": 3600,
+    "max_ttl_seconds": 86400
+  },
+  "policy_tpl": "path \"{{.Mount}}/creds/{{.Role}}\" {\n  capabilities = [\"read\"]\n}\n",
+  "wif_role": { "name_tpl": "mcp-postgres-mcp", "token_policies": ["mcp-postgres-mcp"], "token_ttl": "1h" },
+  "params": [
+    { "name": "connection_url", "type": "string", "required": true, "prompt": "Postgres connection URL with {{username}}/{{password}} templating" },
+    { "name": "bootstrap_username", "type": "string", "required": true, "prompt": "Bootstrap admin username (rotated immediately)" },
+    { "name": "bootstrap_password", "type": "secret", "required": true, "prompt": "Bootstrap admin password (write-only; rotated immediately)" }
+  ]
+}
