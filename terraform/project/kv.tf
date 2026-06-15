@@ -39,6 +39,7 @@ resource "vault_kv_secret_v2" "job_template" {
       image             = each.value.image
       git_repo_url      = each.value.git_repo_url
       wif_role          = var.project_name
+      vault_namespace   = vault_namespace.project.path
       ssh_ca_path       = "${vault_mount.ssh.path}/config/ca"
       github_token_path = "${vault_mount.github.path}/token/${local.github_permissionset_name}"
       mcp_kv_path       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"

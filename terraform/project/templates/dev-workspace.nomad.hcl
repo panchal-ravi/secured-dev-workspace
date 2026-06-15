@@ -68,7 +68,8 @@ job "$${job_name}" {
       # method for a short, read-only token used by the template below. The role is
       # this project's WIF role.
       vault {
-        role = "${wif_role}"
+        namespace = "${vault_namespace}"
+        role      = "${wif_role}"
       }
 
       # Vault SSH CA public key -> the file sshd trusts (TrustedUserCAKeys). Static
