@@ -74,3 +74,8 @@ output "llm_kv_path" {
   description = "Vault KV path the workspace WIF task reads the project's LiteLLM virtual key from (KV v2, so /data/ prefixed: secret/data/projects/<project>/llm). Written by the gateway orchestration (llm-gateway.tf)."
   value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/llm"
 }
+
+output "vault_namespace" {
+  description = "The project's Vault Enterprise namespace"
+  value       = vault_namespace.project.path
+}
