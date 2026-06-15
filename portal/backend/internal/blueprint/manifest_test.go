@@ -5,7 +5,7 @@ import "testing"
 func validClassC() BlueprintManifest {
 	return BlueprintManifest{
 		ID: "vault-mcp", Version: 1, Class: ClassC, Description: "Vault MCP",
-		PolicyTpl: "path \"{{.Mount}}/*\" { capabilities = [\"read\"] }",
+		PolicyTpl: "path \"{{.Mount}}/data/projects/{{.Namespace}}/*\" { capabilities = [\"read\"] }",
 		WIFRole:   WIFRoleSpec{NameTpl: "mcp-vault-mcp", TokenPolicies: []string{"mcp-vault-mcp"}, TokenTTL: "1h"},
 	}
 }

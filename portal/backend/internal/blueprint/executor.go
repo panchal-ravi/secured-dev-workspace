@@ -116,7 +116,7 @@ func (e *Executor) Instantiate(ctx context.Context, m BlueprintManifest, namespa
 	if err != nil {
 		return InstanceRecord{}, err
 	}
-	if err := LintPolicy(policyHCL, allowedPrefixes(m, namespace, e.cfg.KVMount, mount)); err != nil {
+	if err := LintPolicy(policyHCL, allowedPrefixes(namespace, e.cfg.KVMount, mount)); err != nil {
 		return InstanceRecord{}, err
 	}
 	if err := e.v.WritePolicy(ctx, namespace, policyName, policyHCL); err != nil {
@@ -189,16 +189,19 @@ func secretParam(m BlueprintManifest, params map[string]string) string {
 	return ""
 }
 
-// allowedPrefixes is the lint allowlist: the instance's own engine mount(s) plus
-// its slice of the project KV (Class B/C read their own KV path).
-func allowedPrefixes(m BlueprintManifest, namespace, kvMount, mount string) []string {
-	out := []string{mount + "/"}
-	// KV reads are stored at secret/data/... internally; allow both the logical and
-	// data-prefixed forms so a policy written either way passes.
+// allowedPrefixes is the lint allowlist: a dedicated engine mount (Class A's
+// database engine) may be referenced at its own subtree, plus the instance's
+// per-namespace slice of the project KV. The shared KV mount is NEVER added as a
+// bare prefix, so a Class B/C policy is confined to projects/<ns>/ within its
+// namespace rather than the whole KV mount (least privilege).
+func allowedPrefixes(namespace, kvMount, mount string) []string {
+	var out []string
+	if mount != kvMount {
+		out = append(out, mount+"/")
+	}
 	kvLogical := kvMount + "/projects/" + namespace + "/"
 	kvData := kvMount + "/data/projects/" + namespace + "/"
-	out = append(out, kvLogical, kvData)
-	return out
+	return append(out, kvLogical, kvData)
 }
 
 // isAlreadyMounted lets re-instantiation tolerate an existing mount (idempotency).

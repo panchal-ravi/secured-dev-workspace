@@ -62,7 +62,7 @@ func (val *Validator) Validate(ctx context.Context, m BlueprintManifest) (Valida
 		res.Message = "policy render failed"
 		return res, nil
 	}
-	if err := LintPolicy(policyHCL, allowedPrefixes(m, probeNS, val.ex.cfg.KVMount, mount)); err != nil {
+	if err := LintPolicy(policyHCL, allowedPrefixes(probeNS, val.ex.cfg.KVMount, mount)); err != nil {
 		res.Checks = append(res.Checks, Check{Name: "policy-lint", Passed: false, Detail: err.Error()})
 		res.Message = "policy lint failed"
 		return res, nil

@@ -41,3 +41,29 @@ func TestLintPolicy_RejectsEscapes(t *testing.T) {
 		}
 	}
 }
+
+func TestAllowedPrefixes_KVMountNotBarePrefix(t *testing.T) {
+	// Class B/C: mount == kvMount. The bare "secret/" must NOT be allowed — only the
+	// per-namespace projects/<ns>/ slice — so a policy over the whole KV mount fails.
+	prefixes := allowedPrefixes("acme", "secret", "secret")
+	for _, p := range prefixes {
+		if p == "secret/" {
+			t.Fatalf("bare KV mount root must not be an allowed prefix: %v", prefixes)
+		}
+	}
+	wholeMount := `path "secret/data/other-blueprint" { capabilities = ["read"] }`
+	if err := LintPolicy(wholeMount, prefixes); err == nil {
+		t.Fatal("a Class B/C policy over the whole KV mount must be rejected")
+	}
+	ownSlice := `path "secret/data/projects/acme/my-id" { capabilities = ["read"] }`
+	if err := LintPolicy(ownSlice, prefixes); err != nil {
+		t.Fatalf("a policy within the namespace's own KV slice must pass: %v", err)
+	}
+
+	// Class A: a dedicated engine mount IS allowed at its own subtree.
+	aPrefixes := allowedPrefixes("acme", "secret", "database/acme-pg")
+	creds := `path "database/acme-pg/creds/ro" { capabilities = ["read"] }`
+	if err := LintPolicy(creds, aPrefixes); err != nil {
+		t.Fatalf("class A db-creds policy must pass: %v", err)
+	}
+}
