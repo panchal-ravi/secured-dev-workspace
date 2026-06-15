@@ -8,10 +8,10 @@ See [`../README.md`](../README.md) for the three-tier overview and the end-to-en
 
 Applied **once per project** (one `terraform workspace` per project). Creates, scoped to the project:
 
-- A **Boundary project scope** under the org and a **Nomad namespace** (= project name).
-- A path-prefixed **Vault SSH CA** (`ssh/<project>` mount + `dev-workspace` signing role with `permit-pty`/`permit-port-forwarding`, 5m/10m TTL, `key_id` = the developer's email) — per-project isolation by **Vault path**, *not* Vault Enterprise namespaces.
+- A **Boundary project scope** under the org, a **Nomad namespace**, and a **Vault Enterprise namespace** (all = project name). The Vault namespace is the **hard isolation boundary**: every project Vault object below lives inside it, and a token minted in `<project>` can read only `<project>` paths — isolation is **Vault-enforced**, not dependent on path-prefix policy correctness.
+- A namespace-scoped **Vault SSH CA** (`ssh/<project>` mount + `dev-workspace` signing role with `permit-pty`/`permit-port-forwarding`, 5m/10m TTL, `key_id` = the developer's email), inside the project's Vault namespace.
 - The **Boundary Vault credential store** (authenticated with a dedicated least-privilege periodic token, not root) + the **SSH credential library** every workspace target in the project injects.
-- A **per-project WIF role** on the shared `jwt-nomad` backend + a read-only policy exposing only this project's CA public key, and a namespace-scoped **Nomad ACL policy + binding rule** (defense-in-depth).
+- A **per-namespace `jwt-nomad` auth backend** (auth methods don't cross Vault namespaces, so each project gets its own, trusting Nomad's JWKS) + a **WIF role** on it + a read-only policy exposing only this project's CA public key, and a namespace-scoped **Nomad ACL policy + binding rule** (defense-in-depth). Each workspace/service Nomad job sets `vault { namespace = "<project>" }` so its workload-identity login targets the namespace backend.
 - A **GitHub App token broker** (`github/<project>` mount + config + a pre-scoped `dev-workspace` permission set, plus a WIF policy letting the workspace read a `contents:write` token from it) — the git push credential for every workspace in the project; no static PAT anywhere.
 - A throwaway **demo Postgres** (`demo-db`, seeded on every (re)start, node-local static port, **not** on the NLB) plus a **per-project Vault database secrets engine** (`database/<project>` mount + a `demo-db` connection + a SELECT-only `dev-workspace-ro` role) that mints **dynamic, auto-rotating read-only** DB credentials — no static DB password.
 - The project's **MCP server** (`demo-db-mcp`) — a long-lived `postgres-mcp` SSE Nomad service that connects to `demo-db` with the dynamic read-only role over WIF (replacing the old per-workspace stdio Postgres MCP that used to be baked into every image).
@@ -50,14 +50,14 @@ Then add an entry per template to `workspace_templates` (see tfvars below) mappi
 
 The `dev-workspace` Claude Code CLI is pointed at the shared **LiteLLM AI gateway** (platform tier, `terraform/infra/llm-gateway.tf`), not the model provider directly. The gateway URL + model mapping are rendered per workspace at job launch into `/etc/claude-code/managed-settings.json` (the address is deployment-specific). Each project gets a scoped **LiteLLM virtual key** (allowed models + budget + rpm), minted automatically by `llm-gateway.tf` and stored in Vault KV (`secret/projects/<project>/llm`); it is rendered per session to the workspace `/secrets` tmpfs and read by Claude's `apiKeyHelper`, so it never lands on `/home/dev`. The **real provider key never reaches the workspace** — it lives only on the gateway (set `deepseek_api_key` in the **infra** tier). So only the gateway node needs **egress to `api.deepseek.com`**; the gateway also gives central audit (spend logs), per-project budgets, and a one-line swap to watsonx.ai. The workspace-facing model names (`deepseek-v4-pro`/`deepseek-v4-flash`) map to the real backend in the gateway's `config.yaml` `model_list`.
 
-## Namespace model — verified on `nstest` (2026-06-15)
+## Namespace model — verification & teardown
 
-This tier now provisions a **Vault Enterprise namespace per project** (`vault_namespace.project`) and scopes every project Vault object — SSH CA, database engine, GitHub broker, KV coordinates, the `jwt-nomad` WIF backend + role, and the Boundary credential store — inside it (the per-resource `namespace = vault_namespace.project.path` argument). Isolation is **Vault-enforced**, not dependent on path-prefix policy correctness: a token minted in `<project>` can read only `<project>` paths. Workspace and service Nomad jobs set `vault { namespace = "<project>" }` so their WIF login targets the namespace backend.
+This tier provisions a **Vault Enterprise namespace per project** (`vault_namespace.project`) and scopes every project Vault object — SSH CA, database engine, GitHub broker, KV coordinates, the `jwt-nomad` WIF backend + role, and the Boundary credential store — inside it (the per-resource `namespace = vault_namespace.project.path` argument). Isolation is **Vault-enforced**, not dependent on path-prefix policy correctness: a token minted in `<project>` can read only `<project>` paths. Workspace and service Nomad jobs set `vault { namespace = "<project>" }` so their WIF login targets the namespace backend.
 
-Verified end-to-end on a throwaway `nstest` project (full apply → developer flow → teardown):
+Verified end-to-end on a throwaway `nstest` project (full apply → developer flow → teardown), then `acme` was **rebuilt fresh under this model** (2026-06-15). The four-point developer check:
 
-- SSH session authenticates with a cert signed by the namespaced `ssh/nstest` CA (Boundary-injected).
-- `git clone` works via the namespaced GitHub token (`github/nstest/token/dev-workspace`).
+- SSH session authenticates with a cert signed by the namespaced `ssh/<project>` CA (Boundary-injected).
+- `git clone` works via the namespaced GitHub token (`github/<project>/token/dev-workspace`).
 - MCP + LLM coordinates resolve from the namespace KV via workload-identity reads.
 - Claude Code LLM traffic flows through the gateway.
 
@@ -73,7 +73,27 @@ vault read   -namespace=<project> github/<project>/token/dev-workspace
 vault kv get -mount=secret projects/<project>/mcp   # root scope → "No value found" (isolation holds)
 ```
 
-> `acme` remains path-based until its scheduled destroy-and-rebuild under this model; the "What it creates" description above will be updated to drop the path-isolation wording at that point.
+### Teardown — `terraform destroy` and the lease-revocation snag
+
+`terraform destroy -var-file=project-<name>.tfvars` removes the whole project tier including the Vault namespace. Two stanzas (`database/<project>` and `github/<project>`) can **fail to delete** with a `400` error like:
+
+```
+failed to revoke ".../creds/..." : failed to find entry for connection with name: "demo-db"
+failed to revoke ".../token/..."  : could not parse private key ...
+```
+
+This is a destroy-ordering issue: Terraform deletes the engine's **config** (the DB connection / GitHub App key) before Vault revokes the **outstanding dynamic leases** it minted, so revocation has nothing to call and the mount won't unmount. Outstanding leases come from a still-running workspace (purge it first — `nomad job stop -namespace <project> -purge <ws-job>`), but a freshly-minted probe lease can trigger it too.
+
+Fix: **force-revoke the stuck leases** (`-force` drops them from Vault storage even when live revocation fails), then re-run destroy — the now-leaseless mounts unmount cleanly:
+
+```bash
+export VAULT_SKIP_VERIFY=true
+vault lease revoke -namespace=<project> -force -prefix database/<project>/creds/dev-workspace-ro
+vault lease revoke -namespace=<project> -force -prefix github/<project>/token/dev-workspace
+terraform destroy -var-file=project-<name>.tfvars -auto-approve   # re-run; clears database/ + github/ mounts + the namespace
+```
+
+After destroy, drop the throwaway Terraform workspace: `terraform workspace select default && terraform workspace delete <project>`. (A future enhancement — `depends_on` ordering so engine config outlives its leases — would remove the manual step; tracked as a roadmap item.)
 
 ## Onboarding steps
 
