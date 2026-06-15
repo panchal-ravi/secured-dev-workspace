@@ -17,7 +17,7 @@
     "max_ttl_seconds": 86400
   },
   "policy_tpl": "path \"{{.Mount}}/creds/{{.Role}}\" {\n  capabilities = [\"read\"]\n}\n",
-  "wif_role": { "name_tpl": "mcp-postgres-mcp", "token_policies": ["mcp-postgres-mcp"], "token_ttl": "1h" },
+  "wif_role": { "name_tpl": "mcp-postgres-mcp", "token_ttl": "1h" },
   "params": [
     { "name": "connection_url", "type": "string", "required": true, "prompt": "Postgres connection URL with {{username}}/{{password}} templating" },
     { "name": "bootstrap_username", "type": "string", "required": true, "prompt": "Bootstrap admin username (rotated immediately)" },

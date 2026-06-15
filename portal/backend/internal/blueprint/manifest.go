@@ -36,13 +36,12 @@ type BlueprintManifest struct {
 	Params      []ParamSpec  `json:"params,omitempty"`
 }
 
-// EngineSpec is a secret engine to mount + configure. MountPathTpl may reference
-// {{.Namespace}}. Config holds engine-config values (e.g. a database plugin name).
+// EngineSpec is a secret engine to mount. MountPathTpl may reference {{.Namespace}};
+// Plugin is the backend plugin for a database engine (Class A).
 type EngineSpec struct {
-	Type         string            `json:"type"` // "database" | "kv-v2"
-	Plugin       string            `json:"plugin,omitempty"`
-	MountPathTpl string            `json:"mount_path_tpl"`
-	Config       map[string]string `json:"config,omitempty"`
+	Type         string `json:"type"` // "database" | "kv-v2"
+	Plugin       string `json:"plugin,omitempty"`
+	MountPathTpl string `json:"mount_path_tpl"`
 }
 
 // RoleSpec is a dynamic database role (Class A): creation statements + TTLs.
@@ -62,12 +61,12 @@ type ParamSpec struct {
 	Prompt   string `json:"prompt,omitempty"`
 }
 
-// WIFRoleSpec is the Nomad-WIF role the MCP job binds; TokenPolicies are the
-// generated policy name(s) the role grants.
+// WIFRoleSpec is the Nomad-WIF role the MCP job binds. The role is always bound to
+// the single least-privilege policy the executor generates (named from NameTpl), so
+// the manifest declares no policy names of its own.
 type WIFRoleSpec struct {
-	NameTpl       string   `json:"name_tpl"`
-	TokenPolicies []string `json:"token_policies"`
-	TokenTTL      string   `json:"token_ttl"`
+	NameTpl  string `json:"name_tpl"`
+	TokenTTL string `json:"token_ttl"`
 }
 
 // BlueprintRef is the immutable pin a catalog entry / deployed instance records.
@@ -102,8 +101,8 @@ func (m BlueprintManifest) Validate() error {
 	if m.PolicyTpl == "" {
 		return fmt.Errorf("blueprint: policy_tpl required: %w", apperr.ErrBadRequest)
 	}
-	if m.WIFRole.NameTpl == "" || len(m.WIFRole.TokenPolicies) == 0 {
-		return fmt.Errorf("blueprint: wif_role name and token_policies required: %w", apperr.ErrBadRequest)
+	if m.WIFRole.NameTpl == "" {
+		return fmt.Errorf("blueprint: wif_role name_tpl required: %w", apperr.ErrBadRequest)
 	}
 	switch m.Class {
 	case ClassA:

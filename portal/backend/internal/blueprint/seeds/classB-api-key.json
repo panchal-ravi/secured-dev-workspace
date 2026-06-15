@@ -4,7 +4,7 @@
   "class": "B",
   "description": "Generic upstream-API-key MCP server — write-only key seeded into project KV.",
   "policy_tpl": "path \"{{.Mount}}/data/projects/{{.Namespace}}/generic-api-key\" {\n  capabilities = [\"read\"]\n}\n",
-  "wif_role": { "name_tpl": "mcp-generic-api-key", "token_policies": ["mcp-generic-api-key"], "token_ttl": "1h" },
+  "wif_role": { "name_tpl": "mcp-generic-api-key", "token_ttl": "1h" },
   "params": [
     { "name": "api_key", "type": "secret", "required": true, "prompt": "Upstream API key (write-only)" }
   ]

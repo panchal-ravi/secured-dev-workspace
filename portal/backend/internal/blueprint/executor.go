@@ -172,7 +172,7 @@ func (e *Executor) Deprovision(ctx context.Context, rec InstanceRecord) error {
 func requireParams(m BlueprintManifest, params map[string]string) error {
 	for _, p := range m.Params {
 		if p.Required {
-			if _, ok := params[p.Name]; !ok {
+			if v, ok := params[p.Name]; !ok || v == "" {
 				return fmt.Errorf("blueprint: missing required param %q: %w", p.Name, apperr.ErrBadRequest)
 			}
 		}

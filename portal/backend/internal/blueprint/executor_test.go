@@ -2,8 +2,11 @@ package blueprint
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 )
 
 // recVault is a VaultAdmin fake that records an ordered op log.
@@ -61,7 +64,7 @@ func classAManifest() BlueprintManifest {
 		Engines: []EngineSpec{{Type: "database", Plugin: "postgresql-database-plugin", MountPathTpl: "database/{{.Namespace}}-pg"}},
 		Role:    &RoleSpec{NameTpl: "ro", CreationStatements: []string{"CREATE ROLE x;"}, DefaultTTLSeconds: 3600, MaxTTLSeconds: 7200},
 		PolicyTpl: `path "{{.Mount}}/creds/{{.Role}}" { capabilities = ["read"] }`,
-		WIFRole:   WIFRoleSpec{NameTpl: "mcp-postgres-mcp", TokenPolicies: []string{"mcp-postgres-mcp"}, TokenTTL: "1h"},
+		WIFRole:   WIFRoleSpec{NameTpl: "mcp-postgres-mcp", TokenTTL: "1h"},
 		Params: []ParamSpec{
 			{Name: "connection_url", Type: "string", Required: true},
 			{Name: "bootstrap_password", Type: "secret", Required: true},
@@ -120,6 +123,20 @@ func TestInstantiate_ClassC_NoEngineNoSecret(t *testing.T) {
 		if contains(rv.ops, forbidden) {
 			t.Fatalf("class C must not %q: %v", forbidden, rv.ops)
 		}
+	}
+}
+
+func TestInstantiate_RejectsEmptyRequiredParam(t *testing.T) {
+	rv := &recVault{}
+	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
+	// A required secret present-but-empty must be rejected before any Vault write.
+	_, err := ex.Instantiate(context.Background(), classAManifest(), "acme",
+		map[string]string{"connection_url": "postgresql://...", "bootstrap_password": ""})
+	if !errors.Is(err, apperr.ErrBadRequest) {
+		t.Fatalf("empty required param: want ErrBadRequest, got %v", err)
+	}
+	if len(rv.ops) != 0 {
+		t.Fatalf("no Vault ops should run when a required param is empty: %v", rv.ops)
 	}
 }
 
