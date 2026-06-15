@@ -5,9 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
+	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 )
 
@@ -34,6 +36,11 @@ func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.Handle
 	mux.Handle("POST /api/admin/llm/models/{name}/test", mutate(h.testLLMModel))
 	mux.Handle("POST /api/admin/llm/models/{name}/publish", mutate(h.publishLLMModel))
 	mux.Handle("DELETE /api/admin/llm/models/{name}", mutate(h.deleteLLMModel))
+
+	mux.Handle("GET /api/admin/blueprints", protect(h.listBlueprints))
+	mux.Handle("POST /api/admin/blueprints", mutate(h.createBlueprint))
+	mux.Handle("POST /api/admin/blueprints/{id}/{version}/validate", mutate(h.validateBlueprint))
+	mux.Handle("POST /api/admin/blueprints/{id}/{version}/publish", mutate(h.publishBlueprint))
 
 	mux.Handle("GET /api/admin/audit", protect(h.listAudit))
 }
@@ -136,6 +143,58 @@ func (h *Handlers) deleteLLMModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- credential blueprint handlers ----
+
+func (h *Handlers) listBlueprints(w http.ResponseWriter, r *http.Request) {
+	bps, err := h.svc.ListBlueprints(r.Context())
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blueprints": bps})
+}
+
+func (h *Handlers) createBlueprint(w http.ResponseWriter, r *http.Request) {
+	var m blueprint.BlueprintManifest
+	if !decode(w, r, &m) {
+		return
+	}
+	bp, err := h.svc.CreateBlueprintDraft(r.Context(), actor(r), m)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, bp)
+}
+
+func (h *Handlers) validateBlueprint(w http.ResponseWriter, r *http.Request) {
+	ver, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "version must be an integer", middleware.RequestID(r.Context()))
+		return
+	}
+	bp, err := h.svc.ValidateBlueprint(r.Context(), actor(r), r.PathValue("id"), ver)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, bp)
+}
+
+func (h *Handlers) publishBlueprint(w http.ResponseWriter, r *http.Request) {
+	ver, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "version must be an integer", middleware.RequestID(r.Context()))
+		return
+	}
+	bp, err := h.svc.PublishBlueprint(r.Context(), actor(r), r.PathValue("id"), ver)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, bp)
 }
 
 func (h *Handlers) listAudit(w http.ResponseWriter, r *http.Request) {

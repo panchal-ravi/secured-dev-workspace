@@ -12,15 +12,22 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"time"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
+	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 )
+
+// blueprintValidator gates blueprint publishing (satisfied by *blueprint.Validator).
+type blueprintValidator interface {
+	Validate(ctx context.Context, m blueprint.BlueprintManifest) (blueprint.ValidationResult, error)
+}
 
 // NomadClient is the subset of the Nomad API the admin plane uses (satisfied by
 // *hashistack.Nomad). Defined here so the service can be tested with a fake.
@@ -46,6 +53,7 @@ type Config struct {
 	MCPJobVaultRole    string // WIF role stamped on MCP jobs that reference secrets
 	MCPServersKVPath   string // KV path prefix for published descriptors (e.g. "infra/mcp-servers")
 	LLMProvidersKVPath string // KV path prefix for provider keys (e.g. "infra/llm-providers")
+	BlueprintsKVPath   string // KV path prefix for canonical manifests (e.g. "infra/blueprints")
 }
 
 func (c Config) withDefaults() Config {
@@ -58,23 +66,27 @@ func (c Config) withDefaults() Config {
 	if c.LLMProvidersKVPath == "" {
 		c.LLMProvidersKVPath = "infra/llm-providers"
 	}
+	if c.BlueprintsKVPath == "" {
+		c.BlueprintsKVPath = "infra/blueprints"
+	}
 	return c
 }
 
 // Service orchestrates the onboarding flows over the store, Nomad, the MCP
 // gateway, the LLM gateway, and Vault.
 type Service struct {
-	store   store.Store
-	nomad   NomadClient
-	gateway mcpgw.Client
-	llm     llmgw.Client
-	vault   VaultClient
-	cfg     Config
+	store     store.Store
+	nomad     NomadClient
+	gateway   mcpgw.Client
+	llm       llmgw.Client
+	vault     VaultClient
+	validator blueprintValidator
+	cfg       Config
 }
 
 // New builds the onboarding service.
-func New(st store.Store, nomad NomadClient, gateway mcpgw.Client, llm llmgw.Client, vault VaultClient, cfg Config) *Service {
-	return &Service{store: st, nomad: nomad, gateway: gateway, llm: llm, vault: vault, cfg: cfg.withDefaults()}
+func New(st store.Store, nomad NomadClient, gateway mcpgw.Client, llm llmgw.Client, vault VaultClient, validator blueprintValidator, cfg Config) *Service {
+	return &Service{store: st, nomad: nomad, gateway: gateway, llm: llm, vault: vault, validator: validator, cfg: cfg.withDefaults()}
 }
 
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
@@ -450,6 +462,106 @@ func (s *Service) DeleteLLMModel(ctx context.Context, actor, name string) error 
 	}
 	s.audit(ctx, actor, "llm-model.delete", name, "ok")
 	return nil
+}
+
+// ---- credential blueprint authoring ----
+
+// CreateBlueprintDraft validates a manifest's shape, stores its control-plane row
+// (status draft), and writes the canonical manifest JSON to Vault KV (immutable per
+// id/version). Secret material is never in the manifest — params are declarations.
+func (s *Service) CreateBlueprintDraft(ctx context.Context, actor string, m blueprint.BlueprintManifest) (store.Blueprint, error) {
+	if err := m.Validate(); err != nil {
+		return store.Blueprint{}, err
+	}
+	manifestJSON, err := json.Marshal(m)
+	if err != nil {
+		return store.Blueprint{}, fmt.Errorf("admin: marshal manifest: %w", err)
+	}
+	kvPath := fmt.Sprintf("%s/%s/%d", s.cfg.BlueprintsKVPath, m.ID, m.Version)
+	if err := s.vault.WriteKV(ctx, kvPath, map[string]any{"manifest": string(manifestJSON)}); err != nil {
+		s.audit(ctx, actor, "blueprint.create", m.ID, "error")
+		return store.Blueprint{}, err
+	}
+	bp := store.Blueprint{
+		ID: m.ID, Version: m.Version, Class: m.Class, ContentHash: m.ContentHash(),
+		Status: store.StatusDraft, CreatedBy: actor,
+	}
+	saved, err := s.store.UpsertBlueprint(ctx, bp)
+	if err != nil {
+		return store.Blueprint{}, err
+	}
+	s.audit(ctx, actor, "blueprint.create", m.ID, "ok")
+	return saved, nil
+}
+
+// ValidateBlueprint runs the publish gate (lint + live consumption-mirror) and
+// records the result; on success the blueprint advances to validated.
+func (s *Service) ValidateBlueprint(ctx context.Context, actor, id string, version int) (store.Blueprint, error) {
+	bp, err := s.store.GetBlueprint(ctx, id, version)
+	if err != nil {
+		return store.Blueprint{}, err
+	}
+	m, err := s.readManifest(ctx, id, version)
+	if err != nil {
+		return store.Blueprint{}, err
+	}
+	result, err := s.validator.Validate(ctx, m)
+	if err != nil {
+		s.audit(ctx, actor, "blueprint.validate", id, "error")
+		return store.Blueprint{}, err
+	}
+	raw, _ := json.Marshal(result)
+	bp.Validation = raw
+	if result.Passed {
+		bp.Status = store.StatusValidated
+	}
+	saved, err := s.store.UpsertBlueprint(ctx, bp)
+	if err != nil {
+		return store.Blueprint{}, err
+	}
+	s.audit(ctx, actor, "blueprint.validate", id, outcome(result.Passed))
+	return saved, nil
+}
+
+// PublishBlueprint makes a validated blueprint catalog-bindable. Requires a green
+// validation (status validated).
+func (s *Service) PublishBlueprint(ctx context.Context, actor, id string, version int) (store.Blueprint, error) {
+	bp, err := s.store.GetBlueprint(ctx, id, version)
+	if err != nil {
+		return store.Blueprint{}, err
+	}
+	if bp.Status == store.StatusPublished {
+		return bp, nil
+	}
+	if bp.Status != store.StatusValidated {
+		return store.Blueprint{}, fmt.Errorf("blueprint %s@%d must pass validation before publish: %w", id, version, apperr.ErrConflict)
+	}
+	bp.Status = store.StatusPublished
+	saved, err := s.store.UpsertBlueprint(ctx, bp)
+	if err != nil {
+		return store.Blueprint{}, err
+	}
+	s.audit(ctx, actor, "blueprint.publish", id, "ok")
+	return saved, nil
+}
+
+// ListBlueprints returns every authored blueprint.
+func (s *Service) ListBlueprints(ctx context.Context) ([]store.Blueprint, error) {
+	return s.store.ListBlueprints(ctx)
+}
+
+// readManifest reads the canonical manifest JSON back from Vault KV.
+func (s *Service) readManifest(ctx context.Context, id string, version int) (blueprint.BlueprintManifest, error) {
+	kvPath := fmt.Sprintf("%s/%s/%d", s.cfg.BlueprintsKVPath, id, version)
+	raw, err := s.vault.ReadKVField(ctx, kvPath, "manifest")
+	if err != nil {
+		return blueprint.BlueprintManifest{}, err
+	}
+	var m blueprint.BlueprintManifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return blueprint.BlueprintManifest{}, fmt.Errorf("admin: parse stored manifest: %w", err)
+	}
+	return m, nil
 }
 
 // ListAudit returns the most recent admin audit events.

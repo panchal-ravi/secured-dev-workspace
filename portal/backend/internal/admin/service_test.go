@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
+	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
@@ -36,6 +37,11 @@ type fakeVault struct {
 func (f *fakeVault) ReadKVField(_ context.Context, path, field string) (string, error) {
 	if v, ok := f.provider[path+"#"+field]; ok {
 		return v, nil
+	}
+	if data, ok := f.written[path]; ok {
+		if v, ok := data[field].(string); ok {
+			return v, nil
+		}
 	}
 	return "", errors.New("vault: not found")
 }
@@ -114,7 +120,7 @@ func passingProbe() mcpgw.ScopeProbe {
 
 func newService(n *fakeNomad, g *fakeGateway, l *fakeLLM, v *fakeVault) (*Service, store.Store) {
 	st := store.NewMemory()
-	return New(st, n, g, l, v, Config{MCPJobVaultRole: "infra-mcp-job"}), st
+	return New(st, n, g, l, v, nil, Config{MCPJobVaultRole: "infra-mcp-job"}), st
 }
 
 // ---- MCP flow ----
@@ -254,5 +260,65 @@ func TestLLMOnboardMissingProviderKey(t *testing.T) {
 	// provider key not in Vault → upstream error (not a client-class apperr)
 	if _, err := svc.OnboardLLMModel(ctx, "admin@x", OnboardLLMInput{Name: "m", Provider: "nope", BackendModel: "x/y"}); err == nil {
 		t.Fatalf("expected error when provider key is absent")
+	}
+}
+
+// ---- credential blueprint flow ----
+
+type fakeValidator struct{ pass bool }
+
+func (f *fakeValidator) Validate(_ context.Context, m blueprint.BlueprintManifest) (blueprint.ValidationResult, error) {
+	return blueprint.ValidationResult{Passed: f.pass}, nil
+}
+
+func newBlueprintSvc(t *testing.T, pass bool) (*Service, *fakeVault) {
+	t.Helper()
+	fv := &fakeVault{provider: map[string]string{}}
+	svc := New(store.NewMemory(), &fakeNomad{}, &fakeGateway{}, &fakeLLM{}, fv, nil, Config{})
+	svc.validator = &fakeValidator{pass: pass}
+	return svc, fv
+}
+
+func TestCreateBlueprintDraft_StoresAndWritesManifestKV(t *testing.T) {
+	svc, fv := newBlueprintSvc(t, true)
+	m := blueprint.BlueprintManifest{
+		ID: "vault-mcp", Version: 1, Class: "C",
+		PolicyTpl: `path "secret/data/projects/{{.Namespace}}/*" { capabilities = ["read"] }`,
+		WIFRole:   blueprint.WIFRoleSpec{NameTpl: "mcp-vault-mcp", TokenPolicies: []string{"mcp-vault-mcp"}, TokenTTL: "1h"},
+	}
+	bp, err := svc.CreateBlueprintDraft(context.Background(), "admin@x", m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bp.Status != store.StatusDraft || bp.ContentHash != m.ContentHash() {
+		t.Fatalf("draft not stored correctly: %+v", bp)
+	}
+	if _, ok := fv.written["infra/blueprints/vault-mcp/1"]; !ok {
+		t.Fatal("manifest JSON must be written to Vault KV")
+	}
+}
+
+func TestPublishBlueprint_RequiresValidatedFirst(t *testing.T) {
+	svc, _ := newBlueprintSvc(t, true)
+	m := blueprint.BlueprintManifest{
+		ID: "vault-mcp", Version: 1, Class: "C",
+		PolicyTpl: `path "secret/data/projects/{{.Namespace}}/*" { capabilities = ["read"] }`,
+		WIFRole:   blueprint.WIFRoleSpec{NameTpl: "mcp-vault-mcp", TokenPolicies: []string{"mcp-vault-mcp"}, TokenTTL: "1h"},
+	}
+	if _, err := svc.CreateBlueprintDraft(context.Background(), "admin@x", m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PublishBlueprint(context.Background(), "admin@x", "vault-mcp", 1); !errors.Is(err, apperr.ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if _, err := svc.ValidateBlueprint(context.Background(), "admin@x", "vault-mcp", 1); err != nil {
+		t.Fatal(err)
+	}
+	bp, err := svc.PublishBlueprint(context.Background(), "admin@x", "vault-mcp", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bp.Status != store.StatusPublished {
+		t.Fatalf("expected published, got %s", bp.Status)
 	}
 }
