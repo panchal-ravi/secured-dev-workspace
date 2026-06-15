@@ -55,6 +55,13 @@ func LintPolicy(rendered string, allowedMountPrefixes []string) error {
 	// 2. Security lint.
 	for _, pr := range paths {
 		p := strings.TrimPrefix(pr.path, "/")
+		// Reject path traversal: a ".." segment defeats the prefix checks below (a path
+		// like "database/acme/../sys/mounts" would pass the allowed-prefix test yet point
+		// outside the tenant's mounts). Vault doesn't filesystem-collapse policy paths, so
+		// the lint must refuse them outright rather than emit a false-safe verdict.
+		if strings.Contains(p, "..") {
+			return fmt.Errorf("blueprint: policy path %q contains a traversal segment: %w", p, apperr.ErrForbidden)
+		}
 		for _, d := range deniedPrefixes {
 			if strings.HasPrefix(p, d) {
 				return fmt.Errorf("blueprint: policy targets forbidden prefix %q: %w", d, apperr.ErrForbidden)
