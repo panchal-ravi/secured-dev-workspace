@@ -76,6 +76,15 @@ func (val *Validator) Validate(ctx context.Context, m BlueprintManifest) (Valida
 	}
 	defer func() { _ = val.v.DeleteNamespace(ctx, ns) }()
 
+	// The blueprint binds a WIF role at auth/<AuthPath>/, so the throwaway namespace
+	// needs that JWT auth backend enabled (real project namespaces get it from
+	// terraform; a bare validation namespace does not). Enable it for the test and
+	// disable it on teardown so the now-empty namespace can be deleted.
+	if err := val.v.EnableAuth(ctx, ns, val.ex.cfg.AuthPath, "jwt"); err != nil {
+		return res, fmt.Errorf("blueprint: enable %s auth in throwaway namespace: %w", val.ex.cfg.AuthPath, err)
+	}
+	defer func() { _ = val.v.DisableAuth(ctx, ns, val.ex.cfg.AuthPath) }()
+
 	rec, err := val.ex.Instantiate(ctx, m, ns, syntheticParams(m))
 	if err != nil {
 		res.Checks = append(res.Checks, Check{Name: "instantiate", Passed: false, Detail: err.Error()})

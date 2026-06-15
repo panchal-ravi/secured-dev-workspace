@@ -42,6 +42,9 @@ type VaultAdmin interface {
 	MountEngine(ctx context.Context, ns, path, engineType, pluginVersion string) error
 	UnmountEngine(ctx context.Context, ns, path string) error
 
+	EnableAuth(ctx context.Context, ns, path, authType string) error
+	DisableAuth(ctx context.Context, ns, path string) error
+
 	ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error
 	RotateRoot(ctx context.Context, ns, mount, name string) error
 	WriteDBRole(ctx context.Context, ns, mount, name string, role DBRole) error
@@ -91,6 +94,14 @@ func (a *vaultAdmin) MountEngine(ctx context.Context, ns, path, engineType, plug
 
 func (a *vaultAdmin) UnmountEngine(ctx context.Context, ns, path string) error {
 	return wrap("unmount engine", a.ns(ns).Sys().UnmountWithContext(ctx, path))
+}
+
+func (a *vaultAdmin) EnableAuth(ctx context.Context, ns, path, authType string) error {
+	return wrap("enable auth", a.ns(ns).Sys().EnableAuthWithOptionsWithContext(ctx, path, &vapi.EnableAuthOptions{Type: authType}))
+}
+
+func (a *vaultAdmin) DisableAuth(ctx context.Context, ns, path string) error {
+	return wrap("disable auth", a.ns(ns).Sys().DisableAuthWithContext(ctx, path))
 }
 
 func (a *vaultAdmin) ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error {
