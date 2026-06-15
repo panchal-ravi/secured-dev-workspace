@@ -50,6 +50,31 @@ Then add an entry per template to `workspace_templates` (see tfvars below) mappi
 
 The `dev-workspace` Claude Code CLI is pointed at the shared **LiteLLM AI gateway** (platform tier, `terraform/infra/llm-gateway.tf`), not the model provider directly. The gateway URL + model mapping are rendered per workspace at job launch into `/etc/claude-code/managed-settings.json` (the address is deployment-specific). Each project gets a scoped **LiteLLM virtual key** (allowed models + budget + rpm), minted automatically by `llm-gateway.tf` and stored in Vault KV (`secret/projects/<project>/llm`); it is rendered per session to the workspace `/secrets` tmpfs and read by Claude's `apiKeyHelper`, so it never lands on `/home/dev`. The **real provider key never reaches the workspace** — it lives only on the gateway (set `deepseek_api_key` in the **infra** tier). So only the gateway node needs **egress to `api.deepseek.com`**; the gateway also gives central audit (spend logs), per-project budgets, and a one-line swap to watsonx.ai. The workspace-facing model names (`deepseek-v4-pro`/`deepseek-v4-flash`) map to the real backend in the gateway's `config.yaml` `model_list`.
 
+## Namespace model — verified on `nstest` (2026-06-15)
+
+This tier now provisions a **Vault Enterprise namespace per project** (`vault_namespace.project`) and scopes every project Vault object — SSH CA, database engine, GitHub broker, KV coordinates, the `jwt-nomad` WIF backend + role, and the Boundary credential store — inside it (the per-resource `namespace = vault_namespace.project.path` argument). Isolation is **Vault-enforced**, not dependent on path-prefix policy correctness: a token minted in `<project>` can read only `<project>` paths. Workspace and service Nomad jobs set `vault { namespace = "<project>" }` so their WIF login targets the namespace backend.
+
+Verified end-to-end on a throwaway `nstest` project (full apply → developer flow → teardown):
+
+- SSH session authenticates with a cert signed by the namespaced `ssh/nstest` CA (Boundary-injected).
+- `git clone` works via the namespaced GitHub token (`github/nstest/token/dev-workspace`).
+- MCP + LLM coordinates resolve from the namespace KV via workload-identity reads.
+- Claude Code LLM traffic flows through the gateway.
+
+Per-engine probes (each resolves in-namespace; a root-scoped read of a project path does **not**):
+
+```bash
+export VAULT_SKIP_VERIFY=true
+vault read   -namespace=<project> ssh/<project>/config/ca
+vault read   -namespace=<project> database/<project>/creds/dev-workspace-ro
+vault kv get -namespace=<project> -mount=secret projects/<project>/mcp
+vault kv get -namespace=<project> -mount=secret projects/<project>/llm
+vault read   -namespace=<project> github/<project>/token/dev-workspace
+vault kv get -mount=secret projects/<project>/mcp   # root scope → "No value found" (isolation holds)
+```
+
+> `acme` remains path-based until its scheduled destroy-and-rebuild under this model; the "What it creates" description above will be updated to drop the path-isolation wording at that point.
+
 ## Onboarding steps
 
 **Vault must be unsealed** (this tier creates Vault mounts/roles/tokens).
