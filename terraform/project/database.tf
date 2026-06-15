@@ -6,6 +6,7 @@
 # ---------------------------------------------------------------------------
 
 resource "vault_mount" "database" {
+  namespace   = vault_namespace.project.path
   path        = "database/${var.project_name}"
   type        = "database"
   description = "Dynamic Postgres credentials (demo-db) for project ${var.project_name}"
@@ -19,6 +20,7 @@ resource "vault_mount" "database" {
 # instead verifies on the first credential request. depends_on still gates this
 # resource on the job being placed.
 resource "vault_database_secret_backend_connection" "demo_db" {
+  namespace         = vault_namespace.project.path
   backend           = vault_mount.database.path
   name              = "demo-db"
   allowed_roles     = ["dev-workspace-ro"]
@@ -40,7 +42,8 @@ resource "vault_database_secret_backend_connection" "demo_db" {
 # session — so TTLs are bumped well beyond a session: consul-template restarts the
 # MCP server (change_mode=restart) when the lease rotates, dropping the old role.
 resource "vault_database_secret_backend_role" "dev_workspace_ro" {
-  backend = vault_mount.database.path
+  namespace = vault_namespace.project.path
+  backend   = vault_mount.database.path
   name    = "dev-workspace-ro"
   db_name = vault_database_secret_backend_connection.demo_db.name
 
