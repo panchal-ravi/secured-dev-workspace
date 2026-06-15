@@ -64,3 +64,28 @@ resource "vault_database_secret_backend_role" "dev_workspace_ro" {
     "DROP ROLE IF EXISTS \"{{name}}\";",
   ]
 }
+
+# Destroy-ordering fix: force-revoke this engine's outstanding dynamic leases
+# BEFORE the mount is unmounted. Terraform has no lease-revoke step and the leases
+# are minted out-of-band (the demo-db-mcp service reads creds), so a plain
+# depends_on can't help — without this, `terraform destroy` fails to unmount
+# database/<project> while leases are live. This resource depends on the mount, so
+# on destroy Terraform runs its destroy provisioner first, then unmounts.
+resource "terraform_data" "db_lease_revoker" {
+  triggers_replace = {
+    namespace = vault_namespace.project.path
+    prefix    = "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}"
+    addr      = local.f.vault_addr
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "VAULT_SKIP_VERIFY=true VAULT_ADDR='${self.triggers_replace.addr}' vault lease revoke -namespace='${self.triggers_replace.namespace}' -force -prefix '${self.triggers_replace.prefix}' || true"
+  }
+
+  depends_on = [
+    vault_mount.database,
+    vault_database_secret_backend_connection.demo_db,
+    vault_database_secret_backend_role.dev_workspace_ro,
+  ]
+}

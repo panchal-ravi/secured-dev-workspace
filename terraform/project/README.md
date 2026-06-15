@@ -84,6 +84,12 @@ failed to revoke ".../token/..."  : could not parse private key ...
 
 This is a destroy-ordering issue: Terraform deletes the engine's **config** (the DB connection / GitHub App key) before Vault revokes the **outstanding dynamic leases** it minted, so revocation has nothing to call and the mount won't unmount. Outstanding leases come from a still-running workspace (purge it first — `nomad job stop -namespace <project> -purge <ws-job>`), but a freshly-minted probe lease can trigger it too.
 
+> **Automated since the blueprint-engine work:** `terraform/project/{database,github}.tf` each
+> carry a `terraform_data` *lease revoker* with a destroy-time provisioner that force-revokes the
+> engine's outstanding leases before the mount is unmounted, so `terraform destroy` no longer
+> needs the manual step below. The manual `vault lease revoke -force` commands remain documented
+> as a fallback if a destroy is interrupted between the revoke and the unmount.
+
 Fix: **force-revoke the stuck leases** (`-force` drops them from Vault storage even when live revocation fails), then re-run destroy — the now-leaseless mounts unmount cleanly:
 
 ```bash

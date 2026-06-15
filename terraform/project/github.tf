@@ -77,3 +77,23 @@ resource "vault_policy" "nomad_github_token" {
     }
   HCL
 }
+
+# Same destroy-ordering fix for the GitHub App token engine: force-revoke
+# outstanding ephemeral tokens before the github/<project> mount is unmounted.
+resource "terraform_data" "github_lease_revoker" {
+  triggers_replace = {
+    namespace = vault_namespace.project.path
+    prefix    = "${vault_mount.github.path}/token/${local.github_permissionset_name}"
+    addr      = local.f.vault_addr
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "VAULT_SKIP_VERIFY=true VAULT_ADDR='${self.triggers_replace.addr}' vault lease revoke -namespace='${self.triggers_replace.namespace}' -force -prefix '${self.triggers_replace.prefix}' || true"
+  }
+
+  depends_on = [
+    vault_mount.github,
+    vault_generic_endpoint.github_permissionset,
+  ]
+}
