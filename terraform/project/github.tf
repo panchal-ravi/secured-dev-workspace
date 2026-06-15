@@ -21,6 +21,7 @@ locals {
 
 # Per-project mount of the external plugin (type = the registered plugin name).
 resource "vault_mount" "github" {
+  namespace   = vault_namespace.project.path
   path        = "github/${var.project_name}"
   type        = "vault-plugin-secrets-github"
   description = "GitHub App token broker for project ${var.project_name}"
@@ -29,6 +30,7 @@ resource "vault_mount" "github" {
 # Configure the mount with the project's GitHub App. prv_key is the App private
 # key (PKCS#1 PEM). disable_read: the config holds the private key — never read back.
 resource "vault_generic_endpoint" "github_config" {
+  namespace            = vault_namespace.project.path
   path                 = "${vault_mount.github.path}/config"
   ignore_absent_fields = true
   disable_read         = true
@@ -46,6 +48,7 @@ resource "vault_generic_endpoint" "github_config" {
 # reads a token from this set with NO parameters, so installation_id and the
 # permission scope never leave Vault.
 resource "vault_generic_endpoint" "github_permissionset" {
+  namespace            = vault_namespace.project.path
   path                 = "${vault_mount.github.path}/permissionset/${local.github_permissionset_name}"
   ignore_absent_fields = true
   disable_read         = true
@@ -65,7 +68,8 @@ resource "vault_generic_endpoint" "github_permissionset" {
 # from the pre-scoped permission-set token path only. Added to the role's
 # token_policies in vault.tf alongside the SSH-CA-read policy.
 resource "vault_policy" "nomad_github_token" {
-  name = "nomad-${var.project_name}-github-token"
+  namespace = vault_namespace.project.path
+  name      = "nomad-${var.project_name}-github-token"
 
   policy = <<-HCL
     path "${vault_mount.github.path}/token/${local.github_permissionset_name}" {
