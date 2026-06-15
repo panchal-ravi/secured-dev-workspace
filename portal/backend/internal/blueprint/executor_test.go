@@ -16,6 +16,7 @@ func (r *recVault) log(s string)                                            { r.
 func (r *recVault) CreateNamespace(_ context.Context, p string) error       { r.log("ns+ " + p); return nil }
 func (r *recVault) DeleteNamespace(_ context.Context, p string) error       { r.log("ns- " + p); return nil }
 func (r *recVault) MountEngine(_ context.Context, ns, p, t, v string) error { r.log("mount " + p); return nil }
+func (r *recVault) MountKVv2(_ context.Context, ns, path string) error      { r.log("mountkv " + path); return nil }
 func (r *recVault) UnmountEngine(_ context.Context, ns, p string) error     { r.log("unmount " + p); return nil }
 func (r *recVault) EnableAuth(_ context.Context, ns, path, t string) error  { r.log("auth+ " + path); return nil }
 func (r *recVault) DisableAuth(_ context.Context, ns, path string) error    { r.log("auth- " + path); return nil }

@@ -40,6 +40,7 @@ type VaultAdmin interface {
 	DeleteNamespace(ctx context.Context, path string) error
 
 	MountEngine(ctx context.Context, ns, path, engineType, pluginVersion string) error
+	MountKVv2(ctx context.Context, ns, path string) error
 	UnmountEngine(ctx context.Context, ns, path string) error
 
 	EnableAuth(ctx context.Context, ns, path, authType string) error
@@ -90,6 +91,13 @@ func (a *vaultAdmin) MountEngine(ctx context.Context, ns, path, engineType, plug
 	}
 	err := a.ns(ns).Sys().MountWithContext(ctx, path, in)
 	return wrap("mount engine", err)
+}
+
+func (a *vaultAdmin) MountKVv2(ctx context.Context, ns, path string) error {
+	return wrap("mount kv-v2", a.ns(ns).Sys().MountWithContext(ctx, path, &vapi.MountInput{
+		Type:    "kv",
+		Options: map[string]string{"version": "2"},
+	}))
 }
 
 func (a *vaultAdmin) UnmountEngine(ctx context.Context, ns, path string) error {

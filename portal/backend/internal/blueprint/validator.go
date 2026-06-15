@@ -85,6 +85,14 @@ func (val *Validator) Validate(ctx context.Context, m BlueprintManifest) (Valida
 	}
 	defer func() { _ = val.v.DisableAuth(ctx, ns, val.ex.cfg.AuthPath) }()
 
+	// Real project namespaces get a kv-v2 `secret` engine from terraform; a bare
+	// validation namespace does not. Mount it so Class B/C KV seeds + reads work,
+	// and unmount on teardown so the namespace can be deleted.
+	if err := val.v.MountKVv2(ctx, ns, val.ex.cfg.KVMount); err != nil {
+		return res, fmt.Errorf("blueprint: mount kv in throwaway namespace: %w", err)
+	}
+	defer func() { _ = val.v.UnmountEngine(ctx, ns, val.ex.cfg.KVMount) }()
+
 	rec, err := val.ex.Instantiate(ctx, m, ns, syntheticParams(m))
 	if err != nil {
 		res.Checks = append(res.Checks, Check{Name: "instantiate", Passed: false, Detail: err.Error()})
@@ -92,6 +100,17 @@ func (val *Validator) Validate(ctx context.Context, m BlueprintManifest) (Valida
 		return res, nil
 	}
 	defer func() { _ = val.ex.Deprovision(ctx, rec) }()
+
+	// A blueprint that seeds no secret of its own (Class C) has nothing at the path
+	// its policy grants, so the allowed-read probe would hit an empty path. Seed a
+	// marker there (via the admin client) so the scoped-token read proves the grant
+	// works. Class B already has its seeded upstream key at this path.
+	if !m.hasSecretParam() {
+		markerRel := "projects/" + ns + "/" + m.ID
+		if err := val.v.WriteKVv2(ctx, ns, val.ex.cfg.KVMount, markerRel, map[string]any{"probe": "ok"}); err != nil {
+			return res, fmt.Errorf("blueprint: seed probe marker: %w", err)
+		}
+	}
 
 	token, err := val.v.MintTokenWithPolicies(ctx, ns, rec.PolicyNames, "5m")
 	if err != nil {
