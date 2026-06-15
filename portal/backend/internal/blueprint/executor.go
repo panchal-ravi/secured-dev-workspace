@@ -192,9 +192,7 @@ func secretParam(m BlueprintManifest, params map[string]string) string {
 // allowedPrefixes is the lint allowlist: the instance's own engine mount(s) plus
 // its slice of the project KV (Class B/C read their own KV path).
 func allowedPrefixes(m BlueprintManifest, namespace, kvMount, mount string) []string {
-	// Allow both the bare mount (a Class C token-only policy targets the mount root,
-	// e.g. path "secret") and its subtree (mount + "/...").
-	out := []string{mount, mount + "/"}
+	out := []string{mount + "/"}
 	// KV reads are stored at secret/data/... internally; allow both the logical and
 	// data-prefixed forms so a policy written either way passes.
 	kvLogical := kvMount + "/projects/" + namespace + "/"
