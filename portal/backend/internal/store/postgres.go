@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS audit_events (
     detail  JSONB,
     at      TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS blueprints (
+    id           TEXT        NOT NULL,
+    version      INTEGER     NOT NULL,
+    class        TEXT        NOT NULL,
+    content_hash TEXT        NOT NULL,
+    status       TEXT        NOT NULL,
+    created_by   TEXT        NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL,
+    data         JSONB       NOT NULL,
+    PRIMARY KEY (id, version)
+);
 `
 
 // NewPostgres opens the portal control-plane database, verifies connectivity, and
@@ -263,6 +275,73 @@ func (p *Postgres) ListLLMModels(ctx context.Context) ([]LLMModel, error) {
 
 func (p *Postgres) DeleteLLMModel(ctx context.Context, name string) error {
 	return p.deleteByName(ctx, "llm_models", "llm model", name)
+}
+
+// ---- blueprints ----
+
+func (p *Postgres) UpsertBlueprint(ctx context.Context, b Blueprint) (Blueprint, error) {
+	if b.ID == "" || b.Version < 1 {
+		return Blueprint{}, fmt.Errorf("store: blueprint id and version required: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	b.CreatedAt, b.UpdatedAt = now, now
+	blob, err := json.Marshal(b)
+	if err != nil {
+		return Blueprint{}, fmt.Errorf("store: marshal blueprint: %w", err)
+	}
+	const q = `
+INSERT INTO blueprints (id, version, class, content_hash, status, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
+ON CONFLICT (id, version) DO UPDATE SET
+    class        = EXCLUDED.class,
+    content_hash = EXCLUDED.content_hash,
+    status       = EXCLUDED.status,
+    updated_at   = EXCLUDED.updated_at,
+    data         = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, b.ID, b.Version, b.Class, b.ContentHash, b.Status, b.CreatedBy, now, blob)
+	if err := row.Scan(&b.CreatedBy, &b.CreatedAt, &b.UpdatedAt); err != nil {
+		return Blueprint{}, fmt.Errorf("store: upsert blueprint: %w", err)
+	}
+	return b, nil
+}
+
+func (p *Postgres) GetBlueprint(ctx context.Context, id string, version int) (Blueprint, error) {
+	const q = `SELECT data FROM blueprints WHERE id = $1 AND version = $2`
+	var blob []byte
+	switch err := p.db.QueryRowContext(ctx, q, id, version).Scan(&blob); {
+	case errors.Is(err, sql.ErrNoRows):
+		return Blueprint{}, fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
+	case err != nil:
+		return Blueprint{}, fmt.Errorf("store: get blueprint: %w", err)
+	}
+	var b Blueprint
+	if err := json.Unmarshal(blob, &b); err != nil {
+		return Blueprint{}, fmt.Errorf("store: unmarshal blueprint: %w", err)
+	}
+	return b, nil
+}
+
+func (p *Postgres) ListBlueprints(ctx context.Context) ([]Blueprint, error) {
+	const q = `SELECT data FROM blueprints ORDER BY id, version`
+	rows, err := p.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: list blueprints: %w", err)
+	}
+	defer rows.Close()
+	var out []Blueprint
+	for rows.Next() {
+		var blob []byte
+		if err := rows.Scan(&blob); err != nil {
+			return nil, fmt.Errorf("store: scan blueprint: %w", err)
+		}
+		var b Blueprint
+		if err := json.Unmarshal(blob, &b); err != nil {
+			return nil, fmt.Errorf("store: unmarshal blueprint: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // ---- audit ----

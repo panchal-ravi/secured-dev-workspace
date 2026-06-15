@@ -15,9 +15,10 @@ import (
 // Nomad jobs, gateway peers, and LiteLLM models survive independently).
 type Memory struct {
 	mu      sync.Mutex
-	servers map[string]MCPServer
-	models  map[string]LLMModel
-	audit   []AuditEvent
+	servers    map[string]MCPServer
+	models     map[string]LLMModel
+	blueprints map[string]Blueprint // key: id + "@" + version
+	audit      []AuditEvent
 	nextID  int64
 	now     func() time.Time
 }
@@ -25,9 +26,10 @@ type Memory struct {
 // NewMemory builds an empty in-memory store.
 func NewMemory() *Memory {
 	return &Memory{
-		servers: map[string]MCPServer{},
-		models:  map[string]LLMModel{},
-		now:     time.Now,
+		servers:    map[string]MCPServer{},
+		models:     map[string]LLMModel{},
+		blueprints: map[string]Blueprint{},
+		now:        time.Now,
 	}
 }
 
@@ -127,6 +129,53 @@ func (m *Memory) DeleteLLMModel(_ context.Context, name string) error {
 	}
 	delete(m.models, name)
 	return nil
+}
+
+func bpKey(id string, version int) string { return fmt.Sprintf("%s@%d", id, version) }
+
+func (m *Memory) UpsertBlueprint(_ context.Context, b Blueprint) (Blueprint, error) {
+	if b.ID == "" || b.Version < 1 {
+		return Blueprint{}, fmt.Errorf("store: blueprint id and version required: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	k := bpKey(b.ID, b.Version)
+	if existing, ok := m.blueprints[k]; ok {
+		b.CreatedAt = existing.CreatedAt
+		b.CreatedBy = existing.CreatedBy
+	} else {
+		b.CreatedAt = now
+	}
+	b.UpdatedAt = now
+	m.blueprints[k] = b
+	return b, nil
+}
+
+func (m *Memory) GetBlueprint(_ context.Context, id string, version int) (Blueprint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.blueprints[bpKey(id, version)]
+	if !ok {
+		return Blueprint{}, fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
+	}
+	return b, nil
+}
+
+func (m *Memory) ListBlueprints(_ context.Context) ([]Blueprint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Blueprint, 0, len(m.blueprints))
+	for _, b := range m.blueprints {
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out, nil
 }
 
 func (m *Memory) AppendAudit(_ context.Context, e AuditEvent) error {

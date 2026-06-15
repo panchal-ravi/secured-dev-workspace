@@ -10,6 +10,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -19,6 +20,7 @@ import (
 const (
 	StatusDraft     = "draft"
 	StatusDeployed  = "deployed"
+	StatusValidated = "validated"
 	StatusPublished = "published"
 )
 
@@ -82,6 +84,22 @@ type LLMTestResult struct {
 	At                time.Time `json:"at"`
 }
 
+// Blueprint is a platform-authored credential blueprint's control-plane record.
+// The canonical manifest JSON lives in Vault KV (secret/infra/blueprints/<id>/<ver>);
+// this row carries identity, lifecycle, the content-hash pin, and the validation
+// result. No secret material is stored here.
+type Blueprint struct {
+	ID          string          `json:"id"`
+	Version     int             `json:"version"`
+	Class       string          `json:"class"`
+	ContentHash string          `json:"content_hash"`
+	Status      string          `json:"status"`
+	Validation  json.RawMessage `json:"validation,omitempty"` // a blueprint.ValidationResult, opaque to the store
+	CreatedBy   string          `json:"created_by,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
 // AuditEvent is one admin mutation: who did what to which target, and the outcome.
 type AuditEvent struct {
 	ID      int64          `json:"id"`
@@ -106,6 +124,11 @@ type Store interface {
 	GetLLMModel(ctx context.Context, name string) (LLMModel, error)
 	ListLLMModels(ctx context.Context) ([]LLMModel, error)
 	DeleteLLMModel(ctx context.Context, name string) error
+
+	// Credential blueprints (platform-authored).
+	UpsertBlueprint(ctx context.Context, b Blueprint) (Blueprint, error)
+	GetBlueprint(ctx context.Context, id string, version int) (Blueprint, error)
+	ListBlueprints(ctx context.Context) ([]Blueprint, error)
 
 	// Admin audit log.
 	AppendAudit(ctx context.Context, e AuditEvent) error

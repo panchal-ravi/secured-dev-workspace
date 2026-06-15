@@ -75,3 +75,34 @@ func TestMemoryLLMModel(t *testing.T) {
 		t.Fatalf("Get model: %+v err=%v", got, err)
 	}
 }
+
+func TestMemory_BlueprintRoundTrip(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	bp := Blueprint{ID: "vault-mcp", Version: 1, Class: "C", ContentHash: "abc", Status: StatusDraft, CreatedBy: "admin@x"}
+	saved, err := m.UpsertBlueprint(ctx, bp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt must be stamped")
+	}
+	got, err := m.GetBlueprint(ctx, "vault-mcp", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ContentHash != "abc" || got.Status != StatusDraft {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	list, err := m.ListBlueprints(ctx)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("expected 1 blueprint, got %d (%v)", len(list), err)
+	}
+}
+
+func TestMemory_GetBlueprint_NotFound(t *testing.T) {
+	m := NewMemory()
+	if _, err := m.GetBlueprint(context.Background(), "nope", 9); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
