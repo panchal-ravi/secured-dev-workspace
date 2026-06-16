@@ -100,6 +100,17 @@ type Blueprint struct {
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
+// ProjectRole is a project-scoped role elevation: a project member (in the
+// project's IBM Verify developers group) granted an in-app role. Membership stays
+// in the IdP; this table records only the elevation. No secret material.
+type ProjectRole struct {
+	Project   string    `json:"project"`
+	Subject   string    `json:"subject"` // lowercased email
+	Role      string    `json:"role"`
+	GrantedBy string    `json:"granted_by"`
+	GrantedAt time.Time `json:"granted_at"`
+}
+
 // AuditEvent is one admin mutation: who did what to which target, and the outcome.
 type AuditEvent struct {
 	ID      int64          `json:"id"`
@@ -129,6 +140,13 @@ type Store interface {
 	UpsertBlueprint(ctx context.Context, b Blueprint) (Blueprint, error)
 	GetBlueprint(ctx context.Context, id string, version int) (Blueprint, error)
 	ListBlueprints(ctx context.Context) ([]Blueprint, error)
+
+	// Project role elevations (group membership stays in IBM Verify).
+	GrantProjectRole(ctx context.Context, pr ProjectRole) (ProjectRole, error)
+	RevokeProjectRole(ctx context.Context, project, subject, role string) error
+	HasProjectRole(ctx context.Context, project, subject, role string) (bool, error)
+	ListProjectRoles(ctx context.Context, project string) ([]ProjectRole, error)
+	ProjectRolesForSubject(ctx context.Context, subject string) ([]ProjectRole, error)
 
 	// Admin audit log.
 	AppendAudit(ctx context.Context, e AuditEvent) error

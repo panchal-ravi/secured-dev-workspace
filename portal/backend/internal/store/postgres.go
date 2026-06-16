@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS blueprints (
     data         JSONB       NOT NULL,
     PRIMARY KEY (id, version)
 );
+CREATE TABLE IF NOT EXISTS project_roles (
+    project    TEXT        NOT NULL,
+    subject    TEXT        NOT NULL,
+    role       TEXT        NOT NULL,
+    granted_by TEXT        NOT NULL DEFAULT '',
+    granted_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (project, subject, role)
+);
 `
 
 // NewPostgres opens the portal control-plane database, verifies connectivity, and
@@ -340,6 +348,77 @@ func (p *Postgres) ListBlueprints(ctx context.Context) ([]Blueprint, error) {
 			return nil, fmt.Errorf("store: unmarshal blueprint: %w", err)
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ---- project roles ----
+
+func (p *Postgres) GrantProjectRole(ctx context.Context, pr ProjectRole) (ProjectRole, error) {
+	if pr.Project == "" || pr.Subject == "" || pr.Role == "" {
+		return ProjectRole{}, fmt.Errorf("store: project role requires project, subject, role: %w", apperr.ErrBadRequest)
+	}
+	if pr.GrantedAt.IsZero() {
+		pr.GrantedAt = p.now()
+	}
+	const q = `
+INSERT INTO project_roles (project, subject, role, granted_by, granted_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (project, subject, role) DO UPDATE SET
+    granted_by = EXCLUDED.granted_by,
+    granted_at = EXCLUDED.granted_at
+RETURNING granted_at`
+	if err := p.db.QueryRowContext(ctx, q, pr.Project, pr.Subject, pr.Role, pr.GrantedBy, pr.GrantedAt).Scan(&pr.GrantedAt); err != nil {
+		return ProjectRole{}, fmt.Errorf("store: grant project role: %w", err)
+	}
+	return pr, nil
+}
+
+func (p *Postgres) RevokeProjectRole(ctx context.Context, project, subject, role string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_roles WHERE project = $1 AND subject = $2 AND role = $3`, project, subject, role)
+	if err != nil {
+		return fmt.Errorf("store: revoke project role: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: revoke project role rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project role %s/%s/%s: %w", project, subject, role, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func (p *Postgres) HasProjectRole(ctx context.Context, project, subject, role string) (bool, error) {
+	var exists bool
+	const q = `SELECT EXISTS(SELECT 1 FROM project_roles WHERE project = $1 AND subject = $2 AND role = $3)`
+	if err := p.db.QueryRowContext(ctx, q, project, subject, role).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: has project role: %w", err)
+	}
+	return exists, nil
+}
+
+func (p *Postgres) ListProjectRoles(ctx context.Context, project string) ([]ProjectRole, error) {
+	return p.queryProjectRoles(ctx, `SELECT project, subject, role, granted_by, granted_at FROM project_roles WHERE project = $1 ORDER BY subject`, project)
+}
+
+func (p *Postgres) ProjectRolesForSubject(ctx context.Context, subject string) ([]ProjectRole, error) {
+	return p.queryProjectRoles(ctx, `SELECT project, subject, role, granted_by, granted_at FROM project_roles WHERE subject = $1 ORDER BY project`, subject)
+}
+
+func (p *Postgres) queryProjectRoles(ctx context.Context, q, arg string) ([]ProjectRole, error) {
+	rows, err := p.db.QueryContext(ctx, q, arg)
+	if err != nil {
+		return nil, fmt.Errorf("store: query project roles: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectRole{}
+	for rows.Next() {
+		var pr ProjectRole
+		if err := rows.Scan(&pr.Project, &pr.Subject, &pr.Role, &pr.GrantedBy, &pr.GrantedAt); err != nil {
+			return nil, fmt.Errorf("store: scan project role: %w", err)
+		}
+		out = append(out, pr)
 	}
 	return out, rows.Err()
 }

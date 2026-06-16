@@ -14,22 +14,24 @@ import (
 // until the Postgres-backed store lands; state is lost on restart (the underlying
 // Nomad jobs, gateway peers, and LiteLLM models survive independently).
 type Memory struct {
-	mu      sync.Mutex
-	servers    map[string]MCPServer
-	models     map[string]LLMModel
-	blueprints map[string]Blueprint // key: id + "@" + version
-	audit      []AuditEvent
-	nextID  int64
-	now     func() time.Time
+	mu           sync.Mutex
+	servers      map[string]MCPServer
+	models       map[string]LLMModel
+	blueprints   map[string]Blueprint   // key: id + "@" + version
+	projectRoles map[string]ProjectRole // key: project\x00subject\x00role
+	audit        []AuditEvent
+	nextID       int64
+	now          func() time.Time
 }
 
 // NewMemory builds an empty in-memory store.
 func NewMemory() *Memory {
 	return &Memory{
-		servers:    map[string]MCPServer{},
-		models:     map[string]LLMModel{},
-		blueprints: map[string]Blueprint{},
-		now:        time.Now,
+		servers:      map[string]MCPServer{},
+		models:       map[string]LLMModel{},
+		blueprints:   map[string]Blueprint{},
+		projectRoles: map[string]ProjectRole{},
+		now:          time.Now,
 	}
 }
 
@@ -175,6 +177,67 @@ func (m *Memory) ListBlueprints(_ context.Context) ([]Blueprint, error) {
 		}
 		return out[i].Version < out[j].Version
 	})
+	return out, nil
+}
+
+func prKey(project, subject, role string) string {
+	return project + "\x00" + subject + "\x00" + role
+}
+
+func (m *Memory) GrantProjectRole(_ context.Context, pr ProjectRole) (ProjectRole, error) {
+	if pr.Project == "" || pr.Subject == "" || pr.Role == "" {
+		return ProjectRole{}, fmt.Errorf("store: project role requires project, subject, role: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pr.GrantedAt.IsZero() {
+		pr.GrantedAt = m.now()
+	}
+	m.projectRoles[prKey(pr.Project, pr.Subject, pr.Role)] = pr
+	return pr, nil
+}
+
+func (m *Memory) RevokeProjectRole(_ context.Context, project, subject, role string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := prKey(project, subject, role)
+	if _, ok := m.projectRoles[k]; !ok {
+		return fmt.Errorf("store: project role %s/%s/%s: %w", project, subject, role, apperr.ErrNotFound)
+	}
+	delete(m.projectRoles, k)
+	return nil
+}
+
+func (m *Memory) HasProjectRole(_ context.Context, project, subject, role string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.projectRoles[prKey(project, subject, role)]
+	return ok, nil
+}
+
+func (m *Memory) ListProjectRoles(_ context.Context, project string) ([]ProjectRole, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectRole{}
+	for _, pr := range m.projectRoles {
+		if pr.Project == project {
+			out = append(out, pr)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Subject < out[j].Subject })
+	return out, nil
+}
+
+func (m *Memory) ProjectRolesForSubject(_ context.Context, subject string) ([]ProjectRole, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectRole{}
+	for _, pr := range m.projectRoles {
+		if pr.Subject == subject {
+			out = append(out, pr)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
 	return out, nil
 }
 
