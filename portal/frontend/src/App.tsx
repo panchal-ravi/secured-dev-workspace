@@ -11,6 +11,7 @@ import ProjectPage from './pages/Project'
 import Workspaces from './pages/Workspaces'
 import McpServers from './pages/platformadmin/McpServers'
 import LlmModels from './pages/platformadmin/LlmModels'
+import Members from './pages/projectadmin/Members'
 
 type ThemeName = 'white' | 'g100'
 
@@ -72,6 +73,7 @@ export default function App() {
           <Route path="/workspaces" element={<Workspaces />} />
           {isPlatformAdmin(me) && <Route path="/admin/mcp-servers" element={<McpServers />} />}
           {isPlatformAdmin(me) && <Route path="/admin/llm-models" element={<LlmModels />} />}
+          <Route path="/projects/:name/members" element={<Members />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </main>

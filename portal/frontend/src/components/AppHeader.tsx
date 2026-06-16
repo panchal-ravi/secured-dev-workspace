@@ -15,12 +15,13 @@ import {
   Application,
   Catalog,
   MachineLearningModel,
+  UserMultiple,
   Asleep,
   Light,
 } from '@carbon/icons-react'
 import type { MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { isPlatformAdmin, logout, Me } from '../api/client'
+import { adminProjects, isPlatformAdmin, logout, Me } from '../api/client'
 
 export default function AppHeader({
   me,
@@ -56,6 +57,15 @@ export default function AppHeader({
       { label: 'MCP servers', path: '/admin/mcp-servers', icon: Catalog, current: pathname.startsWith('/admin/mcp-servers') },
       { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
     )
+  }
+  // Project admins get a Members entry per administered project.
+  for (const p of adminProjects(me)) {
+    items.push({
+      label: `${p} · members`,
+      path: `/projects/${encodeURIComponent(p)}/members`,
+      icon: UserMultiple,
+      current: pathname === `/projects/${p}/members`,
+    })
   }
 
   return (

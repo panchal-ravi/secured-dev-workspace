@@ -54,11 +54,20 @@ export interface Me {
   handle: string
   groups: string[]
   roles: string[]
+  project_roles?: { project: string; role: string }[]
   local_ssh: boolean
 }
 
 export function isPlatformAdmin(me: Me | null): boolean {
   return !!me && (me.roles || []).includes('platform-admin')
+}
+
+// adminProjects returns the projects where the user holds project-admin, used to
+// gate the Members nav/page. Falls back to [] when the field is absent.
+export function adminProjects(me: Me | null): string[] {
+  return (me?.project_roles || [])
+    .filter((r) => r.role === 'project-admin')
+    .map((r) => r.project)
 }
 
 async function asJSON(r: Response) {
@@ -341,6 +350,33 @@ export function publishLlmModel(name: string): Promise<LlmModel> {
 
 export function deleteLlmModel(name: string): Promise<void> {
   return fetch(`${adminBase}/llm/models/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}
+
+// ---- Project Admin: member roles ----
+
+export interface ProjectRole {
+  project: string
+  subject: string
+  role: string
+  granted_by: string
+  granted_at: string
+}
+
+export function listProjectRoles(project: string): Promise<ProjectRole[]> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/roles`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.roles as ProjectRole[]) || [])
+}
+
+export function grantProjectRole(project: string, subject: string): Promise<ProjectRole> {
+  return post(`/api/projects/${encodeURIComponent(project)}/roles`, { subject, role: 'project-admin' })
+}
+
+export function revokeProjectRole(project: string, subject: string): Promise<void> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/roles/${encodeURIComponent(subject)}`, {
     method: 'DELETE',
     credentials: 'include',
   }).then(expectOK)
