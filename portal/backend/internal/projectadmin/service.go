@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
@@ -65,8 +64,6 @@ type Service struct {
 func New(st store.Store, projects ProjectLookup, ex Executor, nomad NomadClient, gateway mcpgw.Client, vault VaultClient, cfg Config) *Service {
 	return &Service{store: st, projects: projects, executor: ex, nomad: nomad, gateway: gateway, vault: vault, cfg: cfg.withDefaults()}
 }
-
-var nameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{2,39}$`)
 
 type DeployableType struct {
 	Name      string                `json:"name"`
