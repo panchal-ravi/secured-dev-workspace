@@ -46,3 +46,34 @@ func TestProjectRolesMemory(t *testing.T) {
 		t.Fatalf("revoke absent: want ErrNotFound, got %v", err)
 	}
 }
+
+func TestPostgresProjectRoles(t *testing.T) {
+	p := newTestPostgres(t)
+	ctx := context.Background()
+	if _, err := p.db.Exec(`TRUNCATE project_roles`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	if _, err := p.GrantProjectRole(ctx, ProjectRole{Project: "project-acme", Subject: "alice@x", Role: "project-admin", GrantedBy: "pa@x"}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	// re-grant is idempotent (upsert), not a duplicate-key error
+	if _, err := p.GrantProjectRole(ctx, ProjectRole{Project: "project-acme", Subject: "alice@x", Role: "project-admin", GrantedBy: "pa2@x"}); err != nil {
+		t.Fatalf("re-grant: %v", err)
+	}
+	if has, _ := p.HasProjectRole(ctx, "project-acme", "alice@x", "project-admin"); !has {
+		t.Fatalf("has: want true")
+	}
+	if rs, _ := p.ListProjectRoles(ctx, "project-acme"); len(rs) != 1 {
+		t.Fatalf("list: %+v", rs)
+	}
+	if rs, _ := p.ProjectRolesForSubject(ctx, "alice@x"); len(rs) != 1 {
+		t.Fatalf("forSubject: %+v", rs)
+	}
+	if err := p.RevokeProjectRole(ctx, "project-acme", "alice@x", "project-admin"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := p.RevokeProjectRole(ctx, "project-acme", "alice@x", "project-admin"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("revoke absent: want ErrNotFound, got %v", err)
+	}
+}
