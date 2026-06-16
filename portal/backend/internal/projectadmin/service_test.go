@@ -225,3 +225,27 @@ func TestDeployServerHappyPath(t *testing.T) {
 		t.Fatalf("unknown type: want ErrNotFound, got %v", err)
 	}
 }
+
+func TestDeployServerRollsBackOnRegisterFailure(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	ex := &fakeExecutor{rec: blueprintInstance()}
+	n := &fakeNomad{regErr: errors.New("nomad down")}
+	svc, st := newService(t, ex, n, &fakeGateway{}, manifestJSON)
+	seedDeployable(t, st, hash)
+	ctx := context.Background()
+
+	_, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
+		DeployInput{ServerType: "postgres-mcp", Params: deployParams()})
+	if err == nil {
+		t.Fatalf("expected deploy error")
+	}
+	if len(ex.deprovisoned) != 1 {
+		t.Fatalf("expected exactly one Deprovision, got %d", len(ex.deprovisoned))
+	}
+	if ex.deprovisoned[0].WIFRoleName != "mcp-postgres-mcp" {
+		t.Fatalf("deprovisioned the wrong record: %+v", ex.deprovisoned[0])
+	}
+	if _, err := st.GetProjectMCPServer(ctx, "project-acme", "postgres-mcp"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("row should not exist: %v", err)
+	}
+}
