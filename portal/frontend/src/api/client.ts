@@ -381,3 +381,51 @@ export function revokeProjectRole(project: string, subject: string): Promise<voi
     credentials: 'include',
   }).then(expectOK)
 }
+
+// ---- Project Admin: MCP servers ----
+
+export interface DeployableType {
+  name: string
+  image: string
+  transport: string
+  params: { name: string; type: string; required: boolean; prompt?: string }[]
+}
+
+export interface ProjectMcpServer {
+  project: string
+  name: string
+  status: string
+  blueprint_ref: { id: string; version: number; content_hash: string }
+  job_id?: string
+  peer_id?: string
+  gateway_url?: string
+  test_result?: McpTestResult
+  running?: boolean
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectMcpCatalog {
+  deployable: DeployableType[]
+  deployed: ProjectMcpServer[]
+}
+
+export function listProjectMcp(project: string): Promise<ProjectMcpCatalog> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, { credentials: 'include' }).then(asJSON)
+}
+
+export function deployProjectMcp(project: string, serverType: string, params: Record<string, string>): Promise<ProjectMcpServer> {
+  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, { server_type: serverType, params })
+}
+
+export function testProjectMcp(project: string, name: string): Promise<ProjectMcpServer> {
+  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}/test`)
+}
+
+export function deleteProjectMcp(project: string, name: string): Promise<void> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}

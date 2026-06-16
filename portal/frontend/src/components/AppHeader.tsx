@@ -67,6 +67,15 @@ export default function AppHeader({
       current: pathname === `/projects/${encodeURIComponent(p)}/members`,
     })
   }
+  // Project admins get an MCP-servers entry per administered project.
+  for (const p of adminProjects(me)) {
+    items.push({
+      label: `${p} · mcp servers`,
+      path: `/projects/${encodeURIComponent(p)}/mcp-servers`,
+      icon: Catalog,
+      current: pathname === `/projects/${encodeURIComponent(p)}/mcp-servers`,
+    })
+  }
 
   return (
     <Header aria-label="Secured Dev Workspace" className="cds--g100">
