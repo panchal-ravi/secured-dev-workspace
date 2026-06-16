@@ -11,6 +11,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 )
 
 // Handlers is the thin HTTP adapter over Service. It carries no logic of its own —
@@ -26,6 +27,7 @@ func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
 // -admin gating to read routes; mutate adds rate limiting for state-changing ones.
 func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.HandlerFunc) http.Handler) {
 	mux.Handle("GET /api/admin/mcp-servers", protect(h.listMCPServers))
+	mux.Handle("GET /api/admin/mcp-servers/published", protect(h.listPublishedServerTypes))
 	mux.Handle("POST /api/admin/mcp-servers", mutate(h.deployMCPServer))
 	mux.Handle("POST /api/admin/mcp-servers/{name}/test", mutate(h.testMCPServer))
 	mux.Handle("POST /api/admin/mcp-servers/{name}/publish", mutate(h.publishMCPServer))
@@ -80,12 +82,28 @@ func (h *Handlers) testMCPServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) publishMCPServer(w http.ResponseWriter, r *http.Request) {
-	srv, err := h.svc.PublishMCPServer(r.Context(), actor(r), r.PathValue("name"))
+	var in struct {
+		BlueprintRef *store.BlueprintRef `json:"blueprint_ref"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
+		return
+	}
+	srv, err := h.svc.PublishMCPServer(r.Context(), actor(r), r.PathValue("name"), in.BlueprintRef)
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, srv)
+}
+
+func (h *Handlers) listPublishedServerTypes(w http.ResponseWriter, r *http.Request) {
+	types, err := h.svc.ListPublishedServerTypes(r.Context())
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": types})
 }
 
 func (h *Handlers) deleteMCPServer(w http.ResponseWriter, r *http.Request) {

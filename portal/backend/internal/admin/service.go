@@ -248,10 +248,25 @@ func (s *Service) TestMCPServer(ctx context.Context, actor, name string) (store.
 // PublishMCPServer makes a tested server discoverable by Project Admins: it
 // requires a green consumption-mirror test, ensures the gateway peer is
 // registered, writes the deploy descriptor to Vault KV, and flips to published.
-func (s *Service) PublishMCPServer(ctx context.Context, actor, name string) (store.MCPServer, error) {
+func (s *Service) PublishMCPServer(ctx context.Context, actor, name string, blueprintRef *store.BlueprintRef) (store.MCPServer, error) {
 	srv, err := s.store.GetMCPServer(ctx, name)
 	if err != nil {
 		return store.MCPServer{}, err
+	}
+	// Validate any supplied blueprint_ref before the already-published short-circuit
+	// so a re-publish with a bad ref is still rejected rather than silently accepted.
+	if blueprintRef != nil {
+		bp, err := s.store.GetBlueprint(ctx, blueprintRef.ID, blueprintRef.Version)
+		if err != nil {
+			return store.MCPServer{}, fmt.Errorf("blueprint %s@%d: %w", blueprintRef.ID, blueprintRef.Version, apperr.ErrBadRequest)
+		}
+		if bp.Status != store.StatusPublished {
+			return store.MCPServer{}, fmt.Errorf("blueprint %s@%d is not published: %w", blueprintRef.ID, blueprintRef.Version, apperr.ErrBadRequest)
+		}
+		if bp.ContentHash != blueprintRef.ContentHash {
+			return store.MCPServer{}, fmt.Errorf("blueprint_ref content hash does not match published blueprint: %w", apperr.ErrBadRequest)
+		}
+		srv.BlueprintRef = blueprintRef
 	}
 	if srv.Status == store.StatusPublished {
 		return srv, nil
@@ -293,6 +308,22 @@ func (s *Service) PublishMCPServer(ctx context.Context, actor, name string) (sto
 // ListMCPServers returns every server the platform has deployed.
 func (s *Service) ListMCPServers(ctx context.Context) ([]store.MCPServer, error) {
 	return s.store.ListMCPServers(ctx)
+}
+
+// ListPublishedServerTypes returns the published MCP servers a Project Admin may
+// deploy into their project. Only published servers are returned.
+func (s *Service) ListPublishedServerTypes(ctx context.Context) ([]store.MCPServer, error) {
+	all, err := s.store.ListMCPServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []store.MCPServer{}
+	for _, srv := range all {
+		if srv.Status == store.StatusPublished {
+			out = append(out, srv)
+		}
+	}
+	return out, nil
 }
 
 // DeleteMCPServer purges the Nomad job, removes the gateway peer, and drops the

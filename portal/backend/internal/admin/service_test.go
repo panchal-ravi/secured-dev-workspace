@@ -153,7 +153,7 @@ func TestMCPDeployTestPublish(t *testing.T) {
 	}
 
 	// publish before a green test is rejected
-	if _, err := svc.PublishMCPServer(ctx, "admin@x", "vault-mcp"); !errors.Is(err, apperr.ErrConflict) {
+	if _, err := svc.PublishMCPServer(ctx, "admin@x", "vault-mcp", nil); !errors.Is(err, apperr.ErrConflict) {
 		t.Fatalf("publish before test: want ErrConflict, got %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestMCPDeployTestPublish(t *testing.T) {
 		t.Fatalf("unexpected test result: %+v", tested.TestResult)
 	}
 
-	pub, err := svc.PublishMCPServer(ctx, "admin@x", "vault-mcp")
+	pub, err := svc.PublishMCPServer(ctx, "admin@x", "vault-mcp", nil)
 	if err != nil {
 		t.Fatalf("PublishMCPServer: %v", err)
 	}
@@ -174,6 +174,41 @@ func TestMCPDeployTestPublish(t *testing.T) {
 	}
 	if _, ok := v.written["infra/mcp-servers/vault-mcp"]; !ok {
 		t.Fatalf("publish did not write Vault descriptor: %v", v.written)
+	}
+}
+
+func TestPublishBindsBlueprintRef(t *testing.T) {
+	n := &fakeNomad{}
+	g := &fakeGateway{probe: passingProbe(), tools: []string{"t1"}}
+	v := &fakeVault{provider: map[string]string{}}
+	svc, st := newService(n, g, &fakeLLM{}, v)
+	ctx := context.Background()
+
+	if _, err := st.UpsertBlueprint(ctx, store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: "h1", Status: store.StatusPublished}); err != nil {
+		t.Fatalf("seed blueprint: %v", err)
+	}
+	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "postgres-mcp", Image: "img", Transport: "sse", Port: 9300}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if _, err := svc.TestMCPServer(ctx, "admin@x", "postgres-mcp"); err != nil {
+		t.Fatalf("test: %v", err)
+	}
+	ref := &store.BlueprintRef{ID: "postgres-mcp", Version: 1, ContentHash: "h1"}
+	pub, err := svc.PublishMCPServer(ctx, "admin@x", "postgres-mcp", ref)
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if pub.BlueprintRef == nil || pub.BlueprintRef.ContentHash != "h1" {
+		t.Fatalf("blueprint_ref not bound: %+v", pub.BlueprintRef)
+	}
+
+	types, err := svc.ListPublishedServerTypes(ctx)
+	if err != nil || len(types) != 1 || types[0].BlueprintRef == nil {
+		t.Fatalf("published types: %+v err=%v", types, err)
+	}
+
+	if _, err := svc.PublishMCPServer(ctx, "admin@x", "postgres-mcp", &store.BlueprintRef{ID: "postgres-mcp", Version: 1, ContentHash: "WRONG"}); !errors.Is(err, apperr.ErrBadRequest) {
+		t.Fatalf("mismatched ref: want ErrBadRequest, got %v", err)
 	}
 }
 
@@ -190,7 +225,7 @@ func TestMCPFailingProbeBlocksPublish(t *testing.T) {
 	if tested.TestResult.Passed {
 		t.Fatalf("test should fail when admin access is not denied")
 	}
-	if _, err := svc.PublishMCPServer(ctx, "admin@x", "bad-mcp"); !errors.Is(err, apperr.ErrConflict) {
+	if _, err := svc.PublishMCPServer(ctx, "admin@x", "bad-mcp", nil); !errors.Is(err, apperr.ErrConflict) {
 		t.Fatalf("publish after failed test: want ErrConflict, got %v", err)
 	}
 }
