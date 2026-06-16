@@ -8,8 +8,11 @@ package projectadmin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
@@ -237,6 +240,86 @@ func (s *Service) DeployServer(ctx context.Context, actor string, groups []strin
 	}
 	s.audit(ctx, actor, "project-mcp.deploy", project+"/"+t.Name, "ok", nil)
 	return saved, nil
+}
+
+// TestServer runs the consumption-mirror verification against a deployed project
+// server: register it as a gateway peer, discover tools, compose a temporary
+// virtual server + decoy + scoped token, confirm the token reaches only its own
+// server (200) and is denied admin + the decoy (403), tear down the temp artifacts
+// (the peer is kept), and record the result on the row.
+func (s *Service) TestServer(ctx context.Context, actor string, groups []string, project, name string) (store.ProjectMCPServer, error) {
+	if _, err := s.projects.GetProject(ctx, project, groups); err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	row, err := s.store.GetProjectMCPServer(ctx, project, name)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+
+	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(project, name), row.GatewayURL)
+	if err != nil {
+		s.audit(ctx, actor, "project-mcp.test", project+"/"+name, "error", nil)
+		return store.ProjectMCPServer{}, err
+	}
+	row.PeerID = peerID
+
+	toolIDs, err := s.gateway.DiscoverTools(ctx, peerID)
+	if err != nil {
+		s.audit(ctx, actor, "project-mcp.test", project+"/"+name, "error", nil)
+		return store.ProjectMCPServer{}, err
+	}
+
+	base := serviceName(project, name)
+	vsID, err := s.gateway.CreateVirtualServer(ctx, base+"-test", "consumption-mirror test for "+name, toolIDs)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	decoyID, err := s.gateway.CreateVirtualServer(ctx, base+"-decoy", "isolation decoy for "+name, toolIDs)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	token, err := s.gateway.CreateScopedToken(ctx, base+"-test-"+randHex(4), 1, vsID)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	probe, err := s.gateway.ProbeScopedToken(ctx, token, vsID, decoyID)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	_ = s.gateway.RevokeTokensByPrefix(ctx, base+"-test-")
+	_ = s.gateway.DeleteVirtualServer(ctx, vsID)
+	_ = s.gateway.DeleteVirtualServer(ctx, decoyID)
+
+	result := &store.MCPTestResult{
+		Passed:             probe.Passed() && len(toolIDs) > 0,
+		ToolsDiscovered:    len(toolIDs),
+		OwnServerOK:        probe.OwnServerOK,
+		AdminDenied:        probe.AdminDenied,
+		OtherServerDenied:  probe.OtherServerDenied,
+		OtherServerChecked: probe.OtherServerChecked,
+		At:                 time.Now(),
+	}
+	if !result.Passed {
+		result.Message = "consumption-mirror checks did not all pass"
+	}
+	row.TestResult = result
+
+	saved, err := s.store.UpsertProjectMCPServer(ctx, row)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	outcome := "failed"
+	if result.Passed {
+		outcome = "passed"
+	}
+	s.audit(ctx, actor, "project-mcp.test", project+"/"+name, outcome, nil)
+	return saved, nil
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (s *Service) audit(ctx context.Context, actor, action, target, outcome string, detail map[string]any) {

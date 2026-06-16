@@ -249,3 +249,39 @@ func TestDeployServerRollsBackOnRegisterFailure(t *testing.T) {
 		t.Fatalf("row should not exist: %v", err)
 	}
 }
+
+func passingProbe() mcpgw.ScopeProbe {
+	return mcpgw.ScopeProbe{OwnServerOK: true, AdminDenied: true, OtherServerDenied: true, OtherServerChecked: true}
+}
+
+func TestTestServer(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	ex := &fakeExecutor{rec: blueprintInstance()}
+	g := &fakeGateway{probe: passingProbe(), tools: []string{"t1", "t2"}}
+	svc, st := newService(t, ex, &fakeNomad{}, g, manifestJSON)
+	seedDeployable(t, st, hash)
+	ctx := context.Background()
+	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", DeployInput{ServerType: "postgres-mcp", Params: deployParams()}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+
+	got, err := svc.TestServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "postgres-mcp")
+	if err != nil {
+		t.Fatalf("test: %v", err)
+	}
+	if got.TestResult == nil || !got.TestResult.Passed || got.TestResult.ToolsDiscovered != 2 {
+		t.Fatalf("test result: %+v", got.TestResult)
+	}
+	if got.PeerID == "" {
+		t.Fatalf("peer id not recorded")
+	}
+	if len(g.deletedVS) != 2 {
+		t.Fatalf("temp virtual servers not torn down: %+v", g.deletedVS)
+	}
+	if len(g.deletedPeers) != 0 {
+		t.Fatalf("peer must be kept after test")
+	}
+	if _, err := svc.TestServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "nope"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("unknown: want ErrNotFound, got %v", err)
+	}
+}
