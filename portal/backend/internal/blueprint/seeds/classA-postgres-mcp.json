@@ -18,9 +18,17 @@
   },
   "policy_tpl": "path \"{{.Mount}}/creds/{{.Role}}\" {\n  capabilities = [\"read\"]\n}\n",
   "wif_role": { "name_tpl": "mcp-postgres-mcp", "token_ttl": "1h" },
+  "job_credential": {
+    "env_templates": {
+      "DATABASE_URI": "{{ with secret \"${cred_path}\" }}postgresql://{{ .Data.username }}:{{ .Data.password }}@${db_host}:${db_port}/${db_name}{{ end }}"
+    }
+  },
   "params": [
     { "name": "connection_url", "type": "string", "required": true, "prompt": "Postgres connection URL with {{username}}/{{password}} templating" },
     { "name": "bootstrap_username", "type": "string", "required": true, "prompt": "Bootstrap admin username (rotated immediately)" },
-    { "name": "bootstrap_password", "type": "secret", "required": true, "prompt": "Bootstrap admin password (write-only; rotated immediately)" }
+    { "name": "bootstrap_password", "type": "secret", "required": true, "prompt": "Bootstrap admin password (write-only; rotated immediately)" },
+    { "name": "db_host", "type": "string", "required": true, "prompt": "Database host the MCP server connects to" },
+    { "name": "db_port", "type": "string", "required": true, "prompt": "Database port" },
+    { "name": "db_name", "type": "string", "required": true, "prompt": "Database name" }
   ]
 }
