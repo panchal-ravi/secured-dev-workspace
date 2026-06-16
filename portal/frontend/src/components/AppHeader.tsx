@@ -64,7 +64,7 @@ export default function AppHeader({
       label: `${p} · members`,
       path: `/projects/${encodeURIComponent(p)}/members`,
       icon: UserMultiple,
-      current: pathname === `/projects/${p}/members`,
+      current: pathname === `/projects/${encodeURIComponent(p)}/members`,
     })
   }
 
