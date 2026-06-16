@@ -28,24 +28,53 @@ const (
 // config a Platform Admin transcribed from the server's Docker/K8s instructions)
 // plus its lifecycle state on the platform.
 type MCPServer struct {
-	Name       string            `json:"name"`
-	Image      string            `json:"image"`
-	Command    []string          `json:"command,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`         // non-secret env values
-	SecretRefs map[string]string `json:"secret_refs,omitempty"` // env key -> Vault KV "path#field" reference
-	Transport  string            `json:"transport"`             // stdio | sse | streamable-http
-	Port       int               `json:"port,omitempty"`
-	Path       string            `json:"path,omitempty"`
-	Namespace  string            `json:"namespace"`
-	JobID      string            `json:"job_id,omitempty"`
-	PeerID     string            `json:"peer_id,omitempty"`
-	GatewayURL string            `json:"gateway_url,omitempty"`
-	Status     string            `json:"status"`
-	Version    int               `json:"version"`
-	TestResult *MCPTestResult    `json:"test_result,omitempty"`
-	CreatedBy  string            `json:"created_by,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
-	UpdatedAt  time.Time         `json:"updated_at"`
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	Command      []string          `json:"command,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`           // non-secret env values
+	SecretRefs   map[string]string `json:"secret_refs,omitempty"`   // env key -> Vault KV "path#field" reference
+	BlueprintRef *BlueprintRef     `json:"blueprint_ref,omitempty"` // bound at publish for blueprint-backed server types
+	Transport    string            `json:"transport"`               // stdio | sse | streamable-http
+	Port         int               `json:"port,omitempty"`
+	Path         string            `json:"path,omitempty"`
+	Namespace    string            `json:"namespace"`
+	JobID        string            `json:"job_id,omitempty"`
+	PeerID       string            `json:"peer_id,omitempty"`
+	GatewayURL   string            `json:"gateway_url,omitempty"`
+	Status       string            `json:"status"`
+	Version      int               `json:"version"`
+	TestResult   *MCPTestResult    `json:"test_result,omitempty"`
+	CreatedBy    string            `json:"created_by,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+// BlueprintRef is the immutable pin (id, version, content-hash) of the credential
+// blueprint a server type is bound to. Mirrors blueprint.BlueprintRef without the
+// package dependency.
+type BlueprintRef struct {
+	ID          string `json:"id"`
+	Version     int    `json:"version"`
+	ContentHash string `json:"content_hash"`
+}
+
+// ProjectMCPServer is an MCP server a project-admin deployed into their project,
+// with the blueprint instance that brokered its credential. Instance is the opaque
+// blueprint.InstanceRecord JSON, persisted so deprovision can revoke exactly what
+// was created. No secret material is stored.
+type ProjectMCPServer struct {
+	Project      string          `json:"project"`
+	Name         string          `json:"name"`
+	Status       string          `json:"status"`
+	BlueprintRef BlueprintRef    `json:"blueprint_ref"`
+	Instance     json.RawMessage `json:"instance,omitempty"`
+	JobID        string          `json:"job_id,omitempty"`
+	PeerID       string          `json:"peer_id,omitempty"`
+	GatewayURL   string          `json:"gateway_url,omitempty"`
+	TestResult   *MCPTestResult  `json:"test_result,omitempty"`
+	CreatedBy    string          `json:"created_by,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 // MCPTestResult records the consumption-mirror verification of a deployed server.
@@ -147,6 +176,12 @@ type Store interface {
 	HasProjectRole(ctx context.Context, project, subject, role string) (bool, error)
 	ListProjectRoles(ctx context.Context, project string) ([]ProjectRole, error)
 	ProjectRolesForSubject(ctx context.Context, subject string) ([]ProjectRole, error)
+
+	// Project-deployed MCP servers (blueprint-instantiated).
+	UpsertProjectMCPServer(ctx context.Context, s ProjectMCPServer) (ProjectMCPServer, error)
+	GetProjectMCPServer(ctx context.Context, project, name string) (ProjectMCPServer, error)
+	ListProjectMCPServers(ctx context.Context, project string) ([]ProjectMCPServer, error)
+	DeleteProjectMCPServer(ctx context.Context, project, name string) error
 
 	// Admin audit log.
 	AppendAudit(ctx context.Context, e AuditEvent) error

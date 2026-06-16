@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS project_roles (
     granted_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (project, subject, role)
 );
+CREATE TABLE IF NOT EXISTS project_mcp_servers (
+    project    TEXT        NOT NULL,
+    name       TEXT        NOT NULL,
+    status     TEXT        NOT NULL,
+    created_by TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL,
+    PRIMARY KEY (project, name)
+);
 `
 
 // NewPostgres opens the portal control-plane database, verifies connectivity, and
@@ -421,6 +431,101 @@ func (p *Postgres) queryProjectRoles(ctx context.Context, q, arg string) ([]Proj
 		out = append(out, pr)
 	}
 	return out, rows.Err()
+}
+
+// ---- project MCP servers ----
+
+// scanRow is the minimal interface shared by *sql.Row and *sql.Rows.
+type scanRow interface{ Scan(dest ...any) error }
+
+func (p *Postgres) UpsertProjectMCPServer(ctx context.Context, s ProjectMCPServer) (ProjectMCPServer, error) {
+	if s.Project == "" || s.Name == "" {
+		return ProjectMCPServer{}, fmt.Errorf("store: project mcp server requires project and name: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	s.CreatedAt, s.UpdatedAt = now, now
+	blob, err := json.Marshal(s)
+	if err != nil {
+		return ProjectMCPServer{}, fmt.Errorf("store: marshal project mcp server: %w", err)
+	}
+	const q = `
+INSERT INTO project_mcp_servers (project, name, status, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $5, $6)
+ON CONFLICT (project, name) DO UPDATE SET
+    status     = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at,
+    data       = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, s.Project, s.Name, s.Status, s.CreatedBy, now, blob)
+	if err := row.Scan(&s.CreatedBy, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		return ProjectMCPServer{}, fmt.Errorf("store: upsert project mcp server: %w", err)
+	}
+	return s, nil
+}
+
+func (p *Postgres) GetProjectMCPServer(ctx context.Context, project, name string) (ProjectMCPServer, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_mcp_servers WHERE project = $1 AND name = $2`
+	return p.scanProjectMCP(p.db.QueryRowContext(ctx, q, project, name), project, name)
+}
+
+func (p *Postgres) ListProjectMCPServers(ctx context.Context, project string) ([]ProjectMCPServer, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_mcp_servers WHERE project = $1 ORDER BY name`
+	rows, err := p.db.QueryContext(ctx, q, project)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project mcp servers: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectMCPServer{}
+	for rows.Next() {
+		s, err := p.scanProjectMCPRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteProjectMCPServer(ctx context.Context, project, name string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_mcp_servers WHERE project = $1 AND name = $2`, project, name)
+	if err != nil {
+		return fmt.Errorf("store: delete project mcp server: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project mcp server rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project mcp server %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func (p *Postgres) scanProjectMCP(row scanRow, project, name string) (ProjectMCPServer, error) {
+	var (
+		s         ProjectMCPServer
+		blob      []byte
+		status    string
+		createdBy string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := row.Scan(&blob, &status, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectMCPServer{}, fmt.Errorf("store: project mcp server %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectMCPServer{}, fmt.Errorf("store: get project mcp server: %w", err)
+	}
+	if err := json.Unmarshal(blob, &s); err != nil {
+		return ProjectMCPServer{}, fmt.Errorf("store: unmarshal project mcp server: %w", err)
+	}
+	s.Status, s.CreatedBy, s.CreatedAt, s.UpdatedAt = status, createdBy, createdAt, updatedAt
+	return s, nil
+}
+
+func (p *Postgres) scanProjectMCPRow(rows *sql.Rows) (ProjectMCPServer, error) {
+	return p.scanProjectMCP(rows, "", "")
 }
 
 // ---- audit ----

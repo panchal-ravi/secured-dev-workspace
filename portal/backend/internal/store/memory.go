@@ -17,8 +17,9 @@ type Memory struct {
 	mu           sync.Mutex
 	servers      map[string]MCPServer
 	models       map[string]LLMModel
-	blueprints   map[string]Blueprint   // key: id + "@" + version
-	projectRoles map[string]ProjectRole // key: project\x00subject\x00role
+	blueprints   map[string]Blueprint        // key: id + "@" + version
+	projectRoles map[string]ProjectRole      // key: project\x00subject\x00role
+	projectMCP   map[string]ProjectMCPServer // key: project\x00name
 	audit        []AuditEvent
 	nextID       int64
 	now          func() time.Time
@@ -31,6 +32,7 @@ func NewMemory() *Memory {
 		models:       map[string]LLMModel{},
 		blueprints:   map[string]Blueprint{},
 		projectRoles: map[string]ProjectRole{},
+		projectMCP:   map[string]ProjectMCPServer{},
 		now:          time.Now,
 	}
 }
@@ -239,6 +241,60 @@ func (m *Memory) ProjectRolesForSubject(_ context.Context, subject string) ([]Pr
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
 	return out, nil
+}
+
+func pmsKey(project, name string) string { return project + "\x00" + name }
+
+func (m *Memory) UpsertProjectMCPServer(_ context.Context, s ProjectMCPServer) (ProjectMCPServer, error) {
+	if s.Project == "" || s.Name == "" {
+		return ProjectMCPServer{}, fmt.Errorf("store: project mcp server requires project and name: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	k := pmsKey(s.Project, s.Name)
+	if existing, ok := m.projectMCP[k]; ok {
+		s.CreatedAt, s.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		s.CreatedAt = now
+	}
+	s.UpdatedAt = now
+	m.projectMCP[k] = s
+	return s, nil
+}
+
+func (m *Memory) GetProjectMCPServer(_ context.Context, project, name string) (ProjectMCPServer, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.projectMCP[pmsKey(project, name)]
+	if !ok {
+		return ProjectMCPServer{}, fmt.Errorf("store: project mcp server %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return s, nil
+}
+
+func (m *Memory) ListProjectMCPServers(_ context.Context, project string) ([]ProjectMCPServer, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectMCPServer{}
+	for _, s := range m.projectMCP {
+		if s.Project == project {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *Memory) DeleteProjectMCPServer(_ context.Context, project, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := pmsKey(project, name)
+	if _, ok := m.projectMCP[k]; !ok {
+		return fmt.Errorf("store: project mcp server %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	delete(m.projectMCP, k)
+	return nil
 }
 
 func (m *Memory) AppendAudit(_ context.Context, e AuditEvent) error {
