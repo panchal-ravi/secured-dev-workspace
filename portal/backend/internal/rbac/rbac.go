@@ -63,6 +63,10 @@ func RequirePlatformAdmin(next http.Handler) http.Handler {
 	})
 }
 
+func jsonEncode(w http.ResponseWriter, v any) error {
+	return json.NewEncoder(w).Encode(v)
+}
+
 func writeForbidden(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
