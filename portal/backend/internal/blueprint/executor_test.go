@@ -69,6 +69,9 @@ func classAManifest() BlueprintManifest {
 			{Name: "connection_url", Type: "string", Required: true},
 			{Name: "bootstrap_password", Type: "secret", Required: true},
 		},
+		JobCredential: JobCredentialSpec{EnvTemplates: map[string]string{
+			"DATABASE_URI": `{{ with secret "${cred_path}" }}postgresql://{{ .Data.username }}:{{ .Data.password }}@${db_host}/${db_name}{{ end }}`,
+		}},
 	}
 }
 
