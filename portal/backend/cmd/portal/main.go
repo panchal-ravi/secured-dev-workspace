@@ -26,6 +26,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/logging"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
@@ -76,6 +77,12 @@ func run() error {
 		SSHConfigPath:      cfg.SSHConfigPath,
 	}, vault, nomad, bndry)
 
+	st, err := buildStore(startCtx, cfg)
+	if err != nil {
+		return err
+	}
+	projectRoles := projectrole.New(st)
+
 	staticDir := os.Getenv("PORTAL_STATIC_DIR")
 	if staticDir == "" {
 		staticDir = "./web"
@@ -86,7 +93,7 @@ func run() error {
 	// from Vault at startup so no secret material lives in the portal's env.
 	var adminHandlers *admin.Handlers
 	if cfg.AdminEnabled() {
-		adminHandlers, err = buildAdminPlane(startCtx, cfg, vault, nomad)
+		adminHandlers, err = buildAdminPlane(startCtx, cfg, st, vault, nomad)
 		if err != nil {
 			return err
 		}
@@ -96,12 +103,14 @@ func run() error {
 	}
 
 	mux := api.NewMux(api.Options{
-		Auth:      authn,
-		Svc:       svc,
-		Admin:     adminHandlers,
-		StaticDir: staticDir,
-		Ready:     newReadinessCheck(vault, nomad),
-		RateLimit: middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
+		Auth:         authn,
+		Svc:          svc,
+		Admin:        adminHandlers,
+		ProjectRoles: projectRoles,
+		Store:        st,
+		StaticDir:    staticDir,
+		Ready:        newReadinessCheck(vault, nomad),
+		RateLimit:    middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
 	})
 
 	// Cross-cutting middleware, outermost first: recover → request context (id) →
@@ -157,11 +166,27 @@ func run() error {
 	}
 }
 
+// buildStore opens the durable control-plane store when a DSN is configured
+// (portal-postgres), otherwise the in-memory store. Both satisfy store.Store and
+// back both the admin plane and the project-role plane.
+func buildStore(ctx context.Context, cfg config.Config) (store.Store, error) {
+	if cfg.DBDSN == "" {
+		slog.Info("control-plane store: in-memory (set PORTAL_DB_DSN for durability)")
+		return store.NewMemory(), nil
+	}
+	pg, err := store.NewPostgres(ctx, cfg.DBDSN)
+	if err != nil {
+		return nil, fmt.Errorf("connect control-plane store: %w", err)
+	}
+	slog.Info("control-plane store: postgres")
+	return pg, nil
+}
+
 // buildAdminPlane wires the Platform Admin onboarding service: it reads the MCP
 // gateway admin JWT secret/email and the LiteLLM portal-admin key from Vault (the
 // portal never holds them in env), constructs the gateway/LLM clients and the
 // in-memory store, and returns the HTTP handlers.
-func buildAdminPlane(ctx context.Context, cfg config.Config, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, error) {
+func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, error) {
 	jwtSecret, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "jwt_secret_key")
 	if err != nil {
 		return nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
@@ -177,20 +202,6 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, vault *hashistack.V
 
 	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
 	llm := llmgw.New(cfg.LLMGatewayAddr, llmKey, nil)
-
-	// Durable control-plane store when a DSN is configured (portal-postgres),
-	// otherwise the in-memory store. Both satisfy store.Store.
-	var st store.Store = store.NewMemory()
-	if cfg.DBDSN != "" {
-		pg, err := store.NewPostgres(ctx, cfg.DBDSN)
-		if err != nil {
-			return nil, fmt.Errorf("admin plane: connect control-plane store: %w", err)
-		}
-		st = pg
-		slog.Info("admin plane: using postgres control-plane store")
-	} else {
-		slog.Info("admin plane: using in-memory control-plane store (set PORTAL_DB_DSN for durability)")
-	}
 
 	vadmin := blueprint.NewVaultAdmin(vault.APIClient())
 	executor := blueprint.NewExecutor(vadmin, blueprint.ExecutorConfig{
