@@ -26,6 +26,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/logging"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
@@ -92,8 +93,9 @@ func run() error {
 	// the MCP/LLM gateway addresses are configured; its admin credentials are read
 	// from Vault at startup so no secret material lives in the portal's env.
 	var adminHandlers *admin.Handlers
+	var projectMCP *projectadmin.Handlers
 	if cfg.AdminEnabled() {
-		adminHandlers, err = buildAdminPlane(startCtx, cfg, st, vault, nomad)
+		adminHandlers, projectMCP, err = buildAdminPlane(startCtx, cfg, st, svc, vault, nomad)
 		if err != nil {
 			return err
 		}
@@ -107,6 +109,7 @@ func run() error {
 		Svc:          svc,
 		Admin:        adminHandlers,
 		ProjectRoles: projectRoles,
+		ProjectMCP:   projectMCP,
 		Store:        st,
 		StaticDir:    staticDir,
 		Ready:        newReadinessCheck(vault, nomad),
@@ -186,18 +189,18 @@ func buildStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 // gateway admin JWT secret/email and the LiteLLM portal-admin key from Vault (the
 // portal never holds them in env), constructs the gateway/LLM clients over the
 // shared control-plane store, and returns the HTTP handlers.
-func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, error) {
+func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsvc *workspace.Service, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, *projectadmin.Handlers, error) {
 	jwtSecret, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "jwt_secret_key")
 	if err != nil {
-		return nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
+		return nil, nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
 	}
 	adminEmail, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "admin_email")
 	if err != nil {
-		return nil, fmt.Errorf("admin plane: read mcp-gateway admin email: %w", err)
+		return nil, nil, fmt.Errorf("admin plane: read mcp-gateway admin email: %w", err)
 	}
 	llmKey, err := vault.ReadKVField(ctx, "infra/llm-gateway", "portal_admin_key")
 	if err != nil {
-		return nil, fmt.Errorf("admin plane: read llm-gateway portal-admin key: %w", err)
+		return nil, nil, fmt.Errorf("admin plane: read llm-gateway portal-admin key: %w", err)
 	}
 
 	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
@@ -211,12 +214,16 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, vau
 	})
 	validator := blueprint.NewValidator(vadmin, executor)
 
-	svc := admin.New(st, nomad, gateway, llm, vault, validator, admin.Config{
+	adminSvc := admin.New(st, nomad, gateway, llm, vault, validator, admin.Config{
 		MCPNamespace:    cfg.MCPNamespace,
 		NodePool:        cfg.AgentNodePool,
 		MCPJobVaultRole: cfg.MCPJobVaultRole,
 	})
-	return admin.NewHandlers(svc), nil
+	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, vault, projectadmin.Config{
+		BlueprintsKVPath: "infra/blueprints",
+		NodePool:         cfg.AgentNodePool,
+	})
+	return admin.NewHandlers(adminSvc), projectadmin.NewHandlers(pmSvc), nil
 }
 
 // newReadinessCheck returns a /readyz probe that pings Vault and Nomad, caching

@@ -17,6 +17,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
@@ -37,7 +38,8 @@ type Options struct {
 	Auth         *auth.Authenticator
 	Svc          *workspace.Service
 	Admin        *admin.Handlers
-	ProjectRoles *projectrole.Service // optional; project-role plane
+	ProjectRoles *projectrole.Service   // optional; project-role plane
+	ProjectMCP   *projectadmin.Handlers // optional; project MCP-deploy plane
 	Store        rbac.ProjectRoleStore
 	StaticDir    string
 	Ready        func(context.Context) error
@@ -102,6 +104,10 @@ func NewMux(opts Options) http.Handler {
 		mux.Handle("POST /api/projects/{name}/roles", paMutate(prh.Grant))
 		mux.Handle("DELETE /api/projects/{name}/roles/{subject}", paMutate(prh.Revoke))
 		mux.Handle("POST /api/admin/projects/{name}/roles", adminMutate(prh.Grant)) // platform-admin bootstrap
+
+		if opts.ProjectMCP != nil {
+			opts.ProjectMCP.Register(mux, paProtect, paMutate)
+		}
 	}
 
 	// The secured-ws:// helper download. Served from a sibling of the SPA dir so the
