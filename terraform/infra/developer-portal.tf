@@ -95,6 +95,18 @@ resource "vault_policy" "infra_portal_read" {
   HCL
 }
 
+# Blueprint-provisioning grant for the project-MCP deploy plane (B2 / R3). Attached
+# to the portal WIF role below; applies INSIDE whichever project namespace the
+# portal's blueprint Executor targets via client.WithNamespace(<project>). See
+# portal-provisioning-policy.hcl for the (honest) containment rationale. Gated on the
+# onboarding plane, exactly like infra_platform_admin — the project deploy plane only
+# initializes when the admin plane is enabled.
+resource "vault_policy" "portal_provisioning" {
+  count  = local.platform_admin_count
+  name   = "portal-blueprint-provisioning"
+  policy = file("${path.module}/portal-provisioning-policy.hcl")
+}
+
 resource "vault_jwt_auth_backend_role" "infra_portal" {
   count                   = local.portal_count
   backend                 = module.nomad_vault_wif.backend_path
@@ -105,7 +117,10 @@ resource "vault_jwt_auth_backend_role" "infra_portal" {
   user_claim_json_pointer = true
   token_policies = concat(
     [vault_policy.infra_portal_read[0].name],
-    var.enable_platform_admin ? [vault_policy.infra_platform_admin[0].name] : [],
+    var.enable_platform_admin ? [
+      vault_policy.infra_platform_admin[0].name,
+      vault_policy.portal_provisioning[0].name,
+    ] : [],
   )
   token_ttl     = 1800
   token_max_ttl = 3600
