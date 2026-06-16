@@ -17,13 +17,16 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
 
 type server struct {
 	auth  *auth.Authenticator
 	svc   *workspace.Service
+	roles *projectrole.Service
 	ready func(context.Context) error // readiness probe; nil = always ready
 }
 
@@ -31,17 +34,19 @@ type server struct {
 // and RateLimit throttles mutating endpoints per user. Admin is the optional
 // Platform Admin onboarding plane; when nil its routes are simply not mounted.
 type Options struct {
-	Auth      *auth.Authenticator
-	Svc       *workspace.Service
-	Admin     *admin.Handlers
-	StaticDir string
-	Ready     func(context.Context) error
-	RateLimit middleware.RateLimitConfig
+	Auth         *auth.Authenticator
+	Svc          *workspace.Service
+	Admin        *admin.Handlers
+	ProjectRoles *projectrole.Service // optional; project-role plane
+	Store        rbac.ProjectRoleStore
+	StaticDir    string
+	Ready        func(context.Context) error
+	RateLimit    middleware.RateLimitConfig
 }
 
 // NewMux wires every route and returns the root handler.
 func NewMux(opts Options) http.Handler {
-	s := &server{auth: opts.Auth, svc: opts.Svc, ready: opts.Ready}
+	s := &server{auth: opts.Auth, svc: opts.Svc, roles: opts.ProjectRoles, ready: opts.Ready}
 	mux := http.NewServeMux()
 
 	// Liveness/readiness — public, no secrets. /health is the Nomad service check.
@@ -70,14 +75,33 @@ func NewMux(opts Options) http.Handler {
 
 	// Platform Admin onboarding plane (optional). Every route is gated by
 	// auth.Require + rbac.RequirePlatformAdmin; mutations also rate-limit per user.
+	adminProtect := func(h http.HandlerFunc) http.Handler {
+		return opts.Auth.Require(rbac.RequirePlatformAdmin(http.HandlerFunc(h)))
+	}
+	adminMutate := func(h http.HandlerFunc) http.Handler {
+		return opts.Auth.Require(rbac.RequirePlatformAdmin(rl.Wrap(http.HandlerFunc(h))))
+	}
 	if opts.Admin != nil {
-		adminProtect := func(h http.HandlerFunc) http.Handler {
-			return opts.Auth.Require(rbac.RequirePlatformAdmin(http.HandlerFunc(h)))
-		}
-		adminMutate := func(h http.HandlerFunc) http.Handler {
-			return opts.Auth.Require(rbac.RequirePlatformAdmin(rl.Wrap(http.HandlerFunc(h))))
-		}
 		opts.Admin.Register(mux, adminProtect, adminMutate)
+	}
+
+	// Project-role plane (optional): self-service grant/revoke gated on project-admin
+	// of the {name} project; platform-admins bootstrap the first admin.
+	if opts.ProjectRoles != nil {
+		prh := projectrole.NewHandlers(opts.ProjectRoles)
+		member := func(ctx context.Context, project string, groups []string) error {
+			_, err := opts.Svc.GetProject(ctx, project, groups)
+			return err
+		}
+		guard := rbac.NewGuard(opts.Store, member)
+		reqPA := guard.RequireProjectRole(rbac.RoleProjectAdmin)
+		paProtect := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(reqPA(http.HandlerFunc(h))) }
+		paMutate := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(reqPA(rl.Wrap(http.HandlerFunc(h)))) }
+
+		mux.Handle("GET /api/projects/{name}/roles", paProtect(prh.List))
+		mux.Handle("POST /api/projects/{name}/roles", paMutate(prh.Grant))
+		mux.Handle("DELETE /api/projects/{name}/roles/{subject}", paMutate(prh.Revoke))
+		mux.Handle("POST /api/admin/projects/{name}/roles", adminMutate(prh.Grant)) // platform-admin bootstrap
 	}
 
 	// The secured-ws:// helper download. Served from a sibling of the SPA dir so the
@@ -123,17 +147,67 @@ func toProjectDTO(d descriptor.Descriptor) projectDTO {
 	return projectDTO{Name: d.ProjectName, Namespace: d.Namespace, Flavors: fl}
 }
 
+type projectRoleDTO struct {
+	Project string `json:"project"`
+	Role    string `json:"role"`
+}
+
+// intersectProjectRoles keeps only grants for projects the user currently belongs
+// to, so a stale grant for a project the user has left never surfaces in the nav.
+func intersectProjectRoles(grants []store.ProjectRole, members map[string]bool) []projectRoleDTO {
+	out := []projectRoleDTO{}
+	for _, g := range grants {
+		if members[g.Project] {
+			out = append(out, projectRoleDTO{Project: g.Project, Role: g.Role})
+		}
+	}
+	return out
+}
+
 // ---- Handlers ----
 
 func (s *server) me(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"email":     u.Email,
-		"handle":    u.Handle,
-		"groups":    u.Groups,
-		"roles":     rbac.RolesFor(u.Groups),
-		"local_ssh": s.svc.LocalSSHEnabled(),
+		"email":         u.Email,
+		"handle":        u.Handle,
+		"groups":        u.Groups,
+		"roles":         rbac.RolesFor(u.Groups),
+		"project_roles": s.projectRolesFor(r.Context(), u),
+		"local_ssh":     s.svc.LocalSSHEnabled(),
 	})
+}
+
+// projectRolesFor returns the caller's project roles, intersected with current
+// memberships. The common case (no grants) short-circuits before any Vault call.
+// If the membership listing fails, it logs and returns the un-intersected grants
+// rather than failing /api/me.
+func (s *server) projectRolesFor(ctx context.Context, u auth.User) []projectRoleDTO {
+	if s.roles == nil {
+		return []projectRoleDTO{}
+	}
+	grants, err := s.roles.ForSubject(ctx, u.Email)
+	if err != nil {
+		slog.Warn("me: project roles lookup failed", "err", err)
+		return []projectRoleDTO{}
+	}
+	if len(grants) == 0 {
+		return []projectRoleDTO{}
+	}
+	ds, err := s.svc.ListProjects(ctx, u.Groups)
+	if err != nil {
+		slog.Warn("me: membership filter unavailable; returning unfiltered project roles", "err", err)
+		members := map[string]bool{}
+		for _, g := range grants {
+			members[g.Project] = true
+		}
+		return intersectProjectRoles(grants, members)
+	}
+	members := make(map[string]bool, len(ds))
+	for _, d := range ds {
+		members[d.ProjectName] = true
+	}
+	return intersectProjectRoles(grants, members)
 }
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
