@@ -250,6 +250,41 @@ func TestDeployServerRollsBackOnRegisterFailure(t *testing.T) {
 	}
 }
 
+func TestDeleteServer(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	ex := &fakeExecutor{rec: blueprintInstance()}
+	g := &fakeGateway{probe: passingProbe(), tools: []string{"t1"}}
+	n := &fakeNomad{}
+	svc, st := newService(t, ex, n, g, manifestJSON)
+	seedDeployable(t, st, hash)
+	ctx := context.Background()
+	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", DeployInput{ServerType: "postgres-mcp", Params: deployParams()}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if _, err := svc.TestServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "postgres-mcp"); err != nil {
+		t.Fatalf("test: %v", err)
+	}
+
+	if err := svc.DeleteServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "postgres-mcp"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(ex.deprovisoned) != 1 || ex.deprovisoned[0].WIFRoleName != "mcp-postgres-mcp" {
+		t.Fatalf("deprovision not called with persisted record: %+v", ex.deprovisoned)
+	}
+	if len(n.purged) != 1 {
+		t.Fatalf("nomad job not purged: %+v", n.purged)
+	}
+	if len(g.deletedPeers) != 1 {
+		t.Fatalf("peer not deregistered: %+v", g.deletedPeers)
+	}
+	if _, err := st.GetProjectMCPServer(ctx, "project-acme", "postgres-mcp"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("row not dropped: %v", err)
+	}
+	if err := svc.DeleteServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "nope"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("unknown: want ErrNotFound, got %v", err)
+	}
+}
+
 func passingProbe() mcpgw.ScopeProbe {
 	return mcpgw.ScopeProbe{OwnServerOK: true, AdminDenied: true, OtherServerDenied: true, OtherServerChecked: true}
 }

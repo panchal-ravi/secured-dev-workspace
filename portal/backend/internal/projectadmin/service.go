@@ -316,6 +316,42 @@ func (s *Service) TestServer(ctx context.Context, actor string, groups []string,
 	return saved, nil
 }
 
+// DeleteServer tears a deployed server down lease-safely: stop the Nomad job,
+// deregister the gateway peer, then Deprovision the persisted blueprint instance
+// (the executor revokes dynamic leases BEFORE unmounting the engine), and drop the
+// row. External steps are best-effort so a partial state still converges to clean.
+func (s *Service) DeleteServer(ctx context.Context, actor string, groups []string, project, name string) error {
+	d, err := s.projects.GetProject(ctx, project, groups)
+	if err != nil {
+		return err
+	}
+	row, err := s.store.GetProjectMCPServer(ctx, project, name)
+	if err != nil {
+		return err
+	}
+	if row.JobID != "" {
+		_ = s.nomad.PurgeJob(d.Namespace, row.JobID)
+	}
+	if row.PeerID != "" {
+		_ = s.gateway.DeletePeer(ctx, row.PeerID)
+	}
+	if len(row.Instance) > 0 {
+		var rec blueprint.InstanceRecord
+		if err := json.Unmarshal(row.Instance, &rec); err != nil {
+			return fmt.Errorf("parse persisted instance: %w", apperr.ErrBadRequest)
+		}
+		if err := s.executor.Deprovision(ctx, rec); err != nil {
+			s.audit(ctx, actor, "project-mcp.delete", project+"/"+name, "error", map[string]any{"stage": "deprovision"})
+			return err
+		}
+	}
+	if err := s.store.DeleteProjectMCPServer(ctx, project, name); err != nil {
+		return err
+	}
+	s.audit(ctx, actor, "project-mcp.delete", project+"/"+name, "ok", nil)
+	return nil
+}
+
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
