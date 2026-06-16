@@ -150,7 +150,7 @@ func TestListDeployable(t *testing.T) {
 		t.Fatalf("seed blueprint: %v", err)
 	}
 
-	cat, err := svc.ListDeployable(ctx, "project-acme")
+	cat, err := svc.ListDeployable(ctx, []string{"project-acme-developers"}, "project-acme")
 	if err != nil {
 		t.Fatalf("ListDeployable: %v", err)
 	}
@@ -244,6 +244,33 @@ func TestDeployServerRollsBackOnRegisterFailure(t *testing.T) {
 	}
 	if ex.deprovisoned[0].WIFRoleName != "mcp-postgres-mcp" {
 		t.Fatalf("deprovisioned the wrong record: %+v", ex.deprovisoned[0])
+	}
+	if _, err := st.GetProjectMCPServer(ctx, "project-acme", "postgres-mcp"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("row should not exist: %v", err)
+	}
+}
+
+// A failure AFTER the Nomad job is registered (here: resolve-placement) must both
+// purge the orphan job and deprovision the Vault instance — exactly once each — and
+// persist no row.
+func TestDeployServerRollsBackAndPurgesOnPostRegisterFailure(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	ex := &fakeExecutor{rec: blueprintInstance()}
+	n := &fakeNomad{ipErr: errors.New("no placement")}
+	svc, st := newService(t, ex, n, &fakeGateway{}, manifestJSON)
+	seedDeployable(t, st, hash)
+	ctx := context.Background()
+
+	_, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
+		DeployInput{ServerType: "postgres-mcp", Params: deployParams()})
+	if err == nil {
+		t.Fatalf("expected deploy error")
+	}
+	if len(ex.deprovisoned) != 1 {
+		t.Fatalf("expected exactly one Deprovision, got %d", len(ex.deprovisoned))
+	}
+	if len(n.purged) != 1 {
+		t.Fatalf("expected the registered job to be purged once, got %v", n.purged)
 	}
 	if _, err := st.GetProjectMCPServer(ctx, "project-acme", "postgres-mcp"); !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("row should not exist: %v", err)

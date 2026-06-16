@@ -27,7 +27,8 @@ func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.Handle
 }
 
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
-	cat, err := h.svc.ListDeployable(r.Context(), r.PathValue("name"))
+	u, _ := auth.UserFrom(r.Context())
+	cat, err := h.svc.ListDeployable(r.Context(), u.Groups, r.PathValue("name"))
 	if err != nil {
 		fail(w, r, err)
 		return

@@ -85,7 +85,11 @@ type Catalog struct {
 	Deployed   []DeployedView   `json:"deployed"`
 }
 
-func (s *Service) ListDeployable(ctx context.Context, project string) (Catalog, error) {
+func (s *Service) ListDeployable(ctx context.Context, groups []string, project string) (Catalog, error) {
+	d, err := s.projects.GetProject(ctx, project, groups) // membership + the namespace for live status
+	if err != nil {
+		return Catalog{}, err
+	}
 	types, err := s.store.ListMCPServers(ctx)
 	if err != nil {
 		return Catalog{}, err
@@ -108,19 +112,11 @@ func (s *Service) ListDeployable(ctx context.Context, project string) (Catalog, 
 	for _, r := range rows {
 		running := false
 		if r.JobID != "" {
-			running, _ = s.nomad.JobExists(s.projectNamespaceBestEffort(ctx, project), r.JobID)
+			running, _ = s.nomad.JobExists(d.Namespace, r.JobID)
 		}
 		out.Deployed = append(out.Deployed, DeployedView{ProjectMCPServer: r, Running: running})
 	}
 	return out, nil
-}
-
-func (s *Service) projectNamespaceBestEffort(ctx context.Context, project string) string {
-	d, err := s.projects.GetProject(ctx, project, nil)
-	if err != nil || d.Namespace == "" {
-		return project
-	}
-	return d.Namespace
 }
 
 func (s *Service) loadManifest(ctx context.Context, ref store.BlueprintRef) (blueprint.BlueprintManifest, error) {
@@ -269,26 +265,29 @@ func (s *Service) TestServer(ctx context.Context, actor string, groups []string,
 		return store.ProjectMCPServer{}, err
 	}
 
+	// The virtual servers + scoped token are throwaway probe scaffolding. Tear each
+	// down with a best-effort defer registered at creation, so an error on any later
+	// step still cleans up what was already created (the peer is kept, by design).
 	base := serviceName(project, name)
 	vsID, err := s.gateway.CreateVirtualServer(ctx, base+"-test", "consumption-mirror test for "+name, toolIDs)
 	if err != nil {
 		return store.ProjectMCPServer{}, err
 	}
+	defer func() { _ = s.gateway.DeleteVirtualServer(ctx, vsID) }()
 	decoyID, err := s.gateway.CreateVirtualServer(ctx, base+"-decoy", "isolation decoy for "+name, toolIDs)
 	if err != nil {
 		return store.ProjectMCPServer{}, err
 	}
+	defer func() { _ = s.gateway.DeleteVirtualServer(ctx, decoyID) }()
 	token, err := s.gateway.CreateScopedToken(ctx, base+"-test-"+randHex(4), 1, vsID)
 	if err != nil {
 		return store.ProjectMCPServer{}, err
 	}
+	defer func() { _ = s.gateway.RevokeTokensByPrefix(ctx, base+"-test-") }()
 	probe, err := s.gateway.ProbeScopedToken(ctx, token, vsID, decoyID)
 	if err != nil {
 		return store.ProjectMCPServer{}, err
 	}
-	_ = s.gateway.RevokeTokensByPrefix(ctx, base+"-test-")
-	_ = s.gateway.DeleteVirtualServer(ctx, vsID)
-	_ = s.gateway.DeleteVirtualServer(ctx, decoyID)
 
 	result := &store.MCPTestResult{
 		Passed:             probe.Passed() && len(toolIDs) > 0,
