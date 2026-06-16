@@ -16,6 +16,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
+	"github.com/secured-dev-workspace/developer-portal/internal/mcpjob"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 )
 
@@ -142,6 +143,103 @@ func (s *Service) loadManifest(ctx context.Context, ref store.BlueprintRef) (blu
 		return blueprint.BlueprintManifest{}, fmt.Errorf("stored manifest hash does not match ref: %w", apperr.ErrBadRequest)
 	}
 	return m, nil
+}
+
+// DeployInput is a request to deploy a published server type into a project.
+type DeployInput struct {
+	ServerType string            `json:"server_type"`
+	Params     map[string]string `json:"params,omitempty"`
+}
+
+// DeployServer instantiates the server type's credential blueprint into the
+// project's Vault namespace, renders a Nomad job bound to the minted WIF role with
+// the blueprint credential template, registers it, and records the deployed server.
+// Any failure AFTER a successful Instantiate triggers a best-effort Deprovision
+// (the executor is idempotent), so a project never accrues orphan Vault state.
+func (s *Service) DeployServer(ctx context.Context, actor string, groups []string, project string, in DeployInput) (store.ProjectMCPServer, error) {
+	d, err := s.projects.GetProject(ctx, project, groups)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+	ns := d.Namespace
+	if ns == "" {
+		return store.ProjectMCPServer{}, fmt.Errorf("project %q has no namespace: %w", project, apperr.ErrBadRequest)
+	}
+
+	t, err := s.store.GetMCPServer(ctx, in.ServerType)
+	if err != nil {
+		return store.ProjectMCPServer{}, fmt.Errorf("server type %q: %w", in.ServerType, apperr.ErrNotFound)
+	}
+	if t.Status != store.StatusPublished {
+		return store.ProjectMCPServer{}, fmt.Errorf("server type %q is not published: %w", in.ServerType, apperr.ErrNotFound)
+	}
+	if t.BlueprintRef == nil {
+		return store.ProjectMCPServer{}, fmt.Errorf("server type %q is not blueprint-backed: %w", in.ServerType, apperr.ErrBadRequest)
+	}
+	m, err := s.loadManifest(ctx, *t.BlueprintRef)
+	if err != nil {
+		return store.ProjectMCPServer{}, err
+	}
+
+	if _, err := s.store.GetProjectMCPServer(ctx, project, t.Name); err == nil {
+		return store.ProjectMCPServer{}, fmt.Errorf("server %q already deployed in %q: %w", t.Name, project, apperr.ErrConflict)
+	}
+
+	rec, err := s.executor.Instantiate(ctx, m, ns, in.Params)
+	if err != nil {
+		s.audit(ctx, actor, "project-mcp.deploy", project+"/"+t.Name, "error", map[string]any{"stage": "instantiate"})
+		return store.ProjectMCPServer{}, err
+	}
+
+	fail := func(stage string, err error) (store.ProjectMCPServer, error) {
+		_ = s.executor.Deprovision(ctx, rec)
+		s.audit(ctx, actor, "project-mcp.deploy", project+"/"+t.Name, "error", map[string]any{"stage": stage})
+		return store.ProjectMCPServer{}, err
+	}
+
+	credEnv, err := mcpjob.CredentialEnv(m.JobCredential, rec, in.Params)
+	if err != nil {
+		return fail("credential-env", err)
+	}
+	hcl := mcpjob.Render(mcpjob.RenderSpec{
+		JobName:     jobName(project, t.Name),
+		Namespace:   ns,
+		NodePool:    s.cfg.NodePool,
+		Image:       t.Image,
+		Command:     t.Command,
+		Port:        t.Port,
+		Env:         t.Env,
+		ServiceName: serviceName(project, t.Name),
+		Tags:        projectDiscoveryTags(project, t),
+		Credential:  mcpjob.WIFCredential{VaultNamespace: ns, WIFRole: rec.WIFRoleName, EnvTemplates: credEnv},
+	})
+	jobID, err := s.nomad.RegisterJob(ns, hcl, "")
+	if err != nil {
+		return fail("register-job", err)
+	}
+	ip, err := s.nomad.ResolvePlacementIP(ns, jobID)
+	if err != nil {
+		_ = s.nomad.PurgeJob(ns, jobID)
+		return fail("resolve-placement", err)
+	}
+
+	instBlob, err := json.Marshal(rec)
+	if err != nil {
+		_ = s.nomad.PurgeJob(ns, jobID)
+		return fail("marshal-instance", err)
+	}
+	row := store.ProjectMCPServer{
+		Project: project, Name: t.Name, Status: store.StatusDeployed,
+		BlueprintRef: *t.BlueprintRef, Instance: instBlob, JobID: jobID,
+		GatewayURL: peerURL(ip, t), CreatedBy: actor,
+	}
+	saved, err := s.store.UpsertProjectMCPServer(ctx, row)
+	if err != nil {
+		_ = s.nomad.PurgeJob(ns, jobID)
+		return fail("persist", err)
+	}
+	s.audit(ctx, actor, "project-mcp.deploy", project+"/"+t.Name, "ok", nil)
+	return saved, nil
 }
 
 func (s *Service) audit(ctx context.Context, actor, action, target, outcome string, detail map[string]any) {

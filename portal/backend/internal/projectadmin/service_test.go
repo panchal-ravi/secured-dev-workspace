@@ -3,8 +3,11 @@ package projectadmin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
@@ -156,5 +159,69 @@ func TestListDeployable(t *testing.T) {
 	}
 	if len(cat.Deployed) != 0 {
 		t.Fatalf("deployed should be empty: %+v", cat.Deployed)
+	}
+}
+
+func seedDeployable(t *testing.T, st store.Store, hash string) {
+	t.Helper()
+	if _, err := st.UpsertMCPServer(context.Background(), store.MCPServer{
+		Name: "postgres-mcp", Image: "ghcr.io/x/postgres-mcp:1", Transport: "streamable-http", Port: 9300,
+		Status: store.StatusPublished, BlueprintRef: &store.BlueprintRef{ID: "postgres-mcp", Version: 1, ContentHash: hash},
+	}); err != nil {
+		t.Fatalf("seed type: %v", err)
+	}
+	if _, err := st.UpsertBlueprint(context.Background(), store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: hash, Status: store.StatusPublished}); err != nil {
+		t.Fatalf("seed blueprint: %v", err)
+	}
+}
+
+func deployParams() map[string]string {
+	return map[string]string{"connection_url": "postgresql://demo-db", "bootstrap_password": "boot", "db_host": "demo-db", "db_port": "5432", "db_name": "app"}
+}
+
+func blueprintInstance() blueprint.InstanceRecord {
+	return blueprint.InstanceRecord{
+		WIFRoleName: "mcp-postgres-mcp", Mounts: []string{"database/project-acme-pg"},
+		LeasePrefixes: []string{"database/project-acme-pg/creds/ro"}, PolicyNames: []string{"mcp-postgres-mcp"},
+	}
+}
+
+func TestDeployServerHappyPath(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	ex := &fakeExecutor{rec: blueprintInstance()}
+	n := &fakeNomad{}
+	svc, st := newService(t, ex, n, &fakeGateway{}, manifestJSON)
+	seedDeployable(t, st, hash)
+	ctx := context.Background()
+
+	saved, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
+		DeployInput{ServerType: "postgres-mcp", Params: deployParams()})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if saved.Status != store.StatusDeployed || saved.JobID == "" || saved.BlueprintRef.ContentHash != hash {
+		t.Fatalf("saved row wrong: %+v", saved)
+	}
+	if len(saved.Instance) == 0 {
+		t.Fatalf("instance record not persisted")
+	}
+	if want := `namespace = "project-acme"`; !strings.Contains(n.lastHCL, want) {
+		t.Fatalf("HCL missing %q:\n%s", want, n.lastHCL)
+	}
+	if want := `role      = "mcp-postgres-mcp"`; !strings.Contains(n.lastHCL, want) {
+		t.Fatalf("HCL missing WIF role:\n%s", n.lastHCL)
+	}
+	if want := `DATABASE_URI={{ with secret "database/project-acme-pg/creds/ro" }}postgresql://{{ .Data.username }}:{{ .Data.password }}@demo-db:5432/app{{ end }}`; !strings.Contains(n.lastHCL, want) {
+		t.Fatalf("HCL missing rendered credential env:\n%s", n.lastHCL)
+	}
+
+	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
+		DeployInput{ServerType: "postgres-mcp", Params: deployParams()}); !errors.Is(err, apperr.ErrConflict) {
+		t.Fatalf("duplicate: want ErrConflict, got %v", err)
+	}
+
+	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
+		DeployInput{ServerType: "nope", Params: deployParams()}); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("unknown type: want ErrNotFound, got %v", err)
 	}
 }
