@@ -89,6 +89,37 @@ the portal-admin key) and apply. Relevant portal env (set by the Nomad job when 
 > Persistence is in-memory for this slice (`internal/store`); the deployed Nomad jobs, ContextForge
 > peers, and LiteLLM models persist in their own systems. A Postgres-backed `store.Store` is a drop-in.
 
+## Project Admin — MCP deploy plane (optional)
+
+A **Project Admin** (a project member elevated in the Portal DB — see `internal/rbac`) can deploy a
+**published, blueprint-backed** MCP server type into *their own* project. Unlike the platform-admin
+plane (which deploys into the shared `infra-mcp` namespace), this runs against the **project's own Vault
++ Nomad namespace** (`descriptor.Namespace`) and brokers credentials through the platform-authored
+**credential blueprint** — the project-admin supplies parameters only, never HCL or pasted secrets.
+
+The flow (backend `internal/projectadmin`, gated by `rbac.RequireProjectRole("project-admin")` — which
+requires **both** live membership in the project's developer group and a Portal-DB grant):
+
+- **Deploy** — `POST /api/projects/{name}/mcp-servers {server_type, params}` → instantiate the server
+  type's blueprint into the project Vault namespace (`blueprint.Executor`) → render a Nomad job bound to
+  the **minted WIF role** with the blueprint's credential env-template (`mcpjob.Render` WIF variant) →
+  register the job. Any failure *after* a successful instantiate rolls back (`Deprovision`, no orphan
+  Vault state, no persisted row).
+- **Test** — `POST …/{server}/test` → register a ContextForge peer → compose a virtual server + scoped
+  token → tool call **200** while admin + a decoy server return **403** (consumption-mirror isolation).
+- **Delete** — `DELETE …/{server}` → purge the Nomad job, deregister the peer, then `Deprovision` the
+  persisted instance (**leases revoked before the engine is unmounted**) and drop the row.
+
+UI: `frontend/src/pages/projectadmin/McpServers.tsx` (per-project, nav gated on `/api/me.project_roles`).
+The portal's Vault grant is the **`portal-blueprint-provisioning`** policy attached to its root WIF role
+(`terraform/infra/portal-provisioning-policy.hcl`, gated on `enable_platform_admin`); see
+`terraform/infra/README.md` for the containment rationale. Deployed-server status is derived from the
+`project_mcp_servers` store rows + `nomad.JobExists` (the standalone discovery package is deferred).
+
+> **Live gate:** the marquee end-to-end walk is a build-tagged skip-stub
+> (`go test -tags live ./internal/projectadmin/ -run TestLiveDeployPostgresMCP`); it needs a reachable
+> `project-acme` namespace + `demo-db` and the provisioning policy attached. See the test file header.
+
 ## Prerequisites
 
 1. The platform + project tiers are applied and **Vault is unsealed**. The project tier owns the
