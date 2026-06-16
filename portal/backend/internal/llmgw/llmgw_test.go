@@ -15,6 +15,7 @@ import (
 type fakeGateway struct {
 	adminKey string
 	models   map[string]string // id -> model_name
+	backends map[string]string // id -> litellm_params.model
 	keys     map[string]string // alias -> key
 	calls    map[string]int    // key -> completion count
 }
@@ -31,10 +32,14 @@ func (f *fakeGateway) handler() http.Handler {
 			return
 		}
 		var in struct {
-			ModelName string `json:"model_name"`
+			ModelName     string `json:"model_name"`
+			LiteLLMParams struct {
+				Model string `json:"model"`
+			} `json:"litellm_params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.models["id-"+in.ModelName] = in.ModelName
+		f.backends["id-"+in.ModelName] = in.LiteLLMParams.Model
 		w.WriteHeader(200)
 	})
 	mux.HandleFunc("GET /model/info", func(w http.ResponseWriter, r *http.Request) {
@@ -45,8 +50,9 @@ func (f *fakeGateway) handler() http.Handler {
 		var data []map[string]any
 		for id, name := range f.models {
 			data = append(data, map[string]any{
-				"model_name": name,
-				"model_info": map[string]any{"id": id, "db_model": true},
+				"model_name":     name,
+				"litellm_params": map[string]any{"model": f.backends[id]},
+				"model_info":     map[string]any{"id": id, "db_model": true},
 			})
 		}
 		writeJSON(w, 200, map[string]any{"data": data})
@@ -114,7 +120,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func newFake() *fakeGateway {
-	return &fakeGateway{adminKey: "sk-admin", models: map[string]string{}, keys: map[string]string{}, calls: map[string]int{}}
+	return &fakeGateway{adminKey: "sk-admin", models: map[string]string{}, backends: map[string]string{}, keys: map[string]string{}, calls: map[string]int{}}
 }
 
 func TestModelLifecycle(t *testing.T) {
@@ -130,6 +136,10 @@ func TestModelLifecycle(t *testing.T) {
 	models, err := c.ListModels(ctx)
 	if err != nil || len(models) != 1 || models[0].Name != "deepseek-v4-pro" || models[0].Source != "db" {
 		t.Fatalf("ListModels: %+v err=%v", models, err)
+	}
+	// Backend/Provider are surfaced from litellm_params (provider derived from the prefix).
+	if models[0].Backend != "deepseek/deepseek-chat" || models[0].Provider != "deepseek" {
+		t.Fatalf("backend/provider not surfaced: %+v", models[0])
 	}
 	if err := c.DeleteModel(ctx, models[0].ID); err != nil {
 		t.Fatalf("DeleteModel: %v", err)

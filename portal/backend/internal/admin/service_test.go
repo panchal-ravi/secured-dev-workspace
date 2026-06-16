@@ -93,7 +93,12 @@ func (f *fakeLLM) AddModel(_ context.Context, in llmgw.AddModelInput) error {
 func (f *fakeLLM) ListModels(_ context.Context) ([]llmgw.Model, error) {
 	out := make([]llmgw.Model, 0, len(f.added))
 	for _, a := range f.added {
-		out = append(out, llmgw.Model{Name: a.ModelName, ID: "id-" + a.ModelName, Source: "db"})
+		backend, _ := a.LiteLLMParams["model"].(string)
+		provider := ""
+		if i := strings.Index(backend, "/"); i > 0 {
+			provider = backend[:i]
+		}
+		out = append(out, llmgw.Model{Name: a.ModelName, ID: "id-" + a.ModelName, Source: "db", Backend: backend, Provider: provider})
 	}
 	return out, nil
 }
@@ -251,6 +256,97 @@ func TestLLMOnboardTestPublish(t *testing.T) {
 	pub, err := svc.PublishLLMModel(ctx, "admin@x", "deepseek-v4-flash")
 	if err != nil || pub.Status != store.StatusPublished {
 		t.Fatalf("PublishLLMModel: %+v err=%v", pub, err)
+	}
+}
+
+func TestSetProviderKeyWritesToVault(t *testing.T) {
+	v := &fakeVault{provider: map[string]string{}}
+	svc, _ := newService(&fakeNomad{}, &fakeGateway{}, &fakeLLM{}, v)
+
+	if err := svc.SetProviderKey(context.Background(), "admin@x", SetProviderKeyInput{Provider: "deepseek", APIKey: "sk-secret"}); err != nil {
+		t.Fatalf("SetProviderKey: %v", err)
+	}
+	got := v.written["infra/llm-providers/deepseek"]
+	if got == nil || got["api_key"] != "sk-secret" {
+		t.Fatalf("want api_key written to infra/llm-providers/deepseek, got %v", got)
+	}
+}
+
+func TestSetProviderKeyValidation(t *testing.T) {
+	cases := []SetProviderKeyInput{
+		{Provider: "deepseek", APIKey: ""},               // empty key
+		{Provider: "", APIKey: "sk"},                     // empty provider
+		{Provider: "../infra/llm-gateway", APIKey: "sk"}, // path traversal
+		{Provider: "Deepseek", APIKey: "sk"},             // uppercase
+	}
+	for i, in := range cases {
+		v := &fakeVault{provider: map[string]string{}}
+		svc, _ := newService(&fakeNomad{}, &fakeGateway{}, &fakeLLM{}, v)
+		if err := svc.SetProviderKey(context.Background(), "admin@x", in); !errors.Is(err, apperr.ErrBadRequest) {
+			t.Fatalf("case %d: want ErrBadRequest, got %v", i, err)
+		}
+		if len(v.written) != 0 {
+			t.Fatalf("case %d: nothing should be written on validation failure, got %v", i, v.written)
+		}
+	}
+}
+
+// TestSetProviderKeyThenOnboard proves the round-trip the UI relies on: a key set
+// via SetProviderKey is the same one OnboardLLMModel reads back from Vault.
+func TestSetProviderKeyThenOnboard(t *testing.T) {
+	l := &fakeLLM{}
+	v := &fakeVault{provider: map[string]string{}}
+	svc, _ := newService(&fakeNomad{}, &fakeGateway{}, l, v)
+	ctx := context.Background()
+
+	if err := svc.SetProviderKey(ctx, "admin@x", SetProviderKeyInput{Provider: "deepseek", APIKey: "sk-roundtrip"}); err != nil {
+		t.Fatalf("SetProviderKey: %v", err)
+	}
+	if _, err := svc.OnboardLLMModel(ctx, "admin@x", OnboardLLMInput{Name: "test-llm-model", Provider: "deepseek", BackendModel: "deepseek/deepseek-chat"}); err != nil {
+		t.Fatalf("OnboardLLMModel after SetProviderKey: %v", err)
+	}
+	if len(l.added) != 1 || l.added[0].LiteLLMParams["api_key"] != "sk-roundtrip" {
+		t.Fatalf("onboarded model did not pick up the set provider key: %+v", l.added)
+	}
+}
+
+// TestListLLMModelsJoinsGatewayWithOverlay proves the inventory is driven by the
+// LiteLLM gateway and annotated with the Portal overlay: a managed model, an
+// unmanaged gateway model, and an orphaned overlay row each render distinctly.
+func TestListLLMModelsJoinsGatewayWithOverlay(t *testing.T) {
+	l := &fakeLLM{}
+	v := &fakeVault{provider: map[string]string{"infra/llm-providers/deepseek#api_key": "sk-deepseek"}}
+	svc, st := newService(&fakeNomad{}, &fakeGateway{}, l, v)
+	ctx := context.Background()
+
+	// managed: onboarded through the Portal (live in gateway + overlay row).
+	if _, err := svc.OnboardLLMModel(ctx, "admin@x", OnboardLLMInput{Name: "managed-model", Provider: "deepseek", BackendModel: "deepseek/deepseek-chat"}); err != nil {
+		t.Fatalf("OnboardLLMModel: %v", err)
+	}
+	// unmanaged: present in the gateway but with no overlay row.
+	l.added = append(l.added, llmgw.AddModelInput{ModelName: "config-model", LiteLLMParams: map[string]any{"model": "deepseek/deepseek-chat"}})
+	// orphaned: overlay row with no live gateway model.
+	if _, err := st.UpsertLLMModel(ctx, store.LLMModel{Name: "ghost", Status: store.StatusDraft}); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	views, err := svc.ListLLMModels(ctx)
+	if err != nil {
+		t.Fatalf("ListLLMModels: %v", err)
+	}
+	got := map[string]LLMModelView{}
+	for _, v := range views {
+		got[v.Name] = v
+	}
+	if m := got["managed-model"]; !m.Managed || m.Orphaned || m.Status != store.StatusDraft || m.LiteLLMID == "" {
+		t.Fatalf("managed-model: %+v", m)
+	}
+	// config-model is unmanaged but its provider/backend still come from the gateway.
+	if c := got["config-model"]; c.Managed || c.Orphaned || c.Provider != "deepseek" || c.BackendModel != "deepseek/deepseek-chat" {
+		t.Fatalf("config-model should be unmanaged and live with gateway-sourced provider/backend: %+v", c)
+	}
+	if g, ok := got["ghost"]; !ok || !g.Orphaned || !g.Managed {
+		t.Fatalf("ghost should be an orphaned overlay row: %+v", g)
 	}
 }
 

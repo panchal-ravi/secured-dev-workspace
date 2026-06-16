@@ -41,10 +41,14 @@ type Client interface {
 
 // Model is a model the gateway serves. ID is the LiteLLM-assigned id (needed to
 // delete a DB model); Source distinguishes static config models from DB ones.
+// Backend/Provider come from the model's litellm_params so the inventory can show
+// what every model maps to, including config models with no Portal overlay.
 type Model struct {
-	Name   string `json:"name"`
-	ID     string `json:"id"`
-	Source string `json:"source"` // "config" (read-only) or "db"
+	Name     string `json:"name"`
+	ID       string `json:"id"`
+	Source   string `json:"source"`   // "config" (read-only) or "db"
+	Backend  string `json:"backend"`  // litellm_params.model, e.g. "deepseek/deepseek-chat"
+	Provider string `json:"provider"` // custom_llm_provider, else the prefix of Backend
 }
 
 // AddModelInput is a model registration. LiteLLMParams carries the provider
@@ -92,7 +96,11 @@ func (c *httpClient) ListModels(ctx context.Context) ([]Model, error) {
 	// delete) plus db_model to tell DB models from static config ones.
 	var resp struct {
 		Data []struct {
-			ModelName string `json:"model_name"`
+			ModelName     string `json:"model_name"`
+			LiteLLMParams struct {
+				Model             string `json:"model"`
+				CustomLLMProvider string `json:"custom_llm_provider"`
+			} `json:"litellm_params"`
 			ModelInfo struct {
 				ID      string `json:"id"`
 				DBModel bool   `json:"db_model"`
@@ -108,7 +116,15 @@ func (c *httpClient) ListModels(ctx context.Context) ([]Model, error) {
 		if m.ModelInfo.DBModel {
 			src = "db"
 		}
-		out = append(out, Model{Name: m.ModelName, ID: m.ModelInfo.ID, Source: src})
+		backend := m.LiteLLMParams.Model
+		provider := m.LiteLLMParams.CustomLLMProvider
+		if provider == "" {
+			// litellm_params.model is "<provider>/<model>"; the prefix is the provider.
+			if i := strings.Index(backend, "/"); i > 0 {
+				provider = backend[:i]
+			}
+		}
+		out = append(out, Model{Name: m.ModelName, ID: m.ModelInfo.ID, Source: src, Backend: backend, Provider: provider})
 	}
 	return out, nil
 }

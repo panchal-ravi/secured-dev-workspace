@@ -245,22 +245,33 @@ export interface LlmTestResult {
   at: string
 }
 
+// LlmModel is an inventory row. The LiteLLM gateway is the source of truth for
+// which models exist (name/source); the Portal overlay adds the onboarding
+// lifecycle (managed/status/test_result). Unmanaged models are served by the
+// gateway with no Portal overlay (config-list or added out-of-band); orphaned
+// rows are overlay entries with no live gateway model.
 export interface LlmModel {
   name: string
-  provider: string
-  backend_model: string
+  source?: string // "config" | "db"
   litellm_id?: string
-  status: string
+  managed?: boolean
+  orphaned?: boolean
+  provider?: string
+  backend_model?: string
+  status?: string
   test_result?: LlmTestResult
   created_by?: string
-  created_at: string
-  updated_at: string
 }
 
 export interface OnboardLlmInput {
   name: string
   provider: string
   backend_model: string
+}
+
+export interface SetProviderKeyInput {
+  provider: string
+  api_key: string
 }
 
 const adminBase = '/api/admin'
@@ -307,6 +318,17 @@ export function listLlmModels(): Promise<LlmModel[]> {
 
 export function onboardLlmModel(input: OnboardLlmInput): Promise<LlmModel> {
   return post(`${adminBase}/llm/models`, input)
+}
+
+// setProviderKey stores a provider API key in Vault (write-only — the server
+// returns 204 and never echoes the key back).
+export function setProviderKey(input: SetProviderKeyInput): Promise<void> {
+  return fetch(`${adminBase}/llm/providers`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  }).then(expectOK)
 }
 
 export function testLlmModel(name: string): Promise<LlmModel> {

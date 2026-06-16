@@ -31,6 +31,7 @@ func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.Handle
 	mux.Handle("POST /api/admin/mcp-servers/{name}/publish", mutate(h.publishMCPServer))
 	mux.Handle("DELETE /api/admin/mcp-servers/{name}", mutate(h.deleteMCPServer))
 
+	mux.Handle("POST /api/admin/llm/providers", mutate(h.setProviderKey))
 	mux.Handle("GET /api/admin/llm/models", protect(h.listLLMModels))
 	mux.Handle("POST /api/admin/llm/models", mutate(h.onboardLLMModel))
 	mux.Handle("POST /api/admin/llm/models/{name}/test", mutate(h.testLLMModel))
@@ -96,6 +97,20 @@ func (h *Handlers) deleteMCPServer(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- LLM model handlers ----
+
+// setProviderKey stores a provider API key in Vault. Write-only: it returns 204
+// with no body so the key is never reflected back to the client.
+func (h *Handlers) setProviderKey(w http.ResponseWriter, r *http.Request) {
+	var in SetProviderKeyInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := h.svc.SetProviderKey(r.Context(), actor(r), in); err != nil {
+		fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
 func (h *Handlers) listLLMModels(w http.ResponseWriter, r *http.Request) {
 	models, err := h.svc.ListLLMModels(r.Context())
