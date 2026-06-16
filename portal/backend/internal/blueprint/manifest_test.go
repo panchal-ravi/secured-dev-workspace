@@ -48,6 +48,34 @@ func TestContentHash_StableAndOrderIndependent(t *testing.T) {
 	}
 }
 
+func TestJobCredentialValidation(t *testing.T) {
+	base := BlueprintManifest{
+		ID: "x", Version: 1, Class: ClassC, PolicyTpl: "path \"x\" {}",
+		WIFRole: WIFRoleSpec{NameTpl: "r", TokenTTL: "1h"},
+	}
+	// Class C may omit env templates (VAULT_TOKEN is auto-provided by Nomad).
+	if err := base.Validate(); err != nil {
+		t.Fatalf("class C without env templates should validate: %v", err)
+	}
+	// Class A/B must declare at least one credential env template.
+	a := BlueprintManifest{
+		ID: "a", Version: 1, Class: ClassA, PolicyTpl: "p",
+		WIFRole: WIFRoleSpec{NameTpl: "r", TokenTTL: "1h"},
+		Engines: []EngineSpec{{Type: "database", MountPathTpl: "database/{{.Namespace}}-pg"}},
+		Role:    &RoleSpec{NameTpl: "ro", CreationStatements: []string{"x"}},
+		Params:  []ParamSpec{{Name: "p", Type: "secret", Required: true}},
+	}
+	if err := a.Validate(); err == nil {
+		t.Fatalf("class A without job_credential env templates should fail")
+	}
+	a.JobCredential = JobCredentialSpec{EnvTemplates: map[string]string{
+		"DATABASE_URI": `{{ with secret "${cred_path}" }}postgresql://{{.Data.username}}:{{.Data.password}}@${db_host}/${db_name}{{ end }}`,
+	}}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("class A with env templates should validate: %v", err)
+	}
+}
+
 func TestRef_PinsIdVersionHash(t *testing.T) {
 	m := validClassC()
 	ref := m.Ref()

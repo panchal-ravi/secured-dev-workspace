@@ -34,6 +34,8 @@ type BlueprintManifest struct {
 	PolicyTpl   string       `json:"policy_tpl"`
 	WIFRole     WIFRoleSpec  `json:"wif_role"`
 	Params      []ParamSpec  `json:"params,omitempty"`
+
+	JobCredential JobCredentialSpec `json:"job_credential,omitempty"`
 }
 
 // EngineSpec is a secret engine to mount. MountPathTpl may reference {{.Namespace}};
@@ -67,6 +69,19 @@ type ParamSpec struct {
 type WIFRoleSpec struct {
 	NameTpl  string `json:"name_tpl"`
 	TokenTTL string `json:"token_ttl"`
+}
+
+// JobCredentialSpec describes how a deployed MCP job obtains its credential from
+// the instantiated blueprint. EnvTemplates maps a container env var to a snippet
+// using the project's two-layer convention: ${...} tokens are filled at render
+// time from the InstanceRecord + deploy params (jobrender.Render), while {{ }} is
+// left for Nomad's consul-template at runtime. Available ${...} tokens: ${namespace},
+// ${mount} (first engine mount, "" for class C), ${cred_path} (the credential read
+// path the policy grants — class A creds path / class B secret path), ${wif_role},
+// plus every declared deploy param by name. Class C needs no template — Nomad's
+// vault stanza injects VAULT_TOKEN.
+type JobCredentialSpec struct {
+	EnvTemplates map[string]string `json:"env_templates,omitempty"`
 }
 
 // BlueprintRef is the immutable pin a catalog entry / deployed instance records.
@@ -115,9 +130,15 @@ func (m BlueprintManifest) Validate() error {
 		if !m.hasSecretParam() {
 			return fmt.Errorf("blueprint: class A needs a write-only bootstrap secret param: %w", apperr.ErrBadRequest)
 		}
+		if !m.hasCredentialEnv() {
+			return fmt.Errorf("blueprint: class A needs job_credential env_templates: %w", apperr.ErrBadRequest)
+		}
 	case ClassB:
 		if !m.hasSecretParam() {
 			return fmt.Errorf("blueprint: class B needs a write-only upstream secret param: %w", apperr.ErrBadRequest)
+		}
+		if !m.hasCredentialEnv() {
+			return fmt.Errorf("blueprint: class B needs job_credential env_templates: %w", apperr.ErrBadRequest)
 		}
 	case ClassC:
 		if len(m.Engines) != 0 || m.Role != nil {
@@ -125,6 +146,10 @@ func (m BlueprintManifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (m BlueprintManifest) hasCredentialEnv() bool {
+	return len(m.JobCredential.EnvTemplates) > 0
 }
 
 func (m BlueprintManifest) hasSecretParam() bool {
