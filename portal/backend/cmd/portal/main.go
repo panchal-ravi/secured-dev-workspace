@@ -184,8 +184,8 @@ func buildStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 
 // buildAdminPlane wires the Platform Admin onboarding service: it reads the MCP
 // gateway admin JWT secret/email and the LiteLLM portal-admin key from Vault (the
-// portal never holds them in env), constructs the gateway/LLM clients and the
-// in-memory store, and returns the HTTP handlers.
+// portal never holds them in env), constructs the gateway/LLM clients over the
+// shared control-plane store, and returns the HTTP handlers.
 func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, error) {
 	jwtSecret, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "jwt_secret_key")
 	if err != nil {
