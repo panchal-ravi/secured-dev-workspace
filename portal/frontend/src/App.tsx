@@ -11,6 +11,7 @@ import ProjectPage from './pages/Project'
 import Workspaces from './pages/Workspaces'
 import McpServers from './pages/platformadmin/McpServers'
 import LlmModels from './pages/platformadmin/LlmModels'
+import Blueprints from './pages/platformadmin/Blueprints'
 import Members from './pages/projectadmin/Members'
 import ProjectMcpServers from './pages/projectadmin/McpServers'
 
@@ -74,6 +75,7 @@ export default function App() {
           <Route path="/workspaces" element={<Workspaces />} />
           {isPlatformAdmin(me) && <Route path="/admin/mcp-servers" element={<McpServers />} />}
           {isPlatformAdmin(me) && <Route path="/admin/llm-models" element={<LlmModels />} />}
+          {isPlatformAdmin(me) && <Route path="/admin/blueprints" element={<Blueprints />} />}
           <Route path="/projects/:name/members" element={<Members />} />
           <Route path="/projects/:name/mcp-servers" element={<ProjectMcpServers />} />
           <Route path="*" element={<Navigate to="/" replace />} />
