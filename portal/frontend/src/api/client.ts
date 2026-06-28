@@ -308,8 +308,14 @@ export function testMcpServer(name: string): Promise<McpServer> {
   return post(`${adminBase}/mcp-servers/${encodeURIComponent(name)}/test`)
 }
 
-export function publishMcpServer(name: string): Promise<McpServer> {
-  return post(`${adminBase}/mcp-servers/${encodeURIComponent(name)}/publish`)
+export function publishMcpServer(
+  name: string,
+  blueprintRef?: { id: string; version: number; content_hash: string },
+): Promise<McpServer> {
+  return post(
+    `${adminBase}/mcp-servers/${encodeURIComponent(name)}/publish`,
+    blueprintRef ? { blueprint_ref: blueprintRef } : undefined,
+  )
 }
 
 export function deleteMcpServer(name: string): Promise<void> {
@@ -428,4 +434,95 @@ export function deleteProjectMcp(project: string, name: string): Promise<void> {
     method: 'DELETE',
     credentials: 'include',
   }).then(expectOK)
+}
+
+// ---- Platform Admin: credential blueprints ----
+
+export interface ParamSpec {
+  name: string
+  type: 'string' | 'int' | 'secret'
+  required: boolean
+  prompt?: string
+}
+
+export interface EngineSpec {
+  type: string // "database" | "kv-v2"
+  plugin?: string
+  mount_path_tpl: string
+}
+
+export interface RoleSpec {
+  name_tpl: string
+  creation_statements: string[]
+  default_ttl_seconds: number
+  max_ttl_seconds: number
+}
+
+export interface WifRoleSpec {
+  name_tpl: string
+  token_ttl: string
+}
+
+export interface JobCredentialSpec {
+  env_templates?: Record<string, string>
+}
+
+// BlueprintManifest mirrors backend internal/blueprint.BlueprintManifest. A
+// manifest is immutable + content-hashed; a change is a new version.
+export interface BlueprintManifest {
+  id: string
+  version: number
+  class: 'A' | 'B' | 'C'
+  description: string
+  engines?: EngineSpec[]
+  role?: RoleSpec
+  policy_tpl: string
+  wif_role: WifRoleSpec
+  params?: ParamSpec[]
+  job_credential?: JobCredentialSpec
+}
+
+export interface BlueprintCheck {
+  name: string
+  passed: boolean
+  detail?: string
+}
+
+export interface ValidationResult {
+  passed: boolean
+  checks: BlueprintCheck[]
+  message?: string
+  at: string
+}
+
+// Blueprint is the control-plane row (refs/metadata only — the manifest body
+// lives in Vault KV, never returned by the list).
+export interface Blueprint {
+  id: string
+  version: number
+  class: string
+  content_hash: string
+  status: string // "draft" | "validated" | "published"
+  validation?: ValidationResult
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export function listBlueprints(): Promise<Blueprint[]> {
+  return fetch(`${adminBase}/blueprints`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.blueprints as Blueprint[]) || [])
+}
+
+export function createBlueprint(manifest: BlueprintManifest): Promise<Blueprint> {
+  return post(`${adminBase}/blueprints`, manifest)
+}
+
+export function validateBlueprint(id: string, version: number): Promise<Blueprint> {
+  return post(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}/validate`)
+}
+
+export function publishBlueprint(id: string, version: number): Promise<Blueprint> {
+  return post(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}/publish`)
 }
