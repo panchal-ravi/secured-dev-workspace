@@ -16,11 +16,11 @@ import { Add } from '@carbon/icons-react'
 import {
   listMcpServers,
   testMcpServer,
-  publishMcpServer,
   deleteMcpServer,
   McpServer,
 } from '../../api/client'
 import DeployMcpServerModal from '../../components/DeployMcpServerModal'
+import PublishServerTypeModal from '../../components/PublishServerTypeModal'
 
 const statusTag: Record<string, 'gray' | 'blue' | 'green'> = {
   draft: 'gray',
@@ -34,6 +34,7 @@ export default function McpServers() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
+  const [publishFor, setPublishFor] = useState('')
 
   const refresh = () =>
     listMcpServers()
@@ -126,7 +127,7 @@ export default function McpServers() {
                           size="sm"
                           kind="primary"
                           disabled={busy === s.name || !tested || s.status === 'published'}
-                          onClick={() => run(s.name, () => publishMcpServer(s.name))}
+                          onClick={() => setPublishFor(s.name)}
                         >
                           Publish
                         </Button>
@@ -148,6 +149,12 @@ export default function McpServers() {
         </TableContainer>
       )}
       <DeployMcpServerModal open={modalOpen} onClose={() => setModalOpen(false)} onDeployed={refresh} />
+      <PublishServerTypeModal
+        open={publishFor !== ''}
+        serverName={publishFor}
+        onClose={() => setPublishFor('')}
+        onPublished={refresh}
+      />
     </div>
   )
 }
