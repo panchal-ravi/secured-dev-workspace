@@ -430,6 +430,17 @@ func TestCreateBlueprintDraft_StoresManifestOnRow(t *testing.T) {
 	if len(fv.written) != 0 {
 		t.Fatalf("no Vault KV write expected for the blueprint manifest, got %v", fv.written)
 	}
+	// Validate must read the manifest back from the row — Vault stays untouched.
+	vbp, err := svc.ValidateBlueprint(context.Background(), "admin@x", "vault-mcp", 1)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if vbp.Status != store.StatusValidated {
+		t.Fatalf("expected validated, got %s", vbp.Status)
+	}
+	if len(fv.written) != 0 {
+		t.Fatalf("validate must not touch Vault for the manifest, got %v", fv.written)
+	}
 }
 
 func TestPublishBlueprint_RequiresValidatedFirst(t *testing.T) {

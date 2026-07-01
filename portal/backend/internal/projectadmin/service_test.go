@@ -171,6 +171,37 @@ func seedDeployable(t *testing.T, st store.Store, manifestJSON, hash string) {
 	}
 }
 
+func TestLoadManifest_HashDriftAndParseError(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	svc, st := newService(t, &fakeExecutor{}, &fakeNomad{}, &fakeGateway{})
+	ctx := context.Background()
+
+	cases := []struct {
+		name        string
+		rowHash     string
+		rowManifest string
+		refHash     string
+	}{
+		{"row-hash-drift", "stale-hash", manifestJSON, hash},           // bp.ContentHash != ref.ContentHash
+		{"malformed-manifest", hash, "{not-json", hash},                // json.Unmarshal fails
+		{"stored-manifest-hash-mismatch", "spoofed", manifestJSON, "spoofed"}, // m.ContentHash() != ref after decode
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := st.UpsertBlueprint(ctx, store.Blueprint{
+				ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: tc.rowHash,
+				Status: store.StatusPublished, Manifest: json.RawMessage(tc.rowManifest),
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			_, err := svc.loadManifest(ctx, store.BlueprintRef{ID: "postgres-mcp", Version: 1, ContentHash: tc.refHash})
+			if !errors.Is(err, apperr.ErrBadRequest) {
+				t.Fatalf("expected ErrBadRequest, got %v", err)
+			}
+		})
+	}
+}
+
 func deployParams() map[string]string {
 	return map[string]string{"connection_url": "postgresql://demo-db", "bootstrap_password": "boot", "db_host": "demo-db", "db_port": "5432", "db_name": "app"}
 }
