@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -97,6 +98,23 @@ func TestMemory_BlueprintRoundTrip(t *testing.T) {
 	list, err := m.ListBlueprints(ctx)
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected 1 blueprint, got %d (%v)", len(list), err)
+	}
+}
+
+func TestMemory_Blueprint_ManifestRoundTrip(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	in := Blueprint{ID: "vault-mcp", Version: 1, Class: "C", ContentHash: "h", Status: StatusDraft,
+		Manifest: json.RawMessage(`{"id":"vault-mcp","class":"C"}`)}
+	if _, err := m.UpsertBlueprint(ctx, in); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := m.GetBlueprint(ctx, "vault-mcp", 1)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got.Manifest) != `{"id":"vault-mcp","class":"C"}` {
+		t.Fatalf("manifest not round-tripped: %s", got.Manifest)
 	}
 }
 

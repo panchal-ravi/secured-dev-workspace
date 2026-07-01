@@ -114,9 +114,9 @@ type LLMTestResult struct {
 }
 
 // Blueprint is a platform-authored credential blueprint's control-plane record.
-// The canonical manifest JSON lives in Vault KV (secret/infra/blueprints/<id>/<ver>);
-// this row carries identity, lifecycle, the content-hash pin, and the validation
-// result. No secret material is stored here.
+// The canonical manifest JSON now lives on this row (the Manifest field), not in
+// Vault KV; the row carries identity, lifecycle, the content-hash pin, the manifest,
+// and the validation result. No secret material is stored here.
 type Blueprint struct {
 	ID          string          `json:"id"`
 	Version     int             `json:"version"`
@@ -124,6 +124,7 @@ type Blueprint struct {
 	ContentHash string          `json:"content_hash"`
 	Status      string          `json:"status"`
 	Validation  json.RawMessage `json:"validation,omitempty"` // a blueprint.ValidationResult, opaque to the store
+	Manifest    json.RawMessage `json:"manifest,omitempty"`   // canonical blueprint.BlueprintManifest JSON; immutable per (id,version)
 	CreatedBy   string          `json:"created_by,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
