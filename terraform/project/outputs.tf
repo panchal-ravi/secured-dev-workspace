@@ -21,7 +21,7 @@ output "credential_library_id" {
 }
 
 output "ssh_mount_path" {
-  description = "Vault SSH secrets engine mount path for this project (`ssh/<project>`)."
+  description = "Vault SSH secrets engine mount path for this project (`ssh`, inside the project's Vault namespace)."
   value       = vault_mount.ssh.path
 }
 
@@ -56,23 +56,23 @@ output "job_template_node_pools" {
 }
 
 output "github_token_path" {
-  description = "Vault path the workspace WIF task reads a pre-scoped, short-lived GitHub App token from (github/<project>/token/<permissionset>)."
+  description = "Vault path the workspace WIF task reads a pre-scoped, short-lived GitHub App token from (github/token/<permissionset>)."
   value       = "${vault_mount.github.path}/token/${local.github_permissionset_name}"
 }
 
 output "db_creds_path" {
-  description = "Vault path the per-project demo-db-mcp service reads its read-only DB credential from (database/<project>/creds/dev-workspace-ro). Held by the centralized MCP service, not the workspace."
+  description = "Vault path the per-project demo-db-mcp service reads its read-only DB credential from (database/creds/dev-workspace-ro). Held by the centralized MCP service, not the workspace."
   value       = "${vault_mount.database.path}/creds/${vault_database_secret_backend_role.dev_workspace_ro.name}"
 }
 
 output "mcp_kv_path" {
-  description = "Vault KV path the workspace WIF task reads the project's virtual-MCP coordinates from (url + client bearer token), written by the gateway orchestration: secret/data/projects/<project>/mcp."
-  value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"
+  description = "Vault KV path the workspace WIF task reads the project's virtual-MCP coordinates from (url + client bearer token), written by the gateway orchestration: secret/data/projects/mcp."
+  value       = "${local.f.kv_mount_path}/data/projects/mcp"
 }
 
 output "llm_kv_path" {
-  description = "Vault KV path the workspace WIF task reads the project's LiteLLM virtual key from (KV v2, so /data/ prefixed: secret/data/projects/<project>/llm). Written by the gateway orchestration (llm-gateway.tf)."
-  value       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/llm"
+  description = "Vault KV path the workspace WIF task reads the project's LiteLLM virtual key from (KV v2, so /data/ prefixed: secret/data/projects/llm). Written by the gateway orchestration (llm-gateway.tf)."
+  value       = "${local.f.kv_mount_path}/data/projects/llm"
 }
 
 output "vault_namespace" {

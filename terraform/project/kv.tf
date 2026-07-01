@@ -42,8 +42,8 @@ resource "vault_kv_secret_v2" "job_template" {
       vault_namespace   = vault_namespace.project.path
       ssh_ca_path       = "${vault_mount.ssh.path}/config/ca"
       github_token_path = "${vault_mount.github.path}/token/${local.github_permissionset_name}"
-      mcp_kv_path       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp"
-      llm_kv_path       = "${local.f.kv_mount_path}/data/projects/${var.project_name}/llm"
+      mcp_kv_path       = "${local.f.kv_mount_path}/data/projects/mcp"
+      llm_kv_path       = "${local.f.kv_mount_path}/data/projects/llm"
       llm_base_url      = local.f.llm_gateway_private_endpoint
     })
   })

@@ -22,7 +22,7 @@ The architecture is organized around a small set of security properties. Each co
 **Isolation & blast-radius containment**
 
 - **No code or credentials on the laptop.** The source tree, the build toolchain, and the AI coding tools all live in a central container. A lost or compromised laptop carries no repo and no long-lived secret.
-- **Tenant isolation by construction.** Each project gets its own **Vault path** (`ssh/<project>`, or optionally a dedicated **Vault namespace**), its own **Boundary project scope**, and its own **Nomad namespace**. Cross-project access is structurally impossible, not just policy-gated.
+- **Tenant isolation by construction.** Each project gets its own **Vault Enterprise namespace** (the hard isolation boundary), its own **Boundary project scope**, and its own **Nomad namespace**. Cross-project access is structurally impossible, not just policy-gated.
 - **Defense in depth.** A namespace-scoped Nomad ACL policy + binding rule backstops the design even though developers never receive a Nomad token.
 - **Hardware-isolated workspaces for untrusted agent code.** Beyond shared-kernel container namespaces, a workspace flavor can run inside a **Kata Containers microVM** — its own guest kernel behind a hardware-virtualization (KVM) boundary — on a dedicated bare-metal Nomad node pool (`microvm`). The same OCI image and the entire credential stack are reused unchanged; isolation is added strictly at the runtime layer, so a kernel or container escape from AI-agent code is contained by the VM boundary, not just by Linux namespaces.
 
@@ -46,7 +46,7 @@ Boundary worker proxy ──────────────► Dev workspac
                                                  sshd trusts only the Vault SSH CA
                                                  /home/dev on a persistent host volume
 Vault  ── signs SSH cert per session (key_id = developer email)
-       ── SSH CA per project (ssh/<project>), reached by Nomad over WIF
+       ── SSH CA per project (ssh, in the project's Vault namespace), reached by Nomad over WIF
 ```
 
 The flow reads top to bottom:
@@ -69,7 +69,7 @@ Each product in the stack owns one part of the security model:
 - **Boundary — identity-aware access broker.** The single, authenticated entry point to every workspace. It performs authorization (per-developer managed group → role → `authorize-session` on exactly one target), brokers the session through its worker proxy, and injects the session credential — so the workspace `sshd` is never network- reachable and the developer never learns a host address or holds a key. Target aliases
   + the Client Agent make this transparent to VSCode Remote-SSH.
 
-- **Vault — central credential authority & secrets store.** Far more than a certificate authority — Vault mints every short-lived credential and holds the platform's secrets. As the **SSH certificate authority** it signs a fresh, short-lived, per-session SSH certificate (`key_id` = developer email, for audit) from a per-project CA (`ssh/<project>`), so credentials never cross project boundaries. As the **git push credential authority** the external GitHub secrets plugin mints short-lived GitHub App installation tokens from a per-project, pre-scoped permission set, so no static PAT is stored anywhere and the App private key never leaves Vault. It also issues **dynamic, auto-rotating database credentials** (a per-project read-only Postgres role — no static password), and its **KV store** holds each project's job templates and the gateway's scoped MCP token (`secret/projects/<project>/…`). Nomad reaches Vault over **workload-identity federation** (no static token) for these; Boundary's credential store uses a dedicated least-privilege periodic token rather than the root token.
+- **Vault — central credential authority & secrets store.** Far more than a certificate authority — Vault mints every short-lived credential and holds the platform's secrets. As the **SSH certificate authority** it signs a fresh, short-lived, per-session SSH certificate (`key_id` = developer email, for audit) from a per-project CA (`ssh`, in the project's Vault namespace), so credentials never cross project boundaries. As the **git push credential authority** the external GitHub secrets plugin mints short-lived GitHub App installation tokens from a per-project, pre-scoped permission set, so no static PAT is stored anywhere and the App private key never leaves Vault. It also issues **dynamic, auto-rotating database credentials** (a per-project read-only Postgres role — no static password), and its **KV store** holds each project's job templates and the gateway's scoped MCP coordinates. Nomad reaches Vault over **workload-identity federation** (no static token) for these; Boundary's credential store uses a dedicated least-privilege periodic token rather than the root token.
 
 - **Nomad — workload scheduler / isolation boundary.** Runs each developer workspace as a managed container with a persistent host volume (work survives stop/start + reboot), and partitions tenants by **namespace** (one per project) backstopped by a namespace-scoped ACL. It also partitions hardware by **node pool** — a `default` (standard), an optional `gpu`, and an optional bare-metal `microvm` pool — so a flavor lands on the right node (a GPU box, or a Kata-microVM box for hardware-isolated agent code) by opting into a pool, and other jobs can't drift onto it. It pulls each project's CA public key from Vault at launch via workload identity, so the trust chain is established without embedding secrets. The same model maps directly onto **Kubernetes** — namespaces, scheduled pods, and persistent volumes — wherever that is the house scheduler.
 
@@ -86,7 +86,7 @@ The chain in one line: **IBM Verify** says *who you are*, **Boundary** decides *
 Every workspace runs an **AI-agentic** coding agent that reaches **tools and data over MCP**. That access is governed centrally — one auditable choke point instead of point-to-point integrations wired into each workspace.
 
 - **One gateway, per-project virtual servers.** A single platform-tier gateway — IBM **`mcp-context-forge`**, a Nomad job in the `infra` namespace — federates each project's MCP server as a **peer** and composes its tools into a **per-project virtual MCP server**. A workspace is issued a **client token scoped to its own virtual server**, so it reaches that server's tools and nothing else (every other server and the admin API return `403`).
-- **MCP access is the policy point.** Which MCP servers and tools a workspace may reach is decided here, centrally, not embedded in the workspace. Project onboarding registers the peer + virtual server and writes the workspace's gateway URL + scoped token to Vault (`secret/projects/<project>/mcp`); the workspace renders both to tmpfs and the agent is pre-registered against that one server.
+- **MCP access is the policy point.** Which MCP servers and tools a workspace may reach is decided here, centrally, not embedded in the workspace. Project onboarding registers the peer + virtual server and writes the workspace's gateway URL + scoped token to Vault (`secret/projects/mcp`, in the project's namespace); the workspace renders both to tmpfs and the agent is pre-registered against that one server.
 - **What the project exposes.** In the reference project the federated MCP server is a read-only Postgres service (`demo-db-mcp`) whose database credential is a **dynamic, auto-rotating Vault role** — no static DB password — surfaced to the workspace as that project's virtual server.
 
 ## AI / LLM Gateway (LiteLLM)
@@ -94,7 +94,7 @@ Every workspace runs an **AI-agentic** coding agent that reaches **tools and dat
 The coding agent's **model** calls are governed the same way its MCP calls are — through one central, auditable gateway rather than a provider key baked into each workspace.
 
 - **One gateway, per-project virtual keys.** A single platform-tier gateway — **LiteLLM**, a Nomad job in the `infra` namespace backed by Postgres — serves the Anthropic `/v1/messages` API that Claude Code speaks, and maps the workspace-facing model names (`deepseek-v4-pro`/`deepseek-v4-flash`) to the real backend. It holds the **one central provider key**; each project is issued a **virtual key** scoped to its allowed models, with a budget and rate limit. A workspace authenticates with its virtual key and never sees the provider key.
-- **Model access is the policy point.** Which models a workspace may call, how much it may spend, and how fast are decided here, centrally. Project onboarding mints the virtual key and writes it (with the gateway URL) to Vault (`secret/projects/<project>/llm`); the workspace renders both to tmpfs and Claude Code's `ANTHROPIC_BASE_URL` + `apiKeyHelper` use them — so the developer sees no change.
+- **Model access is the policy point.** Which models a workspace may call, how much it may spend, and how fast are decided here, centrally. Project onboarding mints the virtual key and writes it (with the gateway URL) to Vault (`secret/projects/llm`, in the project's namespace); the workspace renders both to tmpfs and Claude Code's `ANTHROPIC_BASE_URL` + `apiKeyHelper` use them — so the developer sees no change.
 - **Audited and provider-portable.** Every prompt/response is recorded in the gateway's spend logs, tagged with the project — the hook for SIEM forwarding. Switching providers (DeepSeek today → **watsonx.ai**) is a one-line `model_list` change in the gateway config, with no workspace edit. And because all model egress flows through this one node, workspace egress to the provider can be locked down to the gateway alone.
 
 ## Three tiers, three roles
@@ -135,7 +135,7 @@ The foundation provides identity, the HashiStack security authorities, a Nomad c
 
 ### Project Admin — project slice
 
-Each project is carved out as an **isolated slice** on top of the foundation: a Boundary scope, a Nomad namespace, per-project Vault paths, a project database with its own MCP service federated into the MCP gateway as a per-project **virtual MCP server** (reachable only with a scoped client token), and a per-project **virtual LLM key** issued by the LLM gateway (scoped to allowed models, with a budget and rate limit). Tenant isolation is structural — by scope, namespace, and Vault path prefix — rather than policy-gated.
+Each project is carved out as an **isolated slice** on top of the foundation: a Boundary scope, a Nomad namespace, a per-project Vault **namespace**, a project database with its own MCP service federated into the MCP gateway as a per-project **virtual MCP server** (reachable only with a scoped client token), and a per-project **virtual LLM key** issued by the LLM gateway (scoped to allowed models, with a budget and rate limit). Tenant isolation is structural — by Boundary scope, Nomad namespace, and Vault namespace — rather than policy-gated.
 
 ![Logical project slice: the foundation plus a per-project Boundary scope, Nomad namespace, Vault paths, database with MCP service, a gateway virtual MCP server, and a per-project LLM virtual key](diagrams/02-project-admin.png)
 
@@ -143,12 +143,12 @@ Each project is carved out as an **isolated slice** on top of the foundation: a 
 |---|---|
 | **Boundary project scope** | Per-project scope + credential store / SSH credential library (a least-privilege periodic token), isolating brokered access to this project. |
 | **Nomad namespace** | Per-project namespace (ACL-backstopped) partitioning every workload, so projects cannot schedule into one another. |
-| **Per-project Vault paths** | `ssh/<project>` (SSH CA), `database/<project>` (dynamic read-only Postgres role), `github/<project>` (GitHub App token broker), `secret/projects/<project>/*` (KV) — isolation by path (a per-project Vault namespace is an alternative — see note below). |
+| **Per-project Vault namespace** | A dedicated Vault Enterprise namespace per project — the hard isolation boundary. Inside it: `ssh` (SSH CA), `database` (dynamic read-only Postgres role), `github` (GitHub App token broker), and KV runtime coordinates (`secret/projects/mcp`, `…/llm`). A token minted in one namespace resolves only that namespace's paths (path-prefixing within a single namespace is the lighter alternative — see note below). |
 | **demo-db + demo-db-mcp** | A Postgres database and a long-running postgres-mcp (SSE) service whose DB credential is a dynamic, auto-rotating Vault read-only role — no static DB password. |
-| **Gateway virtual server + scoped token** | demo-db-mcp is registered as a gateway peer and exposed as a per-project virtual MCP server; a scoped client token (written to `secret/projects/<project>/mcp`) reaches only that server. |
-| **Per-project LLM virtual key** | The LLM gateway issues each project a scoped virtual key (allowed models + budget + rate limit, written to `secret/projects/<project>/llm`); the workspace authenticates with it and never sees the central provider key. |
+| **Gateway virtual server + scoped token** | demo-db-mcp is registered as a gateway peer and exposed as a per-project virtual MCP server; a scoped client token (written to `secret/projects/mcp`) reaches only that server. |
+| **Per-project LLM virtual key** | The LLM gateway issues each project a scoped virtual key (allowed models + budget + rate limit, written to `secret/projects/llm`); the workspace authenticates with it and never sees the central provider key. |
 
-> **Path prefixes vs. Vault namespaces.** This build isolates projects by **path prefix** within a single Vault namespace (`ssh/<project>`, `database/<project>`, `secret/projects/<project>/*`), governed by per-project policies. **Vault Enterprise namespaces** are an alternative that places each project in its own namespace — with separate secrets engines, policies, auth methods, and identity — for a stronger administrative boundary and delegated, self-service project administration. Both fit the per-project tier; choose based on your organization's tenancy, delegation, and compliance requirements. Switching to namespaces also moves the per-project auth methods and policies — including the `jwt-nomad` workload-identity federation Nomad relies on — into each project's namespace, which the project tier would provision per-namespace.
+> **Vault namespaces (this build) vs. path prefixes.** This build isolates each project in its **own Vault Enterprise namespace** — separate secrets engines (`ssh`, `database`, `github`, KV), policies, a per-namespace `jwt-nomad` workload-identity auth backend, and identity — so a token minted in one project resolves only that project's paths; isolation is **Vault-enforced**, not dependent on path-prefix policy correctness. The lighter-weight alternative, for **non-Enterprise** Vault, is a **single namespace with per-project path prefixes** (`ssh/<project>`, `database/<project>`, `secret/projects/<project>/*`) governed by per-project policies — a weaker administrative boundary that leans on policy correctness. Both fit the per-project tier; this build chose namespaces for the stronger boundary and delegated, self-service project administration.
 
 ### Developer — sandbox
 
@@ -199,9 +199,9 @@ terraform workspace new project-acme               # one Terraform workspace per
 terraform apply -var-file=project-acme.tfvars
 ```
 
-The project tfvars also carry the project's **GitHub App** (App ID, installation ID, private-key PEM) — a one-time manual prerequisite per project (create the App with **Contents: Read & write**, install it on the repos). This tier configures the `github/<project>` token broker + a pre-scoped `dev-workspace` permission set from them.
+The project tfvars also carry the project's **GitHub App** (App ID, installation ID, private-key PEM) — a one-time manual prerequisite per project (create the App with **Contents: Read & write**, install it on the repos). This tier configures the `github` token broker (in the project's Vault namespace) + a pre-scoped `dev-workspace` permission set from them.
 
-Each project is fully isolated — separate Vault path (`ssh/project-acme`), Boundary scope, Nomad namespace, and GitHub App. Additional projects are onboarded by repeating with a new workspace + tfvars. The job template is readable at `secret/projects/<project>/job-templates/<name>` and the outputs (`project_scope_id`, `namespace`, `credential_library_id`, `ssh_ca_path`, `wif_role`, `github_token_path`, …) feed the developer tier.
+Each project is fully isolated — its own Vault namespace (`project-acme`, with an `ssh` CA inside it), Boundary scope, Nomad namespace, and GitHub App. Additional projects are onboarded by repeating with a new workspace + tfvars. The job template is readable at `secret/projects/<project>/job-templates/<name>` and the outputs (`project_scope_id`, `namespace`, `credential_library_id`, `ssh_ca_path`, `wif_role`, `github_token_path`, …) feed the developer tier.
 
 ### 3. Developer — per workspace
 
@@ -277,7 +277,7 @@ terraform destroy -var-file=project-acme.tfvars   # review, confirm
 # repeat for each project
 ```
 
-Removes the Boundary project scope, Nomad namespace, Vault SSH CA, credential store/library, WIF role, namespace ACL, and the `github/<project>` token broker. The project's **GitHub App is external** (not Terraform-managed) — it survives; delete it in GitHub manually only if you are decommissioning the project for good.
+Removes the Boundary project scope, Nomad namespace, Vault namespace (SSH CA, database + GitHub brokers), credential store/library, WIF role, and namespace ACL. The project's **GitHub App is external** (not Terraform-managed) — it survives; delete it in GitHub manually only if you are decommissioning the project for good.
 
 ### 3. Platform — last
 

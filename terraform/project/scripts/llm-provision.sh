@@ -6,7 +6,7 @@
 #
 #   provision   mint a per-project virtual key in the shared LiteLLM gateway, scoped
 #               to the project's allowed models + a budget + an rpm limit, and write
-#               {base_url, virtual_key} to Vault KV at secret/projects/<project>/llm
+#               {base_url, virtual_key} to Vault KV at secret/projects/llm
 #               (read by the workspace; Claude Code presents the key to the gateway).
 #   deprovision revoke the key (by alias) and delete the KV path.
 #

@@ -9,17 +9,32 @@ See [`../README.md`](../README.md) for the three-tier overview and the end-to-en
 Applied **once per project** (one `terraform workspace` per project). Creates, scoped to the project:
 
 - A **Boundary project scope** under the org, a **Nomad namespace**, and a **Vault Enterprise namespace** (all = project name). The Vault namespace is the **hard isolation boundary**: every project Vault object below lives inside it, and a token minted in `<project>` can read only `<project>` paths — isolation is **Vault-enforced**, not dependent on path-prefix policy correctness.
-- A namespace-scoped **Vault SSH CA** (`ssh/<project>` mount + `dev-workspace` signing role with `permit-pty`/`permit-port-forwarding`, 5m/10m TTL, `key_id` = the developer's email), inside the project's Vault namespace.
+- A namespace-scoped **Vault SSH CA** (`ssh` mount + `dev-workspace` signing role with `permit-pty`/`permit-port-forwarding`, 5m/10m TTL, `key_id` = the developer's email), inside the project's Vault namespace.
 - The **Boundary Vault credential store** (authenticated with a dedicated least-privilege periodic token, not root) + the **SSH credential library** every workspace target in the project injects.
 - A **per-namespace `jwt-nomad` auth backend** (auth methods don't cross Vault namespaces, so each project gets its own, trusting Nomad's JWKS) + a **WIF role** on it + a read-only policy exposing only this project's CA public key, and a namespace-scoped **Nomad ACL policy + binding rule** (defense-in-depth). Each workspace/service Nomad job sets `vault { namespace = "<project>" }` so its workload-identity login targets the namespace backend.
-- A **GitHub App token broker** (`github/<project>` mount + config + a pre-scoped `dev-workspace` permission set, plus a WIF policy letting the workspace read a `contents:write` token from it) — the git push credential for every workspace in the project; no static PAT anywhere.
-- A throwaway **demo Postgres** (`demo-db`, seeded on every (re)start, node-local static port, **not** on the NLB) plus a **per-project Vault database secrets engine** (`database/<project>` mount + a `demo-db` connection + a SELECT-only `dev-workspace-ro` role) that mints **dynamic, auto-rotating read-only** DB credentials — no static DB password.
+- A **GitHub App token broker** (`github` mount + config + a pre-scoped `dev-workspace` permission set, plus a WIF policy letting the workspace read a `contents:write` token from it) — the git push credential for every workspace in the project; no static PAT anywhere.
+- A throwaway **demo Postgres** (`demo-db`, seeded on every (re)start, node-local static port, **not** on the NLB) plus a **per-project Vault database secrets engine** (`database` mount + a `demo-db` connection + a SELECT-only `dev-workspace-ro` role) that mints **dynamic, auto-rotating read-only** DB credentials — no static DB password.
 - The project's **MCP server** (`demo-db-mcp`) — a long-lived `postgres-mcp` SSE Nomad service that connects to `demo-db` with the dynamic read-only role over WIF (replacing the old per-workspace stdio Postgres MCP that used to be baked into every image).
-- The project's **virtual MCP server** in the shared **ContextForge** gateway: a `terraform_data` / `scripts/mcp-provision.sh` orchestration registers `demo-db-mcp` as a gateway **peer**, composes a per-project **virtual MCP server**, mints a **scoped client token**, and writes the virtual-server URL + token to Vault KV (`secret/projects/<project>/mcp`) for the workspace to read over WIF and point Claude's remote MCP at. (The gateway itself lives in the platform tier.)
-- The project's **LiteLLM virtual key** in the shared **LiteLLM AI gateway**: a `terraform_data` / `scripts/llm-provision.sh` orchestration mints ONE scoped **virtual key** (allowed models + `max_budget` + `rpm_limit`, alias `llm-<project>`) via the gateway master key and writes `{base_url, virtual_key}` to Vault KV (`secret/projects/<project>/llm`) for the workspace to read over WIF. Claude Code points `ANTHROPIC_BASE_URL` at the gateway and authenticates with this per-project key — **never the real provider key**. (The gateway itself lives in the platform tier.)
+- The project's **virtual MCP server** in the shared **ContextForge** gateway: a `terraform_data` / `scripts/mcp-provision.sh` orchestration registers `demo-db-mcp` as a gateway **peer**, composes a per-project **virtual MCP server**, mints a **scoped client token**, and writes the virtual-server URL + token to Vault KV (`secret/projects/mcp`) for the workspace to read over WIF and point Claude's remote MCP at. (The gateway itself lives in the platform tier.)
+- The project's **LiteLLM virtual key** in the shared **LiteLLM AI gateway**: a `terraform_data` / `scripts/llm-provision.sh` orchestration mints ONE scoped **virtual key** (allowed models + `max_budget` + `rpm_limit`, alias `llm-<project>`) via the gateway master key and writes `{base_url, virtual_key}` to Vault KV (`secret/projects/llm`) for the workspace to read over WIF. Claude Code points `ANTHROPIC_BASE_URL` at the gateway and authenticates with this per-project key — **never the real provider key**. (The gateway itself lives in the platform tier.)
 - The project's **Nomad job templates** ("flavors"), written as raw HCL to Vault KV at `secret/projects/<project>/job-templates/<name>`, **each with its OWN pinned image AND git repo** (from `workspace_templates`), plus an optional `node_pool` (`"gpu"` for the GPU flavor, `"microvm"` for the Kata-isolated microVM flavor). At publish the project-static values (namespace, image, repo, WIF role, SSH CA path, GitHub/MCP/LLM paths) are baked in, leaving only the per-workspace placeholders — so both the developer tier and the Developer Portal render the **same** template and a developer never selects an image or repo.
 
 The outputs (`project_scope_id`, `namespace`, `credential_library_id`, `ssh_ca_path`, `wif_role`, `github_token_path`, `mcp_kv_path`, `llm_kv_path`, `job_template_names`, `job_template_node_pools`, …) feed the developer tier; a parallel `portal-descriptor` (with the same flavors, their picker metadata, and node pools) is published to Vault KV for the Developer Portal.
+
+## Optional: an extra secret engine for deploy-time path grants
+
+A published MCP server type whose blueprint sets **Allow project-admin path grants** lets a
+project-admin, at deploy time in the Portal, attach **additional Vault path grants** (path +
+capabilities) to that server's WIF token — to reach another engine **in this project's namespace**.
+The Portal only *grants* access; it never mounts engines. So the engine is a **precondition you mount
+here**, the same way `database` (demo-db), `ssh`, and `github` are.
+
+`pki.tf` is a ready, gated example: set `enable_pki_example = true` and `apply` to mount a PKI engine
+at `pki` (self-signed root CA + an `issue/server` role). A project-admin can then deploy,
+e.g., the `vault-mcp` server with an extra grant of `pki/issue/server` (capabilities
+`create`, `update`) and issue certificates. Any engine works the same way — PKI is just a concrete
+example. Grants are confined to this namespace (the WIF token's boundary) and linted server-side: no
+`sys/`/`auth/`/`identity/`/`cubbyhole/`, no traversal/root-glob, no `sudo`/`root`.
 
 ## Prerequisite: a GitHub App (manual, one-time per project)
 
@@ -48,7 +63,7 @@ Then add an entry per template to `workspace_templates` (see tfvars below) mappi
 
 ### Claude Code → LiteLLM AI gateway
 
-The `dev-workspace` Claude Code CLI is pointed at the shared **LiteLLM AI gateway** (platform tier, `terraform/infra/llm-gateway.tf`), not the model provider directly. The gateway URL + model mapping are rendered per workspace at job launch into `/etc/claude-code/managed-settings.json` (the address is deployment-specific). Each project gets a scoped **LiteLLM virtual key** (allowed models + budget + rpm), minted automatically by `llm-gateway.tf` and stored in Vault KV (`secret/projects/<project>/llm`); it is rendered per session to the workspace `/secrets` tmpfs and read by Claude's `apiKeyHelper`, so it never lands on `/home/dev`. The **real provider key never reaches the workspace** — it lives only on the gateway (set `deepseek_api_key` in the **infra** tier). So only the gateway node needs **egress to `api.deepseek.com`**; the gateway also gives central audit (spend logs), per-project budgets, and a one-line swap to watsonx.ai. The workspace-facing model names (`deepseek-v4-pro`/`deepseek-v4-flash`) map to the real backend in the gateway's `config.yaml` `model_list`.
+The `dev-workspace` Claude Code CLI is pointed at the shared **LiteLLM AI gateway** (platform tier, `terraform/infra/llm-gateway.tf`), not the model provider directly. The gateway URL + model mapping are rendered per workspace at job launch into `/etc/claude-code/managed-settings.json` (the address is deployment-specific). Each project gets a scoped **LiteLLM virtual key** (allowed models + budget + rpm), minted automatically by `llm-gateway.tf` and stored in Vault KV (`secret/projects/llm`); it is rendered per session to the workspace `/secrets` tmpfs and read by Claude's `apiKeyHelper`, so it never lands on `/home/dev`. The **real provider key never reaches the workspace** — it lives only on the gateway (set `deepseek_api_key` in the **infra** tier). So only the gateway node needs **egress to `api.deepseek.com`**; the gateway also gives central audit (spend logs), per-project budgets, and a one-line swap to watsonx.ai. The workspace-facing model names (`deepseek-v4-pro`/`deepseek-v4-flash`) map to the real backend in the gateway's `config.yaml` `model_list`.
 
 ## Namespace model — verification & teardown
 
@@ -56,8 +71,8 @@ This tier provisions a **Vault Enterprise namespace per project** (`vault_namesp
 
 Verified end-to-end on a throwaway `nstest` project (full apply → developer flow → teardown), then `acme` was **rebuilt fresh under this model** (2026-06-15). The four-point developer check:
 
-- SSH session authenticates with a cert signed by the namespaced `ssh/<project>` CA (Boundary-injected).
-- `git clone` works via the namespaced GitHub token (`github/<project>/token/dev-workspace`).
+- SSH session authenticates with a cert signed by the namespaced `ssh` CA (Boundary-injected).
+- `git clone` works via the namespaced GitHub token (`github/token/dev-workspace`).
 - MCP + LLM coordinates resolve from the namespace KV via workload-identity reads.
 - Claude Code LLM traffic flows through the gateway.
 
@@ -65,17 +80,17 @@ Per-engine probes (each resolves in-namespace; a root-scoped read of a project p
 
 ```bash
 export VAULT_SKIP_VERIFY=true
-vault read   -namespace=<project> ssh/<project>/config/ca
-vault read   -namespace=<project> database/<project>/creds/dev-workspace-ro
-vault kv get -namespace=<project> -mount=secret projects/<project>/mcp
-vault kv get -namespace=<project> -mount=secret projects/<project>/llm
-vault read   -namespace=<project> github/<project>/token/dev-workspace
-vault kv get -mount=secret projects/<project>/mcp   # root scope → "No value found" (isolation holds)
+vault read   -namespace=<project> ssh/config/ca
+vault read   -namespace=<project> database/creds/dev-workspace-ro
+vault kv get -namespace=<project> -mount=secret projects/mcp
+vault kv get -namespace=<project> -mount=secret projects/llm
+vault read   -namespace=<project> github/token/dev-workspace
+vault kv get -mount=secret projects/mcp   # root scope → "No value found" (isolation holds)
 ```
 
 ### Teardown — `terraform destroy` and the lease-revocation snag
 
-`terraform destroy -var-file=project-<name>.tfvars` removes the whole project tier including the Vault namespace. Two stanzas (`database/<project>` and `github/<project>`) can **fail to delete** with a `400` error like:
+`terraform destroy -var-file=project-<name>.tfvars` removes the whole project tier including the Vault namespace. Two stanzas (`database` and `github`) can **fail to delete** with a `400` error like:
 
 ```
 failed to revoke ".../creds/..." : failed to find entry for connection with name: "demo-db"
@@ -94,8 +109,8 @@ Fix: **force-revoke the stuck leases** (`-force` drops them from Vault storage e
 
 ```bash
 export VAULT_SKIP_VERIFY=true
-vault lease revoke -namespace=<project> -force -prefix database/<project>/creds/dev-workspace-ro
-vault lease revoke -namespace=<project> -force -prefix github/<project>/token/dev-workspace
+vault lease revoke -namespace=<project> -force -prefix database/creds/dev-workspace-ro
+vault lease revoke -namespace=<project> -force -prefix github/token/dev-workspace
 terraform destroy -var-file=project-<name>.tfvars -auto-approve   # re-run; clears database/ + github/ mounts + the namespace
 ```
 

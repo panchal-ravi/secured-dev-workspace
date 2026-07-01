@@ -7,7 +7,7 @@
 #   provision   register demo-db-mcp as a peer in the shared ContextForge gateway,
 #               discover its tools, compose a per-project virtual server, create a
 #               per-project server-scoped client token, and write {url,token} to
-#               Vault KV at secret/projects/<project>/mcp (read by the workspace).
+#               Vault KV at secret/projects/mcp (read by the workspace).
 #   deprovision revoke the client token, delete the virtual server, the peer
 #               registration, and the KV path.
 #

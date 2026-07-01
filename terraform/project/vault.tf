@@ -1,7 +1,8 @@
 # ---------------------------------------------------------------------------
-# Per-project Vault SSH certificate authority, path-prefixed under `ssh/<project>`.
-# Each project gets its OWN CA, signing role and read scope — isolation by Vault
-# path within the single root namespace (no Vault Enterprise namespaces).
+# Per-project Vault SSH certificate authority, mounted at `ssh` inside the
+# project's Vault namespace. Each project gets its OWN CA, signing role and read
+# scope — isolation is by Vault namespace, so the mount path needs no project
+# prefix.
 # ---------------------------------------------------------------------------
 
 # SSH secrets engine in signing (CA) mode for this project. Vault holds the CA
@@ -9,7 +10,7 @@
 # trusts only this CA via TrustedUserCAKeys.
 resource "vault_mount" "ssh" {
   namespace   = vault_namespace.project.path
-  path        = "ssh/${var.project_name}"
+  path        = "ssh"
   type        = "ssh"
   description = "SSH client CA for project ${var.project_name} — signs short-lived workspace user certs"
 }
@@ -131,13 +132,14 @@ resource "vault_policy" "nomad_db_creds" {
 
 # WIF grant: the workspace task may READ the per-project MCP coordinates (the
 # virtual-server URL + client bearer token) written by the gateway orchestration
-# (mcp-gateway.tf) to secret/projects/<project>/mcp. KV v2 ⇒ /data/ prefix.
+# (mcp-gateway.tf) to secret/projects/mcp. KV v2 ⇒ /data/ prefix. The Vault
+# namespace isolates the project, so the KV path carries no project segment.
 resource "vault_policy" "nomad_mcp_read" {
   namespace = vault_namespace.project.path
   name      = "nomad-${var.project_name}-mcp-read"
 
   policy = <<-HCL
-    path "${local.f.kv_mount_path}/data/projects/${var.project_name}/mcp" {
+    path "${local.f.kv_mount_path}/data/projects/mcp" {
       capabilities = ["read"]
     }
   HCL

@@ -10,7 +10,17 @@ project_name = "project-acme"
 
 # IBM Verify group confined to this project's Nomad namespace (defense-in-depth).
 # Create it in the Verify console; members reach workspaces via Boundary regardless.
+# This is ALSO the project's membership gate for the developer portal: a project-admin
+# grant (PROJECT-ADMIN-RUNBOOK.md) stays inert until the user is in THIS group, and
+# removing them from it instantly voids their access (offboarding wins).
 developers_group_name = "project-acme-developers"
+
+# --- Workspace SSH cert + Boundary/Vault tunables (optional; defaults shown) ---
+# vault_cred_store_address = "https://127.0.0.1:8200"  # how the Boundary controller reaches Vault
+# boundary_token_period    = "24h"                      # renewal period for the cred-store Vault token
+# workspace_user           = "dev"                      # unix user the signed SSH cert is valid for
+# cert_ttl                 = "5m"                        # default signed SSH user-cert TTL
+# cert_max_ttl             = "10m"                       # max requestable SSH user-cert TTL
 
 # --- Workspace templates (one per job template; the project owns the toolchain) ---
 # A project may offer several templates; the developer picks one in the portal. Each

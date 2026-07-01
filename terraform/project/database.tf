@@ -1,13 +1,14 @@
 # ---------------------------------------------------------------------------
-# Per-project Vault database secrets engine (database/<project>). Mints
-# per-session, SELECT-only Postgres roles against the demo-db, auto-revoked at
-# lease expiry. The workspace task reads database/<project>/creds/dev-workspace-ro
-# over WIF; the Postgres MCP server connects with that ephemeral user.
+# Per-project Vault database secrets engine, mounted at `database` inside the
+# project's Vault namespace. Mints per-session, SELECT-only Postgres roles against
+# the demo-db, auto-revoked at lease expiry. The workspace task reads
+# database/creds/dev-workspace-ro over WIF; the Postgres MCP server connects with
+# that ephemeral user. (The namespace isolates the project — no path prefix.)
 # ---------------------------------------------------------------------------
 
 resource "vault_mount" "database" {
   namespace   = vault_namespace.project.path
-  path        = "database/${var.project_name}"
+  path        = "database"
   type        = "database"
   description = "Dynamic Postgres credentials (demo-db) for project ${var.project_name}"
 }
@@ -44,8 +45,8 @@ resource "vault_database_secret_backend_connection" "demo_db" {
 resource "vault_database_secret_backend_role" "dev_workspace_ro" {
   namespace = vault_namespace.project.path
   backend   = vault_mount.database.path
-  name    = "dev-workspace-ro"
-  db_name = vault_database_secret_backend_connection.demo_db.name
+  name      = "dev-workspace-ro"
+  db_name   = vault_database_secret_backend_connection.demo_db.name
 
   default_ttl = 86400  # 24h
   max_ttl     = 604800 # 7d

@@ -149,3 +149,16 @@ variable "github_repositories" {
   type        = list(string)
   default     = []
 }
+
+variable "enable_pki_example" {
+  description = <<-EOT
+    Mount an example PKI secrets engine (with a self-signed root CA + a server
+    role) into this project's Vault namespace at pki/<project_name>. OFF by
+    default. This is a PRECONDITION DEMO for the deploy-time path-grant feature:
+    an MCP server (e.g. vault-mcp) can be granted access to it by a project-admin
+    at deploy time. Any secrets engine works — this is just a concrete, applyable
+    example of the operator's "mount the engine first" step.
+  EOT
+  type        = bool
+  default     = false
+}

@@ -14,10 +14,10 @@
 # Project-static placeholders (filled at onboarding by kv.tf):
 #   namespace image git_repo_url
 #   wif_role          — per-project Nomad↔Vault WIF role (= project name)
-#   ssh_ca_path       — per-project Vault SSH CA config path (ssh/<project>/config/ca)
+#   ssh_ca_path       — per-project Vault SSH CA config path (ssh/config/ca)
 #   github_token_path — per-project Vault GitHub permission-set token path
-#   mcp_kv_path       — per-project Vault KV path for the virtual-MCP coordinates (secret/data/projects/<project>/mcp)
-#   llm_kv_path       — per-project Vault KV path for the LiteLLM virtual key (secret/data/projects/<project>/llm)
+#   mcp_kv_path       — per-project Vault KV path for the virtual-MCP coordinates (secret/data/projects/mcp)
+#   llm_kv_path       — per-project Vault KV path for the LiteLLM virtual key (secret/data/projects/llm)
 #   llm_base_url      — node-private LiteLLM gateway base URL (Claude Code's ANTHROPIC_BASE_URL)
 #
 # Per-workspace placeholders (escaped "$$" here; filled by the portal at create):

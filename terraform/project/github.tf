@@ -1,7 +1,8 @@
 # ---------------------------------------------------------------------------
 # Per-project GitHub App credential broker. Enables the registered GitHub
-# secrets plugin (foundation tier baked + registered it) at github/<project>,
-# configures it with THIS project's GitHub App, and defines a pre-scoped
+# secrets plugin (foundation tier baked + registered it) at github (inside the
+# project's Vault namespace), configures it with THIS project's GitHub App, and
+# defines a pre-scoped
 # permission set. The workspace's Nomad task mints a short-lived (1h,
 # non-renewable) GitHub App installation token from the permission-set token
 # path over WIF — that token is the git push credential. No static PAT anywhere;
@@ -15,14 +16,14 @@
 
 locals {
   # The pre-scoped permission set + its constrained token path. Named to mirror
-  # the SSH signing role. The workspace reads github/<project>/token/<name>.
+  # the SSH signing role. The workspace reads github/token/<name>.
   github_permissionset_name = "dev-workspace"
 }
 
 # Per-project mount of the external plugin (type = the registered plugin name).
 resource "vault_mount" "github" {
   namespace   = vault_namespace.project.path
-  path        = "github/${var.project_name}"
+  path        = "github"
   type        = "vault-plugin-secrets-github"
   description = "GitHub App token broker for project ${var.project_name}"
 }

@@ -3,8 +3,9 @@
 # project the project-admin: (1) registers the project's demo-db-mcp as a peer in
 # the platform gateway, (2) composes a per-project "virtual server" bundling its
 # tools, (3) creates a per-project client token scoped to that virtual server, and
-# (4) writes the virtual server URL + token to Vault KV (secret/projects/<project>/
-# mcp). The workspace reads that over WIF and points Claude's remote MCP at it. The
+# (4) writes the virtual server URL + token to Vault KV (secret/projects/mcp,
+# inside the project's namespace). The workspace reads that over WIF and points
+# Claude's remote MCP at it. The
 # gateway itself lives in the platform tier (terraform/infra/mcp-gateway.tf).
 #
 # The register→discover→compose flow is dynamic (tool ids are only known after the
@@ -21,7 +22,7 @@ locals {
   mcp_virtual_server        = "demo-db-${var.project_name}"
   mcp_client_username       = "${var.project_name}-mcp"
   mcp_client_token_exp_days = 365 # PoC; rotate by re-apply
-  mcp_kv_name               = "projects/${var.project_name}/mcp"
+  mcp_kv_name               = "projects/mcp"
   mcp_peer_url              = "http://${local.f.instance_private_ip}:${local.demo_db_mcp_port}/sse"
 }
 
@@ -41,6 +42,7 @@ resource "terraform_data" "mcp_provision" {
     peer_url        = local.mcp_peer_url
     vs_name         = local.mcp_virtual_server
     token_mechanism = "scoped-api-token"
+    kv_name         = local.mcp_kv_name # re-provision when the KV path changes
   })
 
   # Stashed in state so the destroy-time provisioner (which cannot read data
