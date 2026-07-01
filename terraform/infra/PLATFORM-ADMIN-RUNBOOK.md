@@ -36,9 +36,13 @@ reachability).
   Publishing a blueprint runs two checks: manifest shape, then render + lint of the generated
   least-privilege policy against the allowed path prefixes. There is **no** live consumption-mirror
   probe — runtime correctness of a recipe is the platform admin's responsibility, verified by
-  deploying the A/B/C reference blueprints into a real project. The portal needs read on the
-  manifest KV path (`secret/data/infra/blueprints/*`, granted by `infra-platform-admin`) so the
-  lint can read the stored manifest back.
+  deploying the A/B/C reference blueprints into a real project. The canonical manifest is stored
+  **on the Portal DB row** (postgres `blueprints.data`), not in Vault KV, so no `infra/blueprints/*`
+  Vault grant is needed.
+- **Blueprints are immutable; delete is unreferenced-only.** A change to a published recipe is a
+  new version (never an in-place edit). A blueprint can be deleted only while **no** MCP server type
+  binds it — the portal returns **409** ("bound by server type …") otherwise; unbind/delete the
+  server type first.
 - **Verify RBAC group (manual — ACTION REQUIRED).** In IBM Verify, create a group named
   exactly `platform-admins`, add the platform-admin user(s) to it, and confirm the
   portal's OIDC app releases the `groups` claim carrying the group's **name** (not a
@@ -269,9 +273,8 @@ can deploy — do them in order, then hand off to
    **static** — manifest shape + a render/lint of the generated policy against the allowed prefixes;
    it makes no Vault calls. Runtime correctness is proven by actually deploying the blueprint into a
    real project (step 2 onward). A `failed` result reports the offending `shape` or `policy-lint`
-   check in the row detail. If validate returns **502 “upstream service error”** with a
-   `read … secret/data/infra/blueprints/… 403`, the portal's WIF role is missing the manifest-read
-   grant (`secret/data/infra/blueprints/*` in `infra-platform-admin`) — re-run the §1 apply.
+   check in the row detail. The manifest is read back from the Portal DB row (no Vault call), so the
+   old `secret/data/infra/blueprints/*` 502 failure mode no longer applies.
 
 2. **Bind the blueprint onto a published MCP server type.** This is what makes the type appear in a
    project-admin's deployable catalog (a server type with `status=published` **and** a non-nil
