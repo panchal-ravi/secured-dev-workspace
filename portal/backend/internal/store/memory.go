@@ -182,6 +182,17 @@ func (m *Memory) ListBlueprints(_ context.Context) ([]Blueprint, error) {
 	return out, nil
 }
 
+func (m *Memory) DeleteBlueprint(_ context.Context, id string, version int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := bpKey(id, version)
+	if _, ok := m.blueprints[k]; !ok {
+		return fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
+	}
+	delete(m.blueprints, k)
+	return nil
+}
+
 func prKey(project, subject, role string) string {
 	return project + "\x00" + subject + "\x00" + role
 }

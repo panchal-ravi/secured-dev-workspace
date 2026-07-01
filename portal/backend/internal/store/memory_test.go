@@ -124,3 +124,20 @@ func TestMemory_GetBlueprint_NotFound(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestMemory_DeleteBlueprint(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	if _, err := m.UpsertBlueprint(ctx, Blueprint{ID: "vault-mcp", Version: 1, Class: "C", ContentHash: "h", Status: StatusDraft}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := m.DeleteBlueprint(ctx, "vault-mcp", 1); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := m.GetBlueprint(ctx, "vault-mcp", 1); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+	if err := m.DeleteBlueprint(ctx, "vault-mcp", 1); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound deleting missing, got %v", err)
+	}
+}

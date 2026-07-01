@@ -362,6 +362,21 @@ func (p *Postgres) ListBlueprints(ctx context.Context) ([]Blueprint, error) {
 	return out, rows.Err()
 }
 
+func (p *Postgres) DeleteBlueprint(ctx context.Context, id string, version int) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM blueprints WHERE id = $1 AND version = $2`, id, version)
+	if err != nil {
+		return fmt.Errorf("store: delete blueprint %s@%d: %w", id, version, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete blueprint rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
+	}
+	return nil
+}
+
 // ---- project roles ----
 
 func (p *Postgres) GrantProjectRole(ctx context.Context, pr ProjectRole) (ProjectRole, error) {

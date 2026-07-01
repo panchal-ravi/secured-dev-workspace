@@ -170,6 +170,7 @@ type Store interface {
 	UpsertBlueprint(ctx context.Context, b Blueprint) (Blueprint, error)
 	GetBlueprint(ctx context.Context, id string, version int) (Blueprint, error)
 	ListBlueprints(ctx context.Context) ([]Blueprint, error)
+	DeleteBlueprint(ctx context.Context, id string, version int) error
 
 	// Project role elevations (group membership stays in IBM Verify).
 	GrantProjectRole(ctx context.Context, pr ProjectRole) (ProjectRole, error)
