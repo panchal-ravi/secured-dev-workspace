@@ -38,20 +38,8 @@ type NomadClient interface {
 	JobExists(namespace, jobID string) (bool, error)
 }
 
-type VaultClient interface {
-	ReadKVField(ctx context.Context, relPath, field string) (string, error)
-}
-
 type Config struct {
-	BlueprintsKVPath string
-	NodePool         string
-}
-
-func (c Config) withDefaults() Config {
-	if c.BlueprintsKVPath == "" {
-		c.BlueprintsKVPath = "infra/blueprints"
-	}
-	return c
+	NodePool string
 }
 
 type Service struct {
@@ -60,12 +48,11 @@ type Service struct {
 	executor Executor
 	nomad    NomadClient
 	gateway  mcpgw.Client
-	vault    VaultClient
 	cfg      Config
 }
 
-func New(st store.Store, projects ProjectLookup, ex Executor, nomad NomadClient, gateway mcpgw.Client, vault VaultClient, cfg Config) *Service {
-	return &Service{store: st, projects: projects, executor: ex, nomad: nomad, gateway: gateway, vault: vault, cfg: cfg.withDefaults()}
+func New(st store.Store, projects ProjectLookup, ex Executor, nomad NomadClient, gateway mcpgw.Client, cfg Config) *Service {
+	return &Service{store: st, projects: projects, executor: ex, nomad: nomad, gateway: gateway, cfg: cfg}
 }
 
 type DeployableType struct {
@@ -128,12 +115,8 @@ func (s *Service) loadManifest(ctx context.Context, ref store.BlueprintRef) (blu
 	if bp.ContentHash != ref.ContentHash {
 		return blueprint.BlueprintManifest{}, fmt.Errorf("blueprint ref hash drift: %w", apperr.ErrBadRequest)
 	}
-	raw, err := s.vault.ReadKVField(ctx, fmt.Sprintf("%s/%s/%d", s.cfg.BlueprintsKVPath, ref.ID, ref.Version), "manifest")
-	if err != nil {
-		return blueprint.BlueprintManifest{}, err
-	}
 	var m blueprint.BlueprintManifest
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	if err := json.Unmarshal(bp.Manifest, &m); err != nil {
 		return blueprint.BlueprintManifest{}, fmt.Errorf("parse manifest: %w", apperr.ErrBadRequest)
 	}
 	if m.ContentHash() != ref.ContentHash {

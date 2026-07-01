@@ -18,8 +18,8 @@ func req(method, path, body string, user auth.User) *http.Request {
 func TestHandlersDeploy(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
 	ex := &fakeExecutor{rec: blueprintInstance()}
-	svc, st := newService(t, ex, &fakeNomad{}, &fakeGateway{}, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, &fakeNomad{}, &fakeGateway{})
+	seedDeployable(t, st, manifestJSON, hash)
 	h := NewHandlers(svc)
 
 	r := req(http.MethodPost, "/api/projects/project-acme/mcp-servers",
@@ -35,8 +35,8 @@ func TestHandlersDeploy(t *testing.T) {
 
 func TestHandlersList(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
-	svc, st := newService(t, &fakeExecutor{}, &fakeNomad{}, &fakeGateway{}, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, &fakeExecutor{}, &fakeNomad{}, &fakeGateway{})
+	seedDeployable(t, st, manifestJSON, hash)
 	h := NewHandlers(svc)
 
 	r := req(http.MethodGet, "/api/projects/project-acme/mcp-servers", "", auth.User{Email: "acme-admin@x", Groups: []string{"project-acme-developers"}})

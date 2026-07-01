@@ -70,12 +70,6 @@ func (f *fakeNomad) ResolvePlacementIP(_, _ string) (string, error) {
 func (f *fakeNomad) PurgeJob(_, jobID string) error      { f.purged = append(f.purged, jobID); return nil }
 func (f *fakeNomad) JobExists(_, _ string) (bool, error) { return f.existsResp, nil }
 
-type fakeVault struct{ manifest string }
-
-func (f fakeVault) ReadKVField(_ context.Context, _, _ string) (string, error) {
-	return f.manifest, nil
-}
-
 type fakeGateway struct {
 	probe        mcpgw.ScopeProbe
 	tools        []string
@@ -130,16 +124,16 @@ func classAManifestJSON(t *testing.T) (string, string) {
 	return string(b), m.ContentHash()
 }
 
-func newService(t *testing.T, ex Executor, n NomadClient, g *fakeGateway, manifestJSON string) (*Service, store.Store) {
+func newService(t *testing.T, ex Executor, n NomadClient, g *fakeGateway) (*Service, store.Store) {
 	t.Helper()
 	st := store.NewMemory()
-	svc := New(st, fakeProjects{ns: "project-acme"}, ex, n, g, fakeVault{manifest: manifestJSON}, Config{})
+	svc := New(st, fakeProjects{ns: "project-acme"}, ex, n, g, Config{})
 	return svc, st
 }
 
 func TestListDeployable(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
-	svc, st := newService(t, &fakeExecutor{}, &fakeNomad{existsResp: true}, &fakeGateway{}, manifestJSON)
+	svc, st := newService(t, &fakeExecutor{}, &fakeNomad{existsResp: true}, &fakeGateway{})
 	ctx := context.Background()
 
 	if _, err := st.UpsertMCPServer(ctx, store.MCPServer{Name: "postgres-mcp", Image: "img", Transport: "sse", Port: 9300, Status: store.StatusPublished, BlueprintRef: &store.BlueprintRef{ID: "postgres-mcp", Version: 1, ContentHash: hash}}); err != nil {
@@ -148,7 +142,7 @@ func TestListDeployable(t *testing.T) {
 	if _, err := st.UpsertMCPServer(ctx, store.MCPServer{Name: "vault-mcp", Image: "img", Transport: "sse", Port: 9301, Status: store.StatusPublished}); err != nil {
 		t.Fatalf("seed type2: %v", err)
 	}
-	if _, err := st.UpsertBlueprint(ctx, store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: hash, Status: store.StatusPublished}); err != nil {
+	if _, err := st.UpsertBlueprint(ctx, store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: hash, Status: store.StatusPublished, Manifest: json.RawMessage(manifestJSON)}); err != nil {
 		t.Fatalf("seed blueprint: %v", err)
 	}
 
@@ -164,7 +158,7 @@ func TestListDeployable(t *testing.T) {
 	}
 }
 
-func seedDeployable(t *testing.T, st store.Store, hash string) {
+func seedDeployable(t *testing.T, st store.Store, manifestJSON, hash string) {
 	t.Helper()
 	if _, err := st.UpsertMCPServer(context.Background(), store.MCPServer{
 		Name: "postgres-mcp", Image: "ghcr.io/x/postgres-mcp:1", Transport: "streamable-http", Port: 9300,
@@ -172,7 +166,7 @@ func seedDeployable(t *testing.T, st store.Store, hash string) {
 	}); err != nil {
 		t.Fatalf("seed type: %v", err)
 	}
-	if _, err := st.UpsertBlueprint(context.Background(), store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: hash, Status: store.StatusPublished}); err != nil {
+	if _, err := st.UpsertBlueprint(context.Background(), store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: hash, Status: store.StatusPublished, Manifest: json.RawMessage(manifestJSON)}); err != nil {
 		t.Fatalf("seed blueprint: %v", err)
 	}
 }
@@ -192,8 +186,8 @@ func TestDeployServerHappyPath(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
 	ex := &fakeExecutor{rec: blueprintInstance()}
 	n := &fakeNomad{}
-	svc, st := newService(t, ex, n, &fakeGateway{}, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, n, &fakeGateway{})
+	seedDeployable(t, st, manifestJSON, hash)
 	ctx := context.Background()
 
 	saved, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
@@ -232,8 +226,8 @@ func TestDeployServerRollsBackOnRegisterFailure(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
 	ex := &fakeExecutor{rec: blueprintInstance()}
 	n := &fakeNomad{regErr: errors.New("nomad down")}
-	svc, st := newService(t, ex, n, &fakeGateway{}, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, n, &fakeGateway{})
+	seedDeployable(t, st, manifestJSON, hash)
 	ctx := context.Background()
 
 	_, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
@@ -259,8 +253,8 @@ func TestDeployServerRollsBackAndPurgesOnPostRegisterFailure(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
 	ex := &fakeExecutor{rec: blueprintInstance()}
 	n := &fakeNomad{ipErr: errors.New("no placement")}
-	svc, st := newService(t, ex, n, &fakeGateway{}, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, n, &fakeGateway{})
+	seedDeployable(t, st, manifestJSON, hash)
 	ctx := context.Background()
 
 	_, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
@@ -284,8 +278,8 @@ func TestDeleteServer(t *testing.T) {
 	ex := &fakeExecutor{rec: blueprintInstance()}
 	g := &fakeGateway{probe: passingProbe(), tools: []string{"t1"}}
 	n := &fakeNomad{}
-	svc, st := newService(t, ex, n, g, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, n, g)
+	seedDeployable(t, st, manifestJSON, hash)
 	ctx := context.Background()
 	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", DeployInput{ServerType: "postgres-mcp", Params: deployParams()}); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -322,8 +316,8 @@ func TestTestServer(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
 	ex := &fakeExecutor{rec: blueprintInstance()}
 	g := &fakeGateway{probe: passingProbe(), tools: []string{"t1", "t2"}}
-	svc, st := newService(t, ex, &fakeNomad{}, g, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, &fakeNomad{}, g)
+	seedDeployable(t, st, manifestJSON, hash)
 	ctx := context.Background()
 	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", DeployInput{ServerType: "postgres-mcp", Params: deployParams()}); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -353,8 +347,8 @@ func TestTestServer(t *testing.T) {
 func TestDeployServer_ThreadsExtraGrants(t *testing.T) {
 	manifestJSON, hash := classAManifestJSON(t)
 	ex := &fakeExecutor{rec: blueprintInstance()}
-	svc, st := newService(t, ex, &fakeNomad{}, &fakeGateway{}, manifestJSON)
-	seedDeployable(t, st, hash)
+	svc, st := newService(t, ex, &fakeNomad{}, &fakeGateway{})
+	seedDeployable(t, st, manifestJSON, hash)
 
 	grants := []blueprint.PathGrant{{Path: "pki/project-acme/issue/web", Capabilities: []string{"create", "update"}}}
 	if _, err := svc.DeployServer(context.Background(), "acme-admin@x", []string{"project-acme-developers"}, "project-acme",

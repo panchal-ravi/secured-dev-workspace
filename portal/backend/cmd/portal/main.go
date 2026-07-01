@@ -219,9 +219,8 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 		NodePool:        cfg.AgentNodePool,
 		MCPJobVaultRole: cfg.MCPJobVaultRole,
 	})
-	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, vault, projectadmin.Config{
-		BlueprintsKVPath: "infra/blueprints",
-		NodePool:         cfg.AgentNodePool,
+	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, projectadmin.Config{
+		NodePool: cfg.AgentNodePool,
 	})
 	return admin.NewHandlers(adminSvc), projectadmin.NewHandlers(pmSvc), nil
 }
