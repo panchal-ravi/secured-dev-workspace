@@ -36,15 +36,8 @@ type WIFRole struct {
 // Every method takes an explicit namespace; the impl scopes the call with
 // client.WithNamespace(ns). Faked in unit tests.
 type VaultAdmin interface {
-	CreateNamespace(ctx context.Context, path string) error
-	DeleteNamespace(ctx context.Context, path string) error
-
 	MountEngine(ctx context.Context, ns, path, engineType, pluginVersion string) error
-	MountKVv2(ctx context.Context, ns, path string) error
 	UnmountEngine(ctx context.Context, ns, path string) error
-
-	EnableAuth(ctx context.Context, ns, path, authType string) error
-	DisableAuth(ctx context.Context, ns, path string) error
 
 	ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error
 	RotateRoot(ctx context.Context, ns, mount, name string) error
@@ -59,11 +52,6 @@ type VaultAdmin interface {
 	DeleteWIFRole(ctx context.Context, ns, authPath, roleName string) error
 
 	RevokeLeasesByPrefix(ctx context.Context, ns, prefix string) error
-
-	MintTokenWithPolicies(ctx context.Context, ns string, policies []string, ttl string) (string, error)
-	// Read performs a token-scoped read; ok=false with no error means a clean 403
-	// (the probe the Validator uses to assert denial).
-	Read(ctx context.Context, ns, token, path string) (ok bool, err error)
 }
 
 // vaultAdmin is the live implementation over a *vapi.Client.
@@ -74,16 +62,6 @@ func NewVaultAdmin(c *vapi.Client) VaultAdmin { return &vaultAdmin{c: c} }
 
 func (a *vaultAdmin) ns(ns string) *vapi.Client { return a.c.WithNamespace(ns) }
 
-func (a *vaultAdmin) CreateNamespace(ctx context.Context, path string) error {
-	_, err := a.c.Logical().WriteWithContext(ctx, "sys/namespaces/"+path, nil)
-	return wrap("create namespace", err)
-}
-
-func (a *vaultAdmin) DeleteNamespace(ctx context.Context, path string) error {
-	_, err := a.c.Logical().DeleteWithContext(ctx, "sys/namespaces/"+path)
-	return wrap("delete namespace", err)
-}
-
 func (a *vaultAdmin) MountEngine(ctx context.Context, ns, path, engineType, pluginVersion string) error {
 	in := &vapi.MountInput{Type: engineType}
 	if pluginVersion != "" {
@@ -93,23 +71,8 @@ func (a *vaultAdmin) MountEngine(ctx context.Context, ns, path, engineType, plug
 	return wrap("mount engine", err)
 }
 
-func (a *vaultAdmin) MountKVv2(ctx context.Context, ns, path string) error {
-	return wrap("mount kv-v2", a.ns(ns).Sys().MountWithContext(ctx, path, &vapi.MountInput{
-		Type:    "kv",
-		Options: map[string]string{"version": "2"},
-	}))
-}
-
 func (a *vaultAdmin) UnmountEngine(ctx context.Context, ns, path string) error {
 	return wrap("unmount engine", a.ns(ns).Sys().UnmountWithContext(ctx, path))
-}
-
-func (a *vaultAdmin) EnableAuth(ctx context.Context, ns, path, authType string) error {
-	return wrap("enable auth", a.ns(ns).Sys().EnableAuthWithOptionsWithContext(ctx, path, &vapi.EnableAuthOptions{Type: authType}))
-}
-
-func (a *vaultAdmin) DisableAuth(ctx context.Context, ns, path string) error {
-	return wrap("disable auth", a.ns(ns).Sys().DisableAuthWithContext(ctx, path))
 }
 
 func (a *vaultAdmin) ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error {
@@ -174,29 +137,6 @@ func (a *vaultAdmin) DeleteWIFRole(ctx context.Context, ns, authPath, roleName s
 func (a *vaultAdmin) RevokeLeasesByPrefix(ctx context.Context, ns, prefix string) error {
 	_, err := a.ns(ns).Logical().WriteWithContext(ctx, "sys/leases/revoke-force/"+prefix, nil)
 	return wrap("revoke leases by prefix", err)
-}
-
-func (a *vaultAdmin) MintTokenWithPolicies(ctx context.Context, ns string, policies []string, ttl string) (string, error) {
-	sec, err := a.ns(ns).Auth().Token().CreateWithContext(ctx, &vapi.TokenCreateRequest{
-		Policies: policies, TTL: ttl, NoParent: true, NumUses: 0,
-	})
-	if err != nil {
-		return "", wrap("mint token", err)
-	}
-	return sec.Auth.ClientToken, nil
-}
-
-func (a *vaultAdmin) Read(ctx context.Context, ns, token, path string) (bool, error) {
-	c := a.ns(ns)
-	c.SetToken(token)
-	sec, err := c.Logical().ReadWithContext(ctx, path)
-	if err != nil {
-		if re, ok := err.(*vapi.ResponseError); ok && (re.StatusCode == 403 || re.StatusCode == 404) {
-			return false, nil // clean denial / no data — not a transport error
-		}
-		return false, wrap("probe read", err)
-	}
-	return sec != nil, nil
 }
 
 func wrap(op string, err error) error {

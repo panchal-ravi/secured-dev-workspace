@@ -27,7 +27,8 @@ resource "nomad_namespace" "infra_mcp" {
 # Extra Vault access the portal's admin plane needs, attached to the portal's WIF
 # role in developer-portal.tf: read the MCP gateway admin-JWT signing key + admin
 # email and the LiteLLM portal-admin key; read/write provider keys; write published
-# MCP-server descriptors. The LiteLLM master key is deliberately NOT readable here.
+# MCP-server descriptors; read/write blueprint manifests (the credential recipes the
+# Validator reads back). The LiteLLM master key is deliberately NOT readable here.
 resource "vault_policy" "infra_platform_admin" {
   count = local.platform_admin_count
   name  = "infra-platform-admin"
@@ -43,6 +44,9 @@ resource "vault_policy" "infra_platform_admin" {
       capabilities = ["create", "update", "read"]
     }
     path "${vault_mount.kv.path}/data/infra/mcp-servers/*" {
+      capabilities = ["create", "update", "read"]
+    }
+    path "${vault_mount.kv.path}/data/infra/blueprints/*" {
       capabilities = ["create", "update", "read"]
     }
   HCL

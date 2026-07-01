@@ -36,6 +36,22 @@ type BlueprintManifest struct {
 	Params      []ParamSpec  `json:"params,omitempty"`
 
 	JobCredential JobCredentialSpec `json:"job_credential,omitempty"`
+
+	// AllowExtraGrants opts this server type in to deploy-time, project-admin-supplied
+	// path grants (PathGrant). Default off: a published type accepts no grants until a
+	// platform-admin re-authors the blueprint with it on. Any class may allow it.
+	AllowExtraGrants bool `json:"allow_extra_grants,omitempty"`
+}
+
+// PathGrant is a project-admin-supplied additional policy grant applied at deploy
+// time on top of the blueprint's own least-privilege policy. It is confined to the
+// project's Vault namespace (the WIF token's boundary) and linted against the
+// control-plane deny-list, but — unlike the blueprint's own paths — is NOT held to
+// the blueprint mount allowlist, since the project's own mounts are unknown to the
+// platform.
+type PathGrant struct {
+	Path         string   `json:"path"`
+	Capabilities []string `json:"capabilities"`
 }
 
 // EngineSpec is a secret engine to mount. MountPathTpl may reference {{.Namespace}};
@@ -100,6 +116,7 @@ type InstanceRecord struct {
 	PolicyNames   []string     `json:"policy_names,omitempty"`
 	WIFRoleName   string       `json:"wif_role_name,omitempty"`
 	LeasePrefixes []string     `json:"lease_prefixes,omitempty"`
+	ExtraGrants   []PathGrant  `json:"extra_grants,omitempty"`
 }
 
 var validClass = map[string]bool{ClassA: true, ClassB: true, ClassC: true}

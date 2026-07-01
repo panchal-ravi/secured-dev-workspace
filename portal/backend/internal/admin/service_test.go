@@ -414,7 +414,7 @@ func TestCreateBlueprintDraft_StoresAndWritesManifestKV(t *testing.T) {
 	svc, fv := newBlueprintSvc(t, true)
 	m := blueprint.BlueprintManifest{
 		ID: "vault-mcp", Version: 1, Class: "C",
-		PolicyTpl: `path "secret/data/projects/{{.Namespace}}/*" { capabilities = ["read"] }`,
+		PolicyTpl: `path "secret/data/projects/*" { capabilities = ["read"] }`,
 		WIFRole:   blueprint.WIFRoleSpec{NameTpl: "mcp-vault-mcp", TokenTTL: "1h"},
 	}
 	bp, err := svc.CreateBlueprintDraft(context.Background(), "admin@x", m)
@@ -433,7 +433,7 @@ func TestPublishBlueprint_RequiresValidatedFirst(t *testing.T) {
 	svc, _ := newBlueprintSvc(t, true)
 	m := blueprint.BlueprintManifest{
 		ID: "vault-mcp", Version: 1, Class: "C",
-		PolicyTpl: `path "secret/data/projects/{{.Namespace}}/*" { capabilities = ["read"] }`,
+		PolicyTpl: `path "secret/data/projects/*" { capabilities = ["read"] }`,
 		WIFRole:   blueprint.WIFRoleSpec{NameTpl: "mcp-vault-mcp", TokenTTL: "1h"},
 	}
 	if _, err := svc.CreateBlueprintDraft(context.Background(), "admin@x", m); err != nil {

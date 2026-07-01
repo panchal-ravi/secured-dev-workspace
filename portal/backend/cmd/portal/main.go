@@ -212,7 +212,7 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 		BoundAudience: "vault",
 		KVMount:       cfg.VaultKVMount,
 	})
-	validator := blueprint.NewValidator(vadmin, executor)
+	validator := blueprint.NewValidator(executor)
 
 	adminSvc := admin.New(st, nomad, gateway, llm, vault, validator, admin.Config{
 		MCPNamespace:    cfg.MCPNamespace,

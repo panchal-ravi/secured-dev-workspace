@@ -27,7 +27,7 @@ type ProjectLookup interface {
 }
 
 type Executor interface {
-	Instantiate(ctx context.Context, m blueprint.BlueprintManifest, namespace string, params map[string]string) (blueprint.InstanceRecord, error)
+	Instantiate(ctx context.Context, m blueprint.BlueprintManifest, namespace string, params map[string]string, grants []blueprint.PathGrant) (blueprint.InstanceRecord, error)
 	Deprovision(ctx context.Context, rec blueprint.InstanceRecord) error
 }
 
@@ -69,10 +69,11 @@ func New(st store.Store, projects ProjectLookup, ex Executor, nomad NomadClient,
 }
 
 type DeployableType struct {
-	Name      string                `json:"name"`
-	Image     string                `json:"image"`
-	Transport string                `json:"transport"`
-	Params    []blueprint.ParamSpec `json:"params"`
+	Name             string                `json:"name"`
+	Image            string                `json:"image"`
+	Transport        string                `json:"transport"`
+	Params           []blueprint.ParamSpec `json:"params"`
+	AllowExtraGrants bool                  `json:"allow_extra_grants"`
 }
 
 type DeployedView struct {
@@ -103,7 +104,7 @@ func (s *Service) ListDeployable(ctx context.Context, groups []string, project s
 		if err != nil {
 			return Catalog{}, err
 		}
-		out.Deployable = append(out.Deployable, DeployableType{Name: t.Name, Image: t.Image, Transport: t.Transport, Params: m.Params})
+		out.Deployable = append(out.Deployable, DeployableType{Name: t.Name, Image: t.Image, Transport: t.Transport, Params: m.Params, AllowExtraGrants: m.AllowExtraGrants})
 	}
 	rows, err := s.store.ListProjectMCPServers(ctx, project)
 	if err != nil {
@@ -143,8 +144,9 @@ func (s *Service) loadManifest(ctx context.Context, ref store.BlueprintRef) (blu
 
 // DeployInput is a request to deploy a published server type into a project.
 type DeployInput struct {
-	ServerType string            `json:"server_type"`
-	Params     map[string]string `json:"params,omitempty"`
+	ServerType  string                `json:"server_type"`
+	Params      map[string]string     `json:"params,omitempty"`
+	ExtraGrants []blueprint.PathGrant `json:"extra_grants,omitempty"`
 }
 
 // DeployServer instantiates the server type's credential blueprint into the
@@ -181,7 +183,7 @@ func (s *Service) DeployServer(ctx context.Context, actor string, groups []strin
 		return store.ProjectMCPServer{}, fmt.Errorf("server %q already deployed in %q: %w", t.Name, project, apperr.ErrConflict)
 	}
 
-	rec, err := s.executor.Instantiate(ctx, m, ns, in.Params)
+	rec, err := s.executor.Instantiate(ctx, m, ns, in.Params, in.ExtraGrants)
 	if err != nil {
 		s.audit(ctx, actor, "project-mcp.deploy", project+"/"+t.Name, "error", map[string]any{"stage": "instantiate"})
 		return store.ProjectMCPServer{}, err

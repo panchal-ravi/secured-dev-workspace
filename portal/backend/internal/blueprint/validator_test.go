@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestValidate_PassesWhenAllowedReads200AndDeniedIs403(t *testing.T) {
-	rv := &recVault{}                       // Read returns ok=true (allowed read 200)
-	val := NewValidator(rv, NewExecutor(rv, ExecutorConfig{}))
+func TestValidate_PassesShapeAndLint(t *testing.T) {
+	rv := &recVault{}
+	val := NewValidator(NewExecutor(rv, ExecutorConfig{KVMount: "secret"}))
 	res, err := val.Validate(context.Background(), validClassC())
 	if err != nil {
 		t.Fatal(err)
@@ -15,18 +15,15 @@ func TestValidate_PassesWhenAllowedReads200AndDeniedIs403(t *testing.T) {
 	if !res.Passed {
 		t.Fatalf("expected pass, got %+v", res)
 	}
-	// the throwaway namespace must be created and then deleted
-	if idx(rv.ops, "ns+") == (1<<30) || idx(rv.ops, "ns-") == (1<<30) {
-		t.Fatalf("validator must create and delete a throwaway namespace: %v", rv.ops)
-	}
-	if idx(rv.ops, "ns-") < idx(rv.ops, "ns+") {
-		t.Fatal("delete must come after create")
+	// Validation is static: it must not touch Vault at all.
+	if len(rv.ops) != 0 {
+		t.Fatalf("validation must make no Vault calls, got: %v", rv.ops)
 	}
 }
 
-func TestValidate_FailsLintBeforeTouchingVault(t *testing.T) {
+func TestValidate_FailsLint(t *testing.T) {
 	rv := &recVault{}
-	val := NewValidator(rv, NewExecutor(rv, ExecutorConfig{}))
+	val := NewValidator(NewExecutor(rv, ExecutorConfig{KVMount: "secret"}))
 	bad := validClassC()
 	bad.PolicyTpl = `path "sys/mounts" { capabilities = ["read"] }`
 	res, err := val.Validate(context.Background(), bad)
@@ -36,7 +33,7 @@ func TestValidate_FailsLintBeforeTouchingVault(t *testing.T) {
 	if res.Passed {
 		t.Fatal("a sys/-targeting policy must fail validation")
 	}
-	if contains(rv.ops, "ns+") {
-		t.Fatal("lint must fail before creating a throwaway namespace")
+	if len(rv.ops) != 0 {
+		t.Fatalf("lint failure must make no Vault calls, got: %v", rv.ops)
 	}
 }

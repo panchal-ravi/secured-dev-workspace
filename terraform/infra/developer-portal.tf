@@ -8,8 +8,10 @@
 # Credentials: the portal authenticates to Vault over WIF (no static token) and
 # reads its config secrets — its OIDC client secret, a generated session key, and
 # the privileged Boundary admin / Nomad mgmt creds it needs to provision — from
-# Vault KV. The Verify OIDC app is still registered manually (var.portal_oidc_*);
-# moving it into the identity module is the remaining roadmap item.
+# Vault KV. The Verify OIDC app is created by the identity module (see
+# modules/identity/verify.tf, gated on enable_developer_portal); its client
+# id/secret flow in via module.identity outputs — no hand-registration, no
+# portal_oidc_client_* vars.
 # ---------------------------------------------------------------------------
 # Variables for this feature are declared in variables.tf (Developer Portal group).
 
@@ -61,7 +63,7 @@ resource "vault_kv_secret_v2" "developer_portal" {
   # portal can assemble PORTAL_DB_DSN in its jobspec over its existing WIF read of
   # this path — no second WIF role for the portal.
   data_json = jsonencode(merge({
-    oidc_client_secret = var.portal_oidc_client_secret
+    oidc_client_secret = module.identity.portal_app_client_secret
     session_secret     = random_password.portal_session_secret[0].result
     boundary_login     = module.secured_codespace.admin_login_name
     boundary_password  = module.secured_codespace.admin_password
@@ -142,7 +144,7 @@ resource "nomad_job" "developer_portal" {
     kv_path                 = "${vault_mount.kv.path}/data/infra/developer-portal"
     kv_mount                = vault_mount.kv.path
     oidc_issuer             = var.portal_oidc_issuer
-    oidc_client_id          = var.portal_oidc_client_id
+    oidc_client_id          = module.identity.portal_app_client_id
     oidc_redirect_url       = local.portal_redirect_url
     boundary_addr           = "https://127.0.0.1:9200"               # server-side API client over loopback (on-node)
     boundary_public_addr    = module.secured_codespace.boundary_addr # NLB addr for the developer-facing authenticate/connect commands
@@ -163,5 +165,8 @@ resource "nomad_job" "developer_portal" {
     db_host = "${module.secured_codespace.instance_private_ip}:${local.portal_pg_port}"
   })
 
-  depends_on = [vault_kv_secret_v2.developer_portal, nomad_job.portal_postgres]
+  depends_on = [
+    vault_kv_secret_v2.developer_portal,
+    nomad_job.portal_postgres,
+  ]
 }

@@ -11,18 +11,13 @@ import (
 
 // recVault is a VaultAdmin fake that records an ordered op log.
 type recVault struct {
-	ops      []string
-	failRead bool
+	ops        []string
+	lastPolicy string
 }
 
 func (r *recVault) log(s string)                                            { r.ops = append(r.ops, s) }
-func (r *recVault) CreateNamespace(_ context.Context, p string) error       { r.log("ns+ " + p); return nil }
-func (r *recVault) DeleteNamespace(_ context.Context, p string) error       { r.log("ns- " + p); return nil }
 func (r *recVault) MountEngine(_ context.Context, ns, p, t, v string) error { r.log("mount " + p); return nil }
-func (r *recVault) MountKVv2(_ context.Context, ns, path string) error      { r.log("mountkv " + path); return nil }
 func (r *recVault) UnmountEngine(_ context.Context, ns, p string) error     { r.log("unmount " + p); return nil }
-func (r *recVault) EnableAuth(_ context.Context, ns, path, t string) error  { r.log("auth+ " + path); return nil }
-func (r *recVault) DisableAuth(_ context.Context, ns, path string) error    { r.log("auth- " + path); return nil }
 func (r *recVault) ConfigureDBConnection(_ context.Context, ns, m, n string, c DBConnectionConfig) error {
 	r.log("dbconfig " + m + "/" + n)
 	return nil
@@ -36,7 +31,11 @@ func (r *recVault) WriteKVv2(_ context.Context, ns, m, p string, d map[string]an
 	r.log("kv " + m + "/" + p)
 	return nil
 }
-func (r *recVault) WritePolicy(_ context.Context, ns, n, h string) error { r.log("policy+ " + n); return nil }
+func (r *recVault) WritePolicy(_ context.Context, ns, n, h string) error {
+	r.log("policy+ " + n)
+	r.lastPolicy = h
+	return nil
+}
 func (r *recVault) DeletePolicy(_ context.Context, ns, n string) error   { r.log("policy- " + n); return nil }
 func (r *recVault) WriteWIFRole(_ context.Context, ns, a, n string, role WIFRole) error {
 	r.log("wif+ " + n)
@@ -46,16 +45,6 @@ func (r *recVault) DeleteWIFRole(_ context.Context, ns, a, n string) error { r.l
 func (r *recVault) RevokeLeasesByPrefix(_ context.Context, ns, p string) error {
 	r.log("revoke " + p)
 	return nil
-}
-func (r *recVault) MintTokenWithPolicies(_ context.Context, ns string, p []string, ttl string) (string, error) {
-	r.log("mint")
-	return "tok", nil
-}
-func (r *recVault) Read(_ context.Context, ns, tok, path string) (bool, error) {
-	if strings.HasPrefix(path, "sys/") {
-		return false, nil // a scoped token is always denied sys/ (clean 403)
-	}
-	return !r.failRead, nil
 }
 
 func classAManifest() BlueprintManifest {
@@ -79,7 +68,7 @@ func TestInstantiate_ClassA_OrderedAndRotatesRootBeforeRole(t *testing.T) {
 	rv := &recVault{}
 	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
 	rec, err := ex.Instantiate(context.Background(), classAManifest(), "acme",
-		map[string]string{"connection_url": "postgresql://...", "bootstrap_password": "boot"})
+		map[string]string{"connection_url": "postgresql://...", "bootstrap_password": "boot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +94,7 @@ func TestDeprovision_RevokesLeasesBeforeUnmount(t *testing.T) {
 	rv := &recVault{}
 	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
 	rec, _ := ex.Instantiate(context.Background(), classAManifest(), "acme",
-		map[string]string{"connection_url": "x", "bootstrap_password": "boot"})
+		map[string]string{"connection_url": "x", "bootstrap_password": "boot"}, nil)
 	rv.ops = nil
 	if err := ex.Deprovision(context.Background(), rec); err != nil {
 		t.Fatal(err)
@@ -118,7 +107,7 @@ func TestDeprovision_RevokesLeasesBeforeUnmount(t *testing.T) {
 func TestInstantiate_ClassC_NoEngineNoSecret(t *testing.T) {
 	rv := &recVault{}
 	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
-	_, err := ex.Instantiate(context.Background(), validClassC(), "acme", nil)
+	_, err := ex.Instantiate(context.Background(), validClassC(), "acme", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,12 +123,67 @@ func TestInstantiate_RejectsEmptyRequiredParam(t *testing.T) {
 	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
 	// A required secret present-but-empty must be rejected before any Vault write.
 	_, err := ex.Instantiate(context.Background(), classAManifest(), "acme",
-		map[string]string{"connection_url": "postgresql://...", "bootstrap_password": ""})
+		map[string]string{"connection_url": "postgresql://...", "bootstrap_password": ""}, nil)
 	if !errors.Is(err, apperr.ErrBadRequest) {
 		t.Fatalf("empty required param: want ErrBadRequest, got %v", err)
 	}
 	if len(rv.ops) != 0 {
 		t.Fatalf("no Vault ops should run when a required param is empty: %v", rv.ops)
+	}
+}
+
+func TestInstantiate_ExtraGrants_RequireOptIn(t *testing.T) {
+	rv := &recVault{}
+	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
+	// validClassC() does NOT set AllowExtraGrants, so any grant must be refused...
+	grants := []PathGrant{{Path: "pki/acme/issue/web", Capabilities: []string{"create", "update"}}}
+	_, err := ex.Instantiate(context.Background(), validClassC(), "acme", nil, grants)
+	if !errors.Is(err, apperr.ErrForbidden) {
+		t.Fatalf("grants without opt-in: want ErrForbidden, got %v", err)
+	}
+	// ...and refused before any Vault side effect.
+	if len(rv.ops) != 0 {
+		t.Fatalf("no Vault ops should run when grants are refused: %v", rv.ops)
+	}
+}
+
+func TestInstantiate_ExtraGrants_AppendedWhenAllowed(t *testing.T) {
+	rv := &recVault{}
+	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
+	m := validClassC()
+	m.AllowExtraGrants = true
+	grants := []PathGrant{{Path: "pki/acme/issue/web", Capabilities: []string{"create", "update"}}}
+	rec, err := ex.Instantiate(context.Background(), m, "acme", nil, grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The written policy keeps the base path AND carries the appended grant block.
+	if !strings.Contains(rv.lastPolicy, "data/projects/") {
+		t.Fatalf("base policy path missing: %s", rv.lastPolicy)
+	}
+	if !strings.Contains(rv.lastPolicy, `path "pki/acme/issue/web"`) ||
+		!strings.Contains(rv.lastPolicy, `"create"`) {
+		t.Fatalf("grant block missing from policy: %s", rv.lastPolicy)
+	}
+	if len(rec.ExtraGrants) != 1 {
+		t.Fatalf("instance record must capture grants, got %v", rec.ExtraGrants)
+	}
+}
+
+func TestInstantiate_ExtraGrants_ForbiddenPathFailsBeforeSideEffects(t *testing.T) {
+	rv := &recVault{}
+	ex := NewExecutor(rv, ExecutorConfig{AuthPath: "jwt-nomad", BoundAudience: "vault"})
+	// Class A mounts an engine mid-flow; a forbidden grant must fail before that.
+	m := classAManifest()
+	m.AllowExtraGrants = true
+	grants := []PathGrant{{Path: "sys/mounts", Capabilities: []string{"read"}}}
+	_, err := ex.Instantiate(context.Background(), m, "acme",
+		map[string]string{"connection_url": "x", "bootstrap_password": "boot"}, grants)
+	if !errors.Is(err, apperr.ErrForbidden) {
+		t.Fatalf("forbidden grant: want ErrForbidden, got %v", err)
+	}
+	if contains(rv.ops, "mount") {
+		t.Fatalf("a forbidden grant must fail before MountEngine: %v", rv.ops)
 	}
 }
 

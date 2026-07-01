@@ -37,7 +37,7 @@ func TestSeedManifests_PoliciesLintClean(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s render: %v", m.ID, err)
 		}
-		if err := LintPolicy(p, allowedPrefixes("probe", "secret", mount)); err != nil {
+		if err := LintPolicy(p, allowedPrefixes("secret", mount)); err != nil {
 			t.Errorf("%s policy fails lint: %v", m.ID, err)
 		}
 	}

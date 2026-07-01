@@ -24,9 +24,11 @@ type fakeExecutor struct {
 	rec          blueprint.InstanceRecord
 	instErr      error
 	deprovisoned []blueprint.InstanceRecord
+	gotGrants    []blueprint.PathGrant
 }
 
-func (f *fakeExecutor) Instantiate(_ context.Context, m blueprint.BlueprintManifest, ns string, _ map[string]string) (blueprint.InstanceRecord, error) {
+func (f *fakeExecutor) Instantiate(_ context.Context, m blueprint.BlueprintManifest, ns string, _ map[string]string, grants []blueprint.PathGrant) (blueprint.InstanceRecord, error) {
+	f.gotGrants = grants
 	if f.instErr != nil {
 		return blueprint.InstanceRecord{}, f.instErr
 	}
@@ -345,5 +347,21 @@ func TestTestServer(t *testing.T) {
 	}
 	if _, err := svc.TestServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "nope"); !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("unknown: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestDeployServer_ThreadsExtraGrants(t *testing.T) {
+	manifestJSON, hash := classAManifestJSON(t)
+	ex := &fakeExecutor{rec: blueprintInstance()}
+	svc, st := newService(t, ex, &fakeNomad{}, &fakeGateway{}, manifestJSON)
+	seedDeployable(t, st, hash)
+
+	grants := []blueprint.PathGrant{{Path: "pki/project-acme/issue/web", Capabilities: []string{"create", "update"}}}
+	if _, err := svc.DeployServer(context.Background(), "acme-admin@x", []string{"project-acme-developers"}, "project-acme",
+		DeployInput{ServerType: "postgres-mcp", Params: deployParams(), ExtraGrants: grants}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if len(ex.gotGrants) != 1 || ex.gotGrants[0].Path != "pki/project-acme/issue/web" {
+		t.Fatalf("ExtraGrants not threaded to executor: %+v", ex.gotGrants)
 	}
 }

@@ -50,12 +50,25 @@ func render(tpl, namespace string) string {
 // Instantiate runs the class-specific recipe into namespace. It is idempotent: a
 // re-instantiate re-applies mounts/config/policy (Vault writes are upserts; a mount
 // that already exists is tolerated). It returns the exact teardown record.
-func (e *Executor) Instantiate(ctx context.Context, m BlueprintManifest, namespace string, params map[string]string) (InstanceRecord, error) {
+func (e *Executor) Instantiate(ctx context.Context, m BlueprintManifest, namespace string, params map[string]string, grants []PathGrant) (InstanceRecord, error) {
 	if err := m.Validate(); err != nil {
 		return InstanceRecord{}, err
 	}
 	if err := requireParams(m, params); err != nil {
 		return InstanceRecord{}, err
+	}
+	// Validate + render any project-admin path grants up front, before the class recipe
+	// touches Vault — so a malformed/forbidden grant fails the deploy with no side effects
+	// (Class A mounts an engine mid-flow). Grants require the blueprint's opt-in.
+	var grantsHCL string
+	if len(grants) > 0 {
+		if !m.AllowExtraGrants {
+			return InstanceRecord{}, fmt.Errorf("blueprint %q does not allow project path grants: %w", m.ID, apperr.ErrForbidden)
+		}
+		var err error
+		if grantsHCL, err = RenderGrants(grants); err != nil {
+			return InstanceRecord{}, err
+		}
 	}
 	policyName := render(m.WIFRole.NameTpl, namespace)
 	wifRoleName := render(m.WIFRole.NameTpl, namespace)
@@ -96,7 +109,7 @@ func (e *Executor) Instantiate(ctx context.Context, m BlueprintManifest, namespa
 
 	case ClassB:
 		// Seed the write-only upstream secret into the project KV; never logged.
-		relPath := "projects/" + namespace + "/" + m.ID
+		relPath := "projects/" + m.ID
 		if err := e.v.WriteKVv2(ctx, namespace, e.cfg.KVMount, relPath, map[string]any{
 			"api_key": secretParam(m, params),
 		}); err != nil {
@@ -116,8 +129,16 @@ func (e *Executor) Instantiate(ctx context.Context, m BlueprintManifest, namespa
 	if err != nil {
 		return InstanceRecord{}, err
 	}
-	if err := LintPolicy(policyHCL, allowedPrefixes(namespace, e.cfg.KVMount, mount)); err != nil {
+	if err := LintPolicy(policyHCL, allowedPrefixes(e.cfg.KVMount, mount)); err != nil {
 		return InstanceRecord{}, err
+	}
+	// Append the (already-validated) project-admin grants. They are confined to the
+	// project's Vault namespace and were linted against the deny-list in RenderGrants —
+	// deliberately outside the base allowlist above, which stays tight for the
+	// blueprint's own paths.
+	if grantsHCL != "" {
+		policyHCL += "\n" + grantsHCL
+		rec.ExtraGrants = grants
 	}
 	if err := e.v.WritePolicy(ctx, namespace, policyName, policyHCL); err != nil {
 		return InstanceRecord{}, err
@@ -190,17 +211,18 @@ func secretParam(m BlueprintManifest, params map[string]string) string {
 }
 
 // allowedPrefixes is the lint allowlist: a dedicated engine mount (Class A's
-// database engine) may be referenced at its own subtree, plus the instance's
-// per-namespace slice of the project KV. The shared KV mount is NEVER added as a
-// bare prefix, so a Class B/C policy is confined to projects/<ns>/ within its
-// namespace rather than the whole KV mount (least privilege).
-func allowedPrefixes(namespace, kvMount, mount string) []string {
+// database engine) may be referenced at its own subtree, plus the project KV
+// `projects/` subtree. The shared KV mount is NEVER added as a bare prefix, so a
+// Class B/C policy is confined to projects/ rather than the whole KV mount (least
+// privilege). The Vault namespace already isolates the project, so the KV path
+// carries no per-project segment.
+func allowedPrefixes(kvMount, mount string) []string {
 	var out []string
 	if mount != kvMount {
 		out = append(out, mount+"/")
 	}
-	kvLogical := kvMount + "/projects/" + namespace + "/"
-	kvData := kvMount + "/data/projects/" + namespace + "/"
+	kvLogical := kvMount + "/projects/"
+	kvData := kvMount + "/data/projects/"
 	return append(out, kvLogical, kvData)
 }
 
