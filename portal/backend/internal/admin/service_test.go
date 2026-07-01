@@ -410,7 +410,7 @@ func newBlueprintSvc(t *testing.T, pass bool) (*Service, *fakeVault) {
 	return svc, fv
 }
 
-func TestCreateBlueprintDraft_StoresAndWritesManifestKV(t *testing.T) {
+func TestCreateBlueprintDraft_StoresManifestOnRow(t *testing.T) {
 	svc, fv := newBlueprintSvc(t, true)
 	m := blueprint.BlueprintManifest{
 		ID: "vault-mcp", Version: 1, Class: "C",
@@ -424,8 +424,11 @@ func TestCreateBlueprintDraft_StoresAndWritesManifestKV(t *testing.T) {
 	if bp.Status != store.StatusDraft || bp.ContentHash != m.ContentHash() {
 		t.Fatalf("draft not stored correctly: %+v", bp)
 	}
-	if _, ok := fv.written["infra/blueprints/vault-mcp/1"]; !ok {
-		t.Fatal("manifest JSON must be written to Vault KV")
+	if len(bp.Manifest) == 0 {
+		t.Fatal("manifest JSON must be persisted on the blueprint row")
+	}
+	if len(fv.written) != 0 {
+		t.Fatalf("no Vault KV write expected for the blueprint manifest, got %v", fv.written)
 	}
 }
 

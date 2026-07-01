@@ -53,7 +53,6 @@ type Config struct {
 	MCPJobVaultRole    string // WIF role stamped on MCP jobs that reference secrets
 	MCPServersKVPath   string // KV path prefix for published descriptors (e.g. "infra/mcp-servers")
 	LLMProvidersKVPath string // KV path prefix for provider keys (e.g. "infra/llm-providers")
-	BlueprintsKVPath   string // KV path prefix for canonical manifests (e.g. "infra/blueprints")
 }
 
 func (c Config) withDefaults() Config {
@@ -65,9 +64,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.LLMProvidersKVPath == "" {
 		c.LLMProvidersKVPath = "infra/llm-providers"
-	}
-	if c.BlueprintsKVPath == "" {
-		c.BlueprintsKVPath = "infra/blueprints"
 	}
 	return c
 }
@@ -602,8 +598,8 @@ func (s *Service) DeleteLLMModel(ctx context.Context, actor, name string) error 
 
 // ---- credential blueprint authoring ----
 
-// CreateBlueprintDraft validates a manifest's shape, stores its control-plane row
-// (status draft), and writes the canonical manifest JSON to Vault KV (immutable per
+// CreateBlueprintDraft validates a manifest's shape and stores its control-plane row
+// (status draft) with the canonical manifest JSON folded onto the row (immutable per
 // id/version). Secret material is never in the manifest — params are declarations.
 func (s *Service) CreateBlueprintDraft(ctx context.Context, actor string, m blueprint.BlueprintManifest) (store.Blueprint, error) {
 	if err := m.Validate(); err != nil {
@@ -613,14 +609,9 @@ func (s *Service) CreateBlueprintDraft(ctx context.Context, actor string, m blue
 	if err != nil {
 		return store.Blueprint{}, fmt.Errorf("admin: marshal manifest: %w", err)
 	}
-	kvPath := fmt.Sprintf("%s/%s/%d", s.cfg.BlueprintsKVPath, m.ID, m.Version)
-	if err := s.vault.WriteKV(ctx, kvPath, map[string]any{"manifest": string(manifestJSON)}); err != nil {
-		s.audit(ctx, actor, "blueprint.create", m.ID, "error")
-		return store.Blueprint{}, err
-	}
 	bp := store.Blueprint{
 		ID: m.ID, Version: m.Version, Class: m.Class, ContentHash: m.ContentHash(),
-		Status: store.StatusDraft, CreatedBy: actor,
+		Status: store.StatusDraft, CreatedBy: actor, Manifest: manifestJSON,
 	}
 	saved, err := s.store.UpsertBlueprint(ctx, bp)
 	if err != nil {
@@ -637,7 +628,7 @@ func (s *Service) ValidateBlueprint(ctx context.Context, actor, id string, versi
 	if err != nil {
 		return store.Blueprint{}, err
 	}
-	m, err := s.readManifest(ctx, id, version)
+	m, err := manifestFromRow(bp)
 	if err != nil {
 		return store.Blueprint{}, err
 	}
@@ -686,15 +677,10 @@ func (s *Service) ListBlueprints(ctx context.Context) ([]store.Blueprint, error)
 	return s.store.ListBlueprints(ctx)
 }
 
-// readManifest reads the canonical manifest JSON back from Vault KV.
-func (s *Service) readManifest(ctx context.Context, id string, version int) (blueprint.BlueprintManifest, error) {
-	kvPath := fmt.Sprintf("%s/%s/%d", s.cfg.BlueprintsKVPath, id, version)
-	raw, err := s.vault.ReadKVField(ctx, kvPath, "manifest")
-	if err != nil {
-		return blueprint.BlueprintManifest{}, err
-	}
+// manifestFromRow parses the canonical manifest JSON folded onto the blueprint row.
+func manifestFromRow(bp store.Blueprint) (blueprint.BlueprintManifest, error) {
 	var m blueprint.BlueprintManifest
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	if err := json.Unmarshal(bp.Manifest, &m); err != nil {
 		return blueprint.BlueprintManifest{}, fmt.Errorf("admin: parse stored manifest: %w", err)
 	}
 	return m, nil
