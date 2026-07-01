@@ -130,44 +130,6 @@ func TestCreatorBrokersAndSeeds(t *testing.T) {
 	}
 }
 
-// TestCreatorWriteKV proves the descriptor write goes to the shared ROOT-namespace
-// KV under the brokered creator token — not the standing portal token, and not a
-// child namespace. This is the write that 403'd when it fell back to the read-only
-// portal WIF token.
-func TestCreatorWriteKV(t *testing.T) {
-	got := map[string]capture{}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/auth/jwt-nomad/login", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"auth": map[string]any{"client_token": "creator-tok", "lease_duration": 300},
-		})
-	})
-	// KVv2.Put issues a preflight to resolve the mount's kv version.
-	mux.HandleFunc("/v1/sys/internal/ui/mounts/secret", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": map[string]any{"path": "secret/", "type": "kv", "options": map[string]any{"version": "2"}},
-		})
-	})
-	mux.HandleFunc("/v1/secret/data/projects/project-beta/portal-descriptor", func(w http.ResponseWriter, r *http.Request) {
-		got["descriptor"] = capture{ns: r.Header.Get("X-Vault-Namespace"), token: r.Header.Get("X-Vault-Token")}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"version": 1}})
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	vc := NewVaultCreator(newClient(t, srv.URL), CreatorConfig{JWTPath: writeJWT(t, "the-jwt"), Role: "project-creator", AuthMount: "jwt-nomad"}, JWKSConfig{})
-	if err := vc.WriteKV(context.Background(), "projects/project-beta/portal-descriptor", map[string]any{"descriptor": "{}"}); err != nil {
-		t.Fatalf("WriteKV: %v", err)
-	}
-	if c := got["descriptor"]; c.ns != "" || c.token != "creator-tok" {
-		t.Fatalf("descriptor write ns=%q token=%q, want ns=\"\" token=creator-tok", c.ns, c.token)
-	}
-	if got := vc.c.Token(); got != "ROOT-TOKEN-MUST-NOT-BE-USED" {
-		t.Fatalf("shared client token mutated to %q", got)
-	}
-}
-
 // TestCreatorUnconfiguredIsBadRequest proves an unconfigured creator fails closed
 // with ErrBadRequest and makes zero network calls.
 func TestCreatorUnconfiguredIsBadRequest(t *testing.T) {

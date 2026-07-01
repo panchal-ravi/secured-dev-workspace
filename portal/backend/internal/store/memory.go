@@ -17,9 +17,10 @@ type Memory struct {
 	mu           sync.Mutex
 	servers      map[string]MCPServer
 	models       map[string]LLMModel
-	blueprints   map[string]Blueprint        // key: id + "@" + version
-	projectRoles map[string]ProjectRole      // key: project\x00subject\x00role
-	projectMCP   map[string]ProjectMCPServer // key: project\x00name
+	blueprints   map[string]Blueprint         // key: id + "@" + version
+	projectRoles map[string]ProjectRole       // key: project\x00subject\x00role
+	projectMCP   map[string]ProjectMCPServer  // key: project\x00name
+	projectDesc  map[string]ProjectDescriptor // key: project
 	audit        []AuditEvent
 	nextID       int64
 	now          func() time.Time
@@ -33,6 +34,7 @@ func NewMemory() *Memory {
 		blueprints:   map[string]Blueprint{},
 		projectRoles: map[string]ProjectRole{},
 		projectMCP:   map[string]ProjectMCPServer{},
+		projectDesc:  map[string]ProjectDescriptor{},
 		now:          time.Now,
 	}
 }
@@ -305,6 +307,54 @@ func (m *Memory) DeleteProjectMCPServer(_ context.Context, project, name string)
 		return fmt.Errorf("store: project mcp server %s/%s: %w", project, name, apperr.ErrNotFound)
 	}
 	delete(m.projectMCP, k)
+	return nil
+}
+
+func (m *Memory) UpsertProjectDescriptor(_ context.Context, d ProjectDescriptor) (ProjectDescriptor, error) {
+	if d.Project == "" {
+		return ProjectDescriptor{}, fmt.Errorf("store: project descriptor project required: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	if existing, ok := m.projectDesc[d.Project]; ok {
+		d.CreatedAt, d.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		d.CreatedAt = now
+	}
+	d.UpdatedAt = now
+	m.projectDesc[d.Project] = d
+	return d, nil
+}
+
+func (m *Memory) GetProjectDescriptor(_ context.Context, project string) (ProjectDescriptor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.projectDesc[project]
+	if !ok {
+		return ProjectDescriptor{}, fmt.Errorf("store: project descriptor %q: %w", project, apperr.ErrNotFound)
+	}
+	return d, nil
+}
+
+func (m *Memory) ListProjectDescriptors(_ context.Context) ([]ProjectDescriptor, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ProjectDescriptor, 0, len(m.projectDesc))
+	for _, d := range m.projectDesc {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
+	return out, nil
+}
+
+func (m *Memory) DeleteProjectDescriptor(_ context.Context, project string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.projectDesc[project]; !ok {
+		return fmt.Errorf("store: project descriptor %q: %w", project, apperr.ErrNotFound)
+	}
+	delete(m.projectDesc, project)
 	return nil
 }
 

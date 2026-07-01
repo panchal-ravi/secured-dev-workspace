@@ -87,6 +87,14 @@ CREATE TABLE IF NOT EXISTS project_mcp_servers (
     data       JSONB       NOT NULL,
     PRIMARY KEY (project, name)
 );
+CREATE TABLE IF NOT EXISTS project_descriptors (
+    project    TEXT PRIMARY KEY,
+    status     TEXT        NOT NULL,
+    created_by TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL
+);
 `
 
 // NewPostgres opens the portal control-plane database, verifies connectivity, and
@@ -541,6 +549,94 @@ func (p *Postgres) scanProjectMCP(row scanRow, project, name string) (ProjectMCP
 
 func (p *Postgres) scanProjectMCPRow(rows *sql.Rows) (ProjectMCPServer, error) {
 	return p.scanProjectMCP(rows, "", "")
+}
+
+// ---- project descriptors ----
+
+func (p *Postgres) UpsertProjectDescriptor(ctx context.Context, d ProjectDescriptor) (ProjectDescriptor, error) {
+	if d.Project == "" {
+		return ProjectDescriptor{}, fmt.Errorf("store: project descriptor project required: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	d.CreatedAt, d.UpdatedAt = now, now
+	blob, err := json.Marshal(d)
+	if err != nil {
+		return ProjectDescriptor{}, fmt.Errorf("store: marshal project descriptor: %w", err)
+	}
+	const q = `
+INSERT INTO project_descriptors (project, status, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $4, $5)
+ON CONFLICT (project) DO UPDATE SET
+    status     = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at,
+    data       = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, d.Project, d.Status, d.CreatedBy, now, blob)
+	if err := row.Scan(&d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		return ProjectDescriptor{}, fmt.Errorf("store: upsert project descriptor: %w", err)
+	}
+	return d, nil
+}
+
+func (p *Postgres) GetProjectDescriptor(ctx context.Context, project string) (ProjectDescriptor, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_descriptors WHERE project = $1`
+	return scanProjectDescriptor(p.db.QueryRowContext(ctx, q, project), project)
+}
+
+func (p *Postgres) ListProjectDescriptors(ctx context.Context) ([]ProjectDescriptor, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_descriptors ORDER BY project`
+	rows, err := p.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project descriptors: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectDescriptor{}
+	for rows.Next() {
+		d, err := scanProjectDescriptor(rows, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteProjectDescriptor(ctx context.Context, project string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_descriptors WHERE project = $1`, project)
+	if err != nil {
+		return fmt.Errorf("store: delete project descriptor: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project descriptor rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project descriptor %q: %w", project, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func scanProjectDescriptor(row scanRow, project string) (ProjectDescriptor, error) {
+	var (
+		d         ProjectDescriptor
+		blob      []byte
+		status    string
+		createdBy string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := row.Scan(&blob, &status, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectDescriptor{}, fmt.Errorf("store: project descriptor %q: %w", project, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectDescriptor{}, fmt.Errorf("store: get project descriptor: %w", err)
+	}
+	if err := json.Unmarshal(blob, &d); err != nil {
+		return ProjectDescriptor{}, fmt.Errorf("store: unmarshal project descriptor: %w", err)
+	}
+	d.Status, d.CreatedBy, d.CreatedAt, d.UpdatedAt = status, createdBy, createdAt, updatedAt
+	return d, nil
 }
 
 // ---- audit ----

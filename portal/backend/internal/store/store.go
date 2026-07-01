@@ -24,6 +24,15 @@ const (
 	StatusPublished = "published"
 )
 
+// Project descriptor lifecycle statuses: a descriptor is provisioning until its
+// engines are up, then ready; error records a failed provision so a launch is not
+// attempted mid-provision.
+const (
+	StatusProvisioning = "provisioning"
+	StatusReady        = "ready"
+	StatusError        = "error"
+)
+
 // MCPServer is a platform-deployed MCP server: the deploy definition (image + run
 // config a Platform Admin transcribed from the server's Docker/K8s instructions)
 // plus its lifecycle state on the platform.
@@ -143,6 +152,21 @@ type ProjectRole struct {
 	GrantedAt time.Time `json:"granted_at"`
 }
 
+// ProjectDescriptor is a project's portal descriptor row: the contract the portal
+// reads to render project cards, gate access (developers group vs the logged-in
+// developer's IBM Verify groups), and drive workspace creation. Moved off Vault KV
+// (secret/data/projects/<p>/portal-descriptor) so all portal control-plane state
+// lives in Postgres. Descriptor holds the full descriptor.Descriptor JSON, opaque
+// to the store (parsed by consumers); no secret material is stored.
+type ProjectDescriptor struct {
+	Project    string          `json:"project"`
+	Status     string          `json:"status"`
+	Descriptor json.RawMessage `json:"descriptor"`
+	CreatedBy  string          `json:"created_by,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
 // AuditEvent is one admin mutation: who did what to which target, and the outcome.
 type AuditEvent struct {
 	ID      int64          `json:"id"`
@@ -186,6 +210,12 @@ type Store interface {
 	GetProjectMCPServer(ctx context.Context, project, name string) (ProjectMCPServer, error)
 	ListProjectMCPServers(ctx context.Context, project string) ([]ProjectMCPServer, error)
 	DeleteProjectMCPServer(ctx context.Context, project, name string) error
+
+	// Project descriptors (the portal's per-project contract; was Vault KV).
+	UpsertProjectDescriptor(ctx context.Context, d ProjectDescriptor) (ProjectDescriptor, error)
+	GetProjectDescriptor(ctx context.Context, project string) (ProjectDescriptor, error)
+	ListProjectDescriptors(ctx context.Context) ([]ProjectDescriptor, error)
+	DeleteProjectDescriptor(ctx context.Context, project string) error
 
 	// Admin audit log.
 	AppendAudit(ctx context.Context, e AuditEvent) error

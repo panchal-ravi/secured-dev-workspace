@@ -31,10 +31,11 @@ type BoundaryScopeClient interface {
 	CreateProjectScope(ctx context.Context, orgScopeID, name, description string) (string, error)
 }
 
-// DescriptorWriter writes the project descriptor to the root control-plane KV
-// (satisfied by *hashistack.Vault).
-type DescriptorWriter interface {
-	WriteKV(ctx context.Context, relPath string, data map[string]any) error
+// DescriptorStore persists the project descriptor to the Postgres control-plane
+// store (satisfied by store.Store). The descriptor was previously written to Vault
+// KV; portal control-plane state now lives in Postgres.
+type DescriptorStore interface {
+	UpsertProjectDescriptor(ctx context.Context, d store.ProjectDescriptor) (store.ProjectDescriptor, error)
 }
 
 // RoleGranter bootstraps the first project-admin (satisfied by *projectrole.Service).
@@ -65,15 +66,15 @@ type Service struct {
 	vc       *VaultCreator
 	nomad    NomadNSClient
 	boundary BoundaryScopeClient
-	kv       DescriptorWriter
+	desc     DescriptorStore
 	roles    RoleGranter
 	audit    Auditor
 	cfg      Config
 }
 
 // NewService builds the project-create orchestration service.
-func NewService(vc *VaultCreator, nomad NomadNSClient, boundary BoundaryScopeClient, kv DescriptorWriter, roles RoleGranter, audit Auditor, cfg Config) *Service {
-	return &Service{vc: vc, nomad: nomad, boundary: boundary, kv: kv, roles: roles, audit: audit, cfg: cfg}
+func NewService(vc *VaultCreator, nomad NomadNSClient, boundary BoundaryScopeClient, desc DescriptorStore, roles RoleGranter, audit Auditor, cfg Config) *Service {
+	return &Service{vc: vc, nomad: nomad, boundary: boundary, desc: desc, roles: roles, audit: audit, cfg: cfg}
 }
 
 // CreateProjectInput is the platform-admin's request. Flavors/templates are a
@@ -142,8 +143,9 @@ func (s *Service) CreateProject(ctx context.Context, actor string, in CreateProj
 		return s.failf(ctx, actor, p, "boundary.scope", err)
 	}
 
-	// 4. Descriptor (root KV). credential_library_id + flavors are filled by the
-	// Phase-3 engines/templates; the shell records the connection coordinates.
+	// 4. Descriptor (Postgres control-plane store). credential_library_id + flavors
+	// are filled by the Phase-3 engines/templates; the shell records the connection
+	// coordinates.
 	d := descriptor.Descriptor{
 		ProjectName:              p,
 		Namespace:                p,
@@ -159,7 +161,12 @@ func (s *Service) CreateProject(ctx context.Context, actor string, in CreateProj
 	if err != nil {
 		return s.failf(ctx, actor, p, "descriptor.marshal", err)
 	}
-	if err := s.kv.WriteKV(ctx, "projects/"+p+"/portal-descriptor", map[string]any{"descriptor": string(js)}); err != nil {
+	if _, err := s.desc.UpsertProjectDescriptor(ctx, store.ProjectDescriptor{
+		Project:    p,
+		Status:     store.StatusReady,
+		Descriptor: js,
+		CreatedBy:  actor,
+	}); err != nil {
 		return s.failf(ctx, actor, p, "descriptor.write", err)
 	}
 

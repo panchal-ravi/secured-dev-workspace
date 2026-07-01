@@ -37,6 +37,16 @@ func main() {
 	// Structured logging from the very first line so even config errors are JSON;
 	// run() re-installs the logger once the configured level is known.
 	slog.SetDefault(logging.New(os.Getenv("PORTAL_LOG_LEVEL")))
+
+	// One-shot maintenance subcommands (not the server).
+	if len(os.Args) > 1 && os.Args[1] == "backfill-from-vault" {
+		if err := runBackfill(); err != nil {
+			slog.Error("backfill exited", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		slog.Error("portal exited", "err", err)
 		os.Exit(1)
@@ -73,17 +83,17 @@ func run() error {
 		return err
 	}
 
-	svc := workspace.New(workspace.Config{
-		BoundaryPublicAddr: cfg.BoundaryPublicAddr,
-		PortRange:          cfg.PortRange,
-		SSHConfigPath:      cfg.SSHConfigPath,
-	}, vault, nomad, bndry)
-
 	st, err := buildStore(startCtx, cfg)
 	if err != nil {
 		return err
 	}
 	projectRoles := projectrole.New(st)
+
+	svc := workspace.New(workspace.Config{
+		BoundaryPublicAddr: cfg.BoundaryPublicAddr,
+		PortRange:          cfg.PortRange,
+		SSHConfigPath:      cfg.SSHConfigPath,
+	}, st, vault, nomad, bndry)
 
 	staticDir := os.Getenv("PORTAL_STATIC_DIR")
 	if staticDir == "" {
@@ -114,9 +124,9 @@ func run() error {
 		vc := projectbootstrap.NewVaultCreator(vault.APIClient(),
 			projectbootstrap.CreatorConfig{JWTPath: cfg.CreatorJWTPath, Role: cfg.CreatorRole, AuthMount: cfg.CreatorAuthMount},
 			projectbootstrap.JWKSConfig{URL: cfg.NomadJWKSURL, CAPEM: cfg.NomadCAPEM})
-		// The descriptor write goes through the ephemeral creator token (vc), not the
-		// standing read-only portal WIF token, which cannot write secret/data/projects/*.
-		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, vc, projectRoles, st, projectbootstrap.Config{
+		// The descriptor is persisted to the Postgres control-plane store (st), not
+		// Vault KV — portal control-plane state lives in Postgres.
+		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, st, projectRoles, st, projectbootstrap.Config{
 			NomadOIDCAuthMethod:      cfg.NomadOIDCAuthMethodName,
 			BoundaryOrgScopeID:       cfg.BoundaryOrgScopeID,
 			BoundaryOIDCAuthMethodID: cfg.BoundaryOIDCAuthMethodID,

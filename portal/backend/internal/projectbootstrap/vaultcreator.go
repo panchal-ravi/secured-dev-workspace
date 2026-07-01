@@ -215,22 +215,6 @@ func (v *VaultCreator) SeedWorkspaceRole(ctx context.Context, ns, project string
 	return wrap("write workspace wif role", err)
 }
 
-// WriteKV writes the project descriptor to the shared ROOT-namespace KV (mount
-// "secret") using the brokered creator token, whose project-creator policy grants
-// secret/data/projects/*. Routing the descriptor write through the ephemeral
-// creator token keeps the portal's standing WIF token read-only on descriptors —
-// only the create plane writes them. Implements service.DescriptorWriter.
-func (v *VaultCreator) WriteKV(ctx context.Context, relPath string, data map[string]any) error {
-	cl, err := v.root(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := cl.KVv2("secret").Put(ctx, relPath, data); err != nil {
-		return wrap("write descriptor", err)
-	}
-	return nil
-}
-
 // workspacePolicyNames is the set of per-project read policies the workspace WIF
 // role carries — created later by the Phase-3 engine templates.
 func workspacePolicyNames(project string) []string {

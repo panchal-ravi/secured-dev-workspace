@@ -16,6 +16,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/jobrender"
 	"github.com/secured-dev-workspace/developer-portal/internal/localssh"
 	"github.com/secured-dev-workspace/developer-portal/internal/portgen"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 )
 
 const sessionMaxSeconds = 28800 // 8h, matching the workspace tier default
@@ -39,13 +40,14 @@ func (s *Service) LocalSSHEnabled() bool { return s.cfg.SSHConfigPath != "" }
 // Service performs workspace operations against a single HashiStack.
 type Service struct {
 	cfg   Config
+	store store.Store
 	vault *hashistack.Vault
 	nomad *hashistack.Nomad
 	bndry *hashistack.Boundary
 }
 
-func New(cfg Config, v *hashistack.Vault, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
-	return &Service{cfg: cfg, vault: v, nomad: n, bndry: b}
+func New(cfg Config, st store.Store, v *hashistack.Vault, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
+	return &Service{cfg: cfg, store: st, vault: v, nomad: n, bndry: b}
 }
 
 // CreateInput is the form payload plus the authenticated developer's identity.
@@ -83,17 +85,31 @@ type Workspace struct {
 }
 
 // ListProjects returns the descriptors the developer's groups may access.
+// Descriptors are read from the Postgres control-plane store (previously Vault
+// KV); a malformed row is skipped so one bad project can't hide the rest.
 func (s *Service) ListProjects(ctx context.Context, groups []string) ([]descriptor.Descriptor, error) {
-	all, err := s.vault.ListDescriptors(ctx)
+	rows, err := s.store.ListProjectDescriptors(ctx)
 	if err != nil {
 		return nil, err
+	}
+	all := make([]descriptor.Descriptor, 0, len(rows))
+	for _, row := range rows {
+		d, err := descriptor.Parse(string(row.Descriptor))
+		if err != nil {
+			continue
+		}
+		all = append(all, d)
 	}
 	return descriptor.Visible(all, groups), nil
 }
 
 // GetProject reads one descriptor and enforces group access.
 func (s *Service) GetProject(ctx context.Context, name string, groups []string) (descriptor.Descriptor, error) {
-	d, err := s.vault.ReadDescriptor(ctx, name)
+	row, err := s.store.GetProjectDescriptor(ctx, name)
+	if err != nil {
+		return descriptor.Descriptor{}, err
+	}
+	d, err := descriptor.Parse(string(row.Descriptor))
 	if err != nil {
 		return descriptor.Descriptor{}, err
 	}
