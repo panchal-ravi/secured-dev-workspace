@@ -44,6 +44,7 @@ func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.Handle
 	mux.Handle("POST /api/admin/blueprints", mutate(h.createBlueprint))
 	mux.Handle("POST /api/admin/blueprints/{id}/{version}/validate", mutate(h.validateBlueprint))
 	mux.Handle("POST /api/admin/blueprints/{id}/{version}/publish", mutate(h.publishBlueprint))
+	mux.Handle("DELETE /api/admin/blueprints/{id}/{version}", mutate(h.deleteBlueprint))
 
 	mux.Handle("GET /api/admin/audit", protect(h.listAudit))
 }
@@ -228,6 +229,19 @@ func (h *Handlers) publishBlueprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, bp)
+}
+
+func (h *Handlers) deleteBlueprint(w http.ResponseWriter, r *http.Request) {
+	ver, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "version must be an integer", middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.DeleteBlueprint(r.Context(), actor(r), r.PathValue("id"), ver); err != nil {
+		fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handlers) listAudit(w http.ResponseWriter, r *http.Request) {

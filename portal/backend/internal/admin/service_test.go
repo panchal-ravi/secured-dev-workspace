@@ -456,3 +456,46 @@ func TestPublishBlueprint_RequiresValidatedFirst(t *testing.T) {
 		t.Fatalf("expected published, got %s", bp.Status)
 	}
 }
+
+func TestDeleteBlueprint(t *testing.T) {
+	svc, _ := newBlueprintSvc(t, true)
+	ctx := context.Background()
+	m := blueprint.BlueprintManifest{
+		ID: "vault-mcp", Version: 1, Class: "C",
+		PolicyTpl: `path "secret/data/projects/*" { capabilities = ["read"] }`,
+		WIFRole:   blueprint.WIFRoleSpec{NameTpl: "mcp-vault-mcp", TokenTTL: "1h"},
+	}
+
+	// missing → ErrNotFound
+	if err := svc.DeleteBlueprint(ctx, "admin@x", "vault-mcp", 1); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("delete missing: want ErrNotFound, got %v", err)
+	}
+
+	// unreferenced → deletes OK and is then gone
+	if _, err := svc.CreateBlueprintDraft(ctx, "admin@x", m); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteBlueprint(ctx, "admin@x", "vault-mcp", 1); err != nil {
+		t.Fatalf("delete unreferenced: %v", err)
+	}
+	if _, err := svc.store.GetBlueprint(ctx, "vault-mcp", 1); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("blueprint should be gone after delete, got %v", err)
+	}
+
+	// bound by an MCP server type → ErrConflict and still present
+	if _, err := svc.CreateBlueprintDraft(ctx, "admin@x", m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.UpsertMCPServer(ctx, store.MCPServer{
+		Name: "vault-mcp-srv", Image: "img", Transport: "sse", Port: 9400,
+		BlueprintRef: &store.BlueprintRef{ID: "vault-mcp", Version: 1, ContentHash: m.ContentHash()},
+	}); err != nil {
+		t.Fatalf("seed bound server: %v", err)
+	}
+	if err := svc.DeleteBlueprint(ctx, "admin@x", "vault-mcp", 1); !errors.Is(err, apperr.ErrConflict) {
+		t.Fatalf("delete bound: want ErrConflict, got %v", err)
+	}
+	if _, err := svc.store.GetBlueprint(ctx, "vault-mcp", 1); err != nil {
+		t.Fatalf("bound blueprint should still be present, got %v", err)
+	}
+}

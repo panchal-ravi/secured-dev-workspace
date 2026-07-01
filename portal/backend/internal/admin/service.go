@@ -672,6 +672,31 @@ func (s *Service) PublishBlueprint(ctx context.Context, actor, id string, versio
 	return saved, nil
 }
 
+// DeleteBlueprint removes a blueprint version. Refused if any MCP server type binds
+// it (ErrConflict); ErrNotFound if it does not exist. No Vault cleanup — the manifest
+// lives on the row.
+func (s *Service) DeleteBlueprint(ctx context.Context, actor, id string, version int) error {
+	if _, err := s.store.GetBlueprint(ctx, id, version); err != nil {
+		return err
+	}
+	types, err := s.store.ListMCPServers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, t := range types {
+		if t.BlueprintRef != nil && t.BlueprintRef.ID == id && t.BlueprintRef.Version == version {
+			s.audit(ctx, actor, "blueprint.delete", id, "conflict")
+			return fmt.Errorf("blueprint %s@%d is bound by server type %q: %w", id, version, t.Name, apperr.ErrConflict)
+		}
+	}
+	if err := s.store.DeleteBlueprint(ctx, id, version); err != nil {
+		s.audit(ctx, actor, "blueprint.delete", id, "error")
+		return err
+	}
+	s.audit(ctx, actor, "blueprint.delete", id, "ok")
+	return nil
+}
+
 // ListBlueprints returns every authored blueprint.
 func (s *Service) ListBlueprints(ctx context.Context) ([]store.Blueprint, error) {
 	return s.store.ListBlueprints(ctx)
