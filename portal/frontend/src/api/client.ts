@@ -395,6 +395,14 @@ export interface DeployableType {
   image: string
   transport: string
   params: { name: string; type: string; required: boolean; prompt?: string }[]
+  allow_extra_grants?: boolean
+}
+
+// PathGrant is a project-admin-supplied additional Vault path grant applied at deploy
+// time. Confined to the project's own Vault namespace; sudo/root are rejected server-side.
+export interface PathGrant {
+  path: string
+  capabilities: string[]
 }
 
 export interface ProjectMcpServer {
@@ -421,8 +429,18 @@ export function listProjectMcp(project: string): Promise<ProjectMcpCatalog> {
   return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, { credentials: 'include' }).then(asJSON)
 }
 
-export function deployProjectMcp(project: string, serverType: string, params: Record<string, string>): Promise<ProjectMcpServer> {
-  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, { server_type: serverType, params })
+export function deployProjectMcp(
+  project: string,
+  serverType: string,
+  params: Record<string, string>,
+  extraGrants?: PathGrant[],
+): Promise<ProjectMcpServer> {
+  const body: { server_type: string; params: Record<string, string>; extra_grants?: PathGrant[] } = {
+    server_type: serverType,
+    params,
+  }
+  if (extraGrants && extraGrants.length > 0) body.extra_grants = extraGrants
+  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, body)
 }
 
 export function testProjectMcp(project: string, name: string): Promise<ProjectMcpServer> {
@@ -480,6 +498,7 @@ export interface BlueprintManifest {
   wif_role: WifRoleSpec
   params?: ParamSpec[]
   job_credential?: JobCredentialSpec
+  allow_extra_grants?: boolean
 }
 
 export interface BlueprintCheck {

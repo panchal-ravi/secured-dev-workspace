@@ -58,11 +58,11 @@ export default function PublishServerTypeModal({
     >
       {err && <p style={{ color: 'var(--cds-text-error)', marginBottom: '1rem' }}>{err}</p>}
       <p style={{ marginBottom: '1rem', color: 'var(--cds-text-secondary)' }}>
-        Bind a published credential blueprint to make this type deployable by project-admins (its
+        Bind a published Vault credential blueprint to make this type deployable by project-admins (its
         credential is brokered by the blueprint, never pasted). Leave unbound to publish for shared
         platform use only.
       </p>
-      <Select id="bind-bp" labelText="Credential blueprint" value={choice} onChange={(e) => setChoice(e.target.value)}>
+      <Select id="bind-bp" labelText="Vault credential blueprint" value={choice} onChange={(e) => setChoice(e.target.value)}>
         <SelectItem value="" text="— none (publish without a blueprint) —" />
         {published.map((b) => (
           <SelectItem key={`${b.id}@${b.version}`} value={`${b.id}@${b.version}`} text={`${b.id} v${b.version} (class ${b.class})`} />

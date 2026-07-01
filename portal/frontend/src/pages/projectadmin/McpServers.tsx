@@ -2,15 +2,19 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   Button, InlineNotification, Loading, Modal, Select, SelectItem, TextInput, Tag,
+  FormGroup, MultiSelect,
   Table, TableBody, TableCell, TableContainer, TableHead, TableHeader, TableRow,
 } from '@carbon/react'
-import { Add } from '@carbon/icons-react'
+import { Add, TrashCan } from '@carbon/icons-react'
 import {
   listProjectMcp, deployProjectMcp, testProjectMcp, deleteProjectMcp,
-  DeployableType, ProjectMcpCatalog,
+  DeployableType, ProjectMcpCatalog, PathGrant,
 } from '../../api/client'
 
 const statusTag: Record<string, 'gray' | 'blue' | 'green'> = { deployed: 'blue', published: 'green' }
+// Capabilities a project-admin may attach to a path grant (sudo/root rejected server-side).
+const GRANT_CAPS = ['read', 'list', 'create', 'update', 'delete']
+const DEFAULT_CAPS = ['read', 'list']
 
 export default function McpServers() {
   const { name = '' } = useParams()
@@ -21,6 +25,7 @@ export default function McpServers() {
   const [modalOpen, setModalOpen] = useState(false)
   const [picked, setPicked] = useState<DeployableType | null>(null)
   const [params, setParams] = useState<Record<string, string>>({})
+  const [grants, setGrants] = useState<PathGrant[]>([])
 
   const refresh = () =>
     listProjectMcp(name).then(setCat).catch((e) => setErr(e.message)).finally(() => setLoading(false))
@@ -46,13 +51,24 @@ export default function McpServers() {
   const openDeploy = () => {
     setPicked(cat.deployable[0] || null)
     setParams({})
+    setGrants([])
     setErr('')
     setModalOpen(true)
   }
 
+  const addGrant = () => setGrants((g) => [...g, { path: '', capabilities: [...DEFAULT_CAPS] }])
+  const setGrant = (i: number, patch: Partial<PathGrant>) =>
+    setGrants((g) => g.map((row, j) => (j === i ? { ...row, ...patch } : row)))
+  const removeGrant = (i: number) => setGrants((g) => g.filter((_, j) => j !== i))
+
   const submitDeploy = async () => {
     if (!picked) return
-    await run('deploy', () => deployProjectMcp(name, picked.name, params).then(() => setModalOpen(false)))
+    const extra = grants
+      .filter((g) => g.path.trim() && g.capabilities.length > 0)
+      .map((g) => ({ path: g.path.trim(), capabilities: g.capabilities }))
+    await run('deploy', () =>
+      deployProjectMcp(name, picked.name, params, extra).then(() => setModalOpen(false)),
+    )
   }
 
   if (loading) return <Loading withOverlay description="Loading MCP servers" />
@@ -67,7 +83,7 @@ export default function McpServers() {
       </div>
       <p style={{ color: 'var(--cds-text-secondary)', marginBottom: '1rem' }}>
         Deploy a published MCP server type into this project. Its credential is provisioned by the
-        bound blueprint into the project&apos;s Vault namespace — never pasted.
+        bound Vault blueprint into the project&apos;s Vault namespace — never pasted.
       </p>
       {err && (
         <InlineNotification kind="error" title="Error" subtitle={err} lowContrast onCloseButtonClick={() => setErr('')} />
@@ -143,6 +159,7 @@ export default function McpServers() {
           onChange={(e) => {
             setPicked(cat.deployable.find((d) => d.name === e.target.value) || null)
             setParams({})
+            setGrants([])
           }}
         >
           {cat.deployable.map((d) => (
@@ -160,6 +177,38 @@ export default function McpServers() {
             onChange={(e) => setParams((m) => ({ ...m, [p.name]: e.target.value }))}
           />
         ))}
+        {picked?.allow_extra_grants && (
+          <FormGroup legendText="Additional Vault path grants" style={{ marginTop: '1.5rem' }}>
+            <p style={{ color: 'var(--cds-text-secondary)', marginBottom: '0.75rem', fontSize: '0.8rem' }}>
+              Grant this server&apos;s token access to other engines in this project&apos;s Vault
+              namespace, e.g. <code>pki/{name}/issue/&lt;role&gt;</code>. The engine must already be
+              mounted. sudo/root are rejected.
+            </p>
+            {grants.map((g, i) => (
+              <div key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginBottom: '0.5rem' }}>
+                <TextInput
+                  id={`grant-path-${i}`}
+                  labelText="Path"
+                  placeholder={`pki/${name}/issue/web`}
+                  value={g.path}
+                  onChange={(e) => setGrant(i, { path: e.target.value })}
+                />
+                <MultiSelect
+                  id={`grant-caps-${i}`}
+                  titleText="Capabilities"
+                  label={g.capabilities.join(', ') || 'Select'}
+                  items={GRANT_CAPS}
+                  selectedItems={g.capabilities}
+                  onChange={({ selectedItems }) => setGrant(i, { capabilities: selectedItems || [] })}
+                />
+                <Button hasIconOnly renderIcon={TrashCan} iconDescription="Remove" kind="danger--ghost" size="md" onClick={() => removeGrant(i)} />
+              </div>
+            ))}
+            <Button renderIcon={Add} kind="ghost" size="sm" onClick={addGrant}>
+              Add path grant
+            </Button>
+          </FormGroup>
+        )}
       </Modal>
     </div>
   )

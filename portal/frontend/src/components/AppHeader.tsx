@@ -57,7 +57,7 @@ export default function AppHeader({
     items.push(
       { label: 'MCP servers', path: '/admin/mcp-servers', icon: Catalog, current: pathname.startsWith('/admin/mcp-servers') },
       { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
-      { label: 'Blueprints', path: '/admin/blueprints', icon: DataStructured, current: pathname.startsWith('/admin/blueprints') },
+      { label: 'Vault blueprints', path: '/admin/blueprints', icon: DataStructured, current: pathname.startsWith('/admin/blueprints') },
     )
   }
   // Project admins get a Members entry per administered project.

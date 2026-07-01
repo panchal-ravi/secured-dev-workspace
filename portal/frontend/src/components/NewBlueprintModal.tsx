@@ -52,7 +52,7 @@ const DEFAULTS: Record<Cls, Defaults> = {
   },
   B: {
     description: 'Generic upstream-API-key MCP server — write-only key seeded into project KV.',
-    policyTpl: 'path "{{.Mount}}/data/projects/{{.Namespace}}/generic-api-key" {\n  capabilities = ["read"]\n}\n',
+    policyTpl: 'path "{{.Mount}}/data/projects/generic-api-key" {\n  capabilities = ["read"]\n}\n',
     wifNameTpl: 'mcp-generic-api-key',
     engines: [],
     role: null,
@@ -61,7 +61,7 @@ const DEFAULTS: Record<Cls, Defaults> = {
   },
   C: {
     description: 'HashiCorp Vault MCP server — VAULT_TOKEN is itself the WIF-minted credential.',
-    policyTpl: 'path "{{.Mount}}/data/projects/{{.Namespace}}/*" {\n  capabilities = ["read"]\n}\n',
+    policyTpl: 'path "{{.Mount}}/data/projects/*" {\n  capabilities = ["read"]\n}\n',
     wifNameTpl: 'mcp-vault-mcp',
     engines: [],
     role: null,
@@ -83,6 +83,7 @@ export default function NewBlueprintModal({
   const [id, setId] = useState('')
   const [version, setVersion] = useState(1)
   const [d, setD] = useState<Defaults>(DEFAULTS.A)
+  const [allowExtraGrants, setAllowExtraGrants] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -113,6 +114,7 @@ export default function NewBlueprintModal({
       policy_tpl: d.policyTpl,
       wif_role: { name_tpl: d.wifNameTpl, token_ttl: '1h' },
       params: d.params,
+      allow_extra_grants: allowExtraGrants,
     }
     if (cls === 'A') {
       m.engines = d.engines
@@ -139,8 +141,8 @@ export default function NewBlueprintModal({
   return (
     <Modal
       open={open}
-      modalHeading="New blueprint"
-      modalLabel="Credential blueprint"
+      modalHeading="New Vault blueprint"
+      modalLabel="Vault credential blueprint"
       primaryButtonText={busy ? 'Creating…' : 'Create draft'}
       secondaryButtonText="Cancel"
       primaryButtonDisabled={busy || !id.trim()}
@@ -284,6 +286,19 @@ export default function NewBlueprintModal({
             Class {cls} requires at least one job-credential env template.
           </p>
         )}
+      </FormGroup>
+
+      <FormGroup legendText="Deploy-time grants" style={{ marginTop: '1rem' }}>
+        <Checkbox
+          id="bp-allow-grants"
+          labelText="Allow project-admins to attach additional Vault path grants at deploy time"
+          checked={allowExtraGrants}
+          onChange={(_e, { checked }) => setAllowExtraGrants(checked)}
+        />
+        <p style={{ color: 'var(--cds-text-secondary)', marginTop: '0.25rem', fontSize: '0.8rem' }}>
+          Grants are confined to the project&apos;s own Vault namespace and linted (no
+          sys/auth/identity/cubbyhole, no sudo/root). Off by default.
+        </p>
       </FormGroup>
     </Modal>
   )

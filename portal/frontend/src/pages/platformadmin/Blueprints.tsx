@@ -43,26 +43,26 @@ export default function Blueprints() {
     }
   }
 
-  if (loading) return <Loading withOverlay description="Loading blueprints" />
+  if (loading) return <Loading withOverlay description="Loading Vault blueprints" />
 
   return (
     <div className="page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h2>Credential blueprints</h2>
+        <h2>Vault credential blueprints</h2>
         <Button renderIcon={Add} onClick={() => setModalOpen(true)}>
-          New blueprint
+          New Vault blueprint
         </Button>
       </div>
       <p style={{ color: 'var(--cds-text-secondary)', marginBottom: '1rem' }}>
-        Platform-authored credential recipes. Author a draft, validate it (lint + a live
+        Platform-authored Vault credential recipes. Author a draft, validate it (lint + a live
         consumption-mirror in a throwaway namespace), then publish so it can be bound to an MCP
-        server type. Blueprints are immutable — a change is a new version.
+        server type. Vault blueprints are immutable — a change is a new version.
       </p>
       {err && (
         <InlineNotification kind="error" title="Error" subtitle={err} lowContrast onCloseButtonClick={() => setErr('')} />
       )}
       {bps.length === 0 ? (
-        <p>No blueprints yet.</p>
+        <p>No Vault blueprints yet.</p>
       ) : (
         <TableContainer>
           <Table size="lg">
