@@ -4,7 +4,7 @@ import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableHeader, TableRow,
 } from '@carbon/react'
 import { Add } from '@carbon/icons-react'
-import { listBlueprints, validateBlueprint, publishBlueprint, Blueprint } from '../../api/client'
+import { listBlueprints, validateBlueprint, publishBlueprint, deleteBlueprint, Blueprint } from '../../api/client'
 import NewBlueprintModal from '../../components/NewBlueprintModal'
 
 const statusTag: Record<string, 'gray' | 'blue' | 'green'> = {
@@ -54,8 +54,8 @@ export default function Blueprints() {
         </Button>
       </div>
       <p style={{ color: 'var(--cds-text-secondary)', marginBottom: '1rem' }}>
-        Platform-authored Vault credential recipes. Author a draft, validate it (lint + a live
-        consumption-mirror in a throwaway namespace), then publish so it can be bound to an MCP
+        Platform-authored Vault credential recipes. Author a draft, validate it (shape + policy
+        lint), then publish so it can be bound to an MCP
         server type. Vault blueprints are immutable — a change is a new version.
       </p>
       {err && (
@@ -125,6 +125,14 @@ export default function Blueprints() {
                           onClick={() => run(key, () => publishBlueprint(b.id, b.version))}
                         >
                           Publish
+                        </Button>
+                        <Button
+                          size="sm"
+                          kind="danger--ghost"
+                          disabled={busy === key}
+                          onClick={() => run(key, () => deleteBlueprint(b.id, b.version))}
+                        >
+                          Delete
                         </Button>
                       </div>
                     </TableCell>

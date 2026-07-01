@@ -545,3 +545,10 @@ export function validateBlueprint(id: string, version: number): Promise<Blueprin
 export function publishBlueprint(id: string, version: number): Promise<Blueprint> {
   return post(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}/publish`)
 }
+
+export function deleteBlueprint(id: string, version: number): Promise<void> {
+  return fetch(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}
