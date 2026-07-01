@@ -60,7 +60,7 @@ func runBackfill() error {
 		}
 	}
 
-	migrated := 0
+	migrated, templates := 0, 0
 	for _, p := range names {
 		ds, err := cl.KVv2(mount).Get(ctx, "projects/"+p+"/portal-descriptor")
 		if err != nil {
@@ -72,7 +72,8 @@ func runBackfill() error {
 			slog.Warn("backfill: skip project (missing 'descriptor' key)", "project", p)
 			continue
 		}
-		if _, err := descriptor.Parse(rawDesc); err != nil {
+		d, err := descriptor.Parse(rawDesc)
+		if err != nil {
 			slog.Warn("backfill: skip project (malformed descriptor)", "project", p, "err", err)
 			continue
 		}
@@ -82,11 +83,51 @@ func runBackfill() error {
 			Descriptor: json.RawMessage(rawDesc),
 			CreatedBy:  "backfill",
 		}); err != nil {
-			return fmt.Errorf("backfill: upsert %q: %w", p, err)
+			return fmt.Errorf("backfill: upsert descriptor %q: %w", p, err)
 		}
 		migrated++
 		slog.Info("backfill: migrated descriptor", "project", p)
+
+		// Each descriptor flavor has an already-baked job template in KV; copy its
+		// jobspec into a project_templates row (RenderedSource = the pass-1 output).
+		for _, f := range d.Flavors {
+			ts, err := cl.KVv2(mount).Get(ctx, "projects/"+p+"/job-templates/"+f.Name)
+			if err != nil {
+				slog.Warn("backfill: skip flavor (no job template)", "project", p, "flavor", f.Name, "err", err)
+				continue
+			}
+			jobspec, ok := ts.Data["jobspec"].(string)
+			if !ok {
+				slog.Warn("backfill: skip flavor (missing 'jobspec')", "project", p, "flavor", f.Name)
+				continue
+			}
+			if _, err := st.UpsertProjectTemplate(ctx, store.ProjectTemplate{
+				Project:        p,
+				Flavor:         f.Name,
+				Status:         store.StatusReady,
+				RenderedSource: jobspec,
+				Label:          f.Label,
+				Description:    f.Description,
+				Image:          f.Image,
+				GitRepoURL:     f.GitRepoURL,
+				NodePool:       f.NodePool,
+				Features:       toStoreFeatures(f.Features),
+				CreatedBy:      "backfill",
+			}); err != nil {
+				return fmt.Errorf("backfill: upsert template %q/%q: %w", p, f.Name, err)
+			}
+			templates++
+			slog.Info("backfill: migrated job template", "project", p, "flavor", f.Name)
+		}
 	}
-	slog.Info("backfill complete", "projects_seen", len(names), "migrated", migrated)
+	slog.Info("backfill complete", "projects_seen", len(names), "descriptors", migrated, "templates", templates)
 	return nil
+}
+
+func toStoreFeatures(in []descriptor.Feature) []store.Feature {
+	out := make([]store.Feature, 0, len(in))
+	for _, f := range in {
+		out = append(out, store.Feature{Key: f.Key, Label: f.Label, Description: f.Description})
+	}
+	return out
 }

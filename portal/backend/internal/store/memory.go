@@ -21,6 +21,8 @@ type Memory struct {
 	projectRoles map[string]ProjectRole       // key: project\x00subject\x00role
 	projectMCP   map[string]ProjectMCPServer  // key: project\x00name
 	projectDesc  map[string]ProjectDescriptor // key: project
+	baseTmpl     map[string]BaseJobTemplate   // key: name
+	projectTmpl  map[string]ProjectTemplate   // key: project\x00flavor
 	audit        []AuditEvent
 	nextID       int64
 	now          func() time.Time
@@ -35,6 +37,8 @@ func NewMemory() *Memory {
 		projectRoles: map[string]ProjectRole{},
 		projectMCP:   map[string]ProjectMCPServer{},
 		projectDesc:  map[string]ProjectDescriptor{},
+		baseTmpl:     map[string]BaseJobTemplate{},
+		projectTmpl:  map[string]ProjectTemplate{},
 		now:          time.Now,
 	}
 }
@@ -355,6 +359,106 @@ func (m *Memory) DeleteProjectDescriptor(_ context.Context, project string) erro
 		return fmt.Errorf("store: project descriptor %q: %w", project, apperr.ErrNotFound)
 	}
 	delete(m.projectDesc, project)
+	return nil
+}
+
+func (m *Memory) UpsertBaseJobTemplate(_ context.Context, t BaseJobTemplate) (BaseJobTemplate, error) {
+	if t.Name == "" {
+		return BaseJobTemplate{}, fmt.Errorf("store: base job template name required: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	if existing, ok := m.baseTmpl[t.Name]; ok {
+		t.CreatedAt, t.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = now
+	m.baseTmpl[t.Name] = t
+	return t, nil
+}
+
+func (m *Memory) GetBaseJobTemplate(_ context.Context, name string) (BaseJobTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.baseTmpl[name]
+	if !ok {
+		return BaseJobTemplate{}, fmt.Errorf("store: base job template %q: %w", name, apperr.ErrNotFound)
+	}
+	return t, nil
+}
+
+func (m *Memory) ListBaseJobTemplates(_ context.Context) ([]BaseJobTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]BaseJobTemplate, 0, len(m.baseTmpl))
+	for _, t := range m.baseTmpl {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *Memory) DeleteBaseJobTemplate(_ context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.baseTmpl[name]; !ok {
+		return fmt.Errorf("store: base job template %q: %w", name, apperr.ErrNotFound)
+	}
+	delete(m.baseTmpl, name)
+	return nil
+}
+
+func (m *Memory) UpsertProjectTemplate(_ context.Context, t ProjectTemplate) (ProjectTemplate, error) {
+	if t.Project == "" || t.Flavor == "" {
+		return ProjectTemplate{}, fmt.Errorf("store: project template requires project and flavor: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	k := pmsKey(t.Project, t.Flavor)
+	if existing, ok := m.projectTmpl[k]; ok {
+		t.CreatedAt, t.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = now
+	m.projectTmpl[k] = t
+	return t, nil
+}
+
+func (m *Memory) GetProjectTemplate(_ context.Context, project, flavor string) (ProjectTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.projectTmpl[pmsKey(project, flavor)]
+	if !ok {
+		return ProjectTemplate{}, fmt.Errorf("store: project template %s/%s: %w", project, flavor, apperr.ErrNotFound)
+	}
+	return t, nil
+}
+
+func (m *Memory) ListProjectTemplates(_ context.Context, project string) ([]ProjectTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectTemplate{}
+	for _, t := range m.projectTmpl {
+		if t.Project == project {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Flavor < out[j].Flavor })
+	return out, nil
+}
+
+func (m *Memory) DeleteProjectTemplate(_ context.Context, project, flavor string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := pmsKey(project, flavor)
+	if _, ok := m.projectTmpl[k]; !ok {
+		return fmt.Errorf("store: project template %s/%s: %w", project, flavor, apperr.ErrNotFound)
+	}
+	delete(m.projectTmpl, k)
 	return nil
 }
 

@@ -9,10 +9,10 @@ import (
 	vapi "github.com/hashicorp/vault/api"
 )
 
-// Vault wraps the KV-v2 reads the portal still needs from Vault: the per-project
-// job-template HCL read at workspace launch and single-field secret reads/writes
-// for the admin plane. Project descriptors moved to the Postgres control-plane
-// store; Vault holds only secrets and the job-template text.
+// Vault wraps the KV-v2 secret reads/writes the portal still needs from Vault
+// (single-field reads for the admin plane's provider keys, and the MCP-publish
+// descriptor write). Project descriptors and job templates moved to the Postgres
+// control-plane store; Vault holds only secrets now.
 type Vault struct {
 	c         *vapi.Client
 	mount     string
@@ -64,23 +64,6 @@ func (v *Vault) Ping(ctx context.Context) error {
 		return fmt.Errorf("vault: health: %w", err)
 	}
 	return nil
-}
-
-// ReadJobTemplate returns the raw job-spec HCL for a project's flavor (the
-// dev-workspace tier reads the same KV secret). Not cached: read once per create.
-func (v *Vault) ReadJobTemplate(ctx context.Context, project, flavor string) (string, error) {
-	if err := v.refreshToken(); err != nil {
-		return "", err
-	}
-	sec, err := v.c.KVv2(v.mount).Get(ctx, "projects/"+project+"/job-templates/"+flavor)
-	if err != nil {
-		return "", fmt.Errorf("vault: read job template %q/%q: %w", project, flavor, err)
-	}
-	jobspec, ok := sec.Data["jobspec"].(string)
-	if !ok {
-		return "", fmt.Errorf("vault: job template %q/%q: missing 'jobspec' key", project, flavor)
-	}
-	return jobspec, nil
 }
 
 // ReadKVField reads one string field from a KV-v2 secret at relPath (under the

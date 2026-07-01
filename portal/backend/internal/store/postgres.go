@@ -95,6 +95,27 @@ CREATE TABLE IF NOT EXISTS project_descriptors (
     updated_at TIMESTAMPTZ NOT NULL,
     data       JSONB       NOT NULL
 );
+CREATE TABLE IF NOT EXISTS base_job_templates (
+    name         TEXT PRIMARY KEY,
+    status       TEXT        NOT NULL,
+    version      INTEGER     NOT NULL DEFAULT 0,
+    content_hash TEXT        NOT NULL DEFAULT '',
+    created_by   TEXT        NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL,
+    data         JSONB       NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_templates (
+    project      TEXT        NOT NULL,
+    flavor       TEXT        NOT NULL,
+    status       TEXT        NOT NULL,
+    base_version INTEGER     NOT NULL DEFAULT 0,
+    created_by   TEXT        NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL,
+    data         JSONB       NOT NULL,
+    PRIMARY KEY (project, flavor)
+);
 `
 
 // NewPostgres opens the portal control-plane database, verifies connectivity, and
@@ -637,6 +658,177 @@ func scanProjectDescriptor(row scanRow, project string) (ProjectDescriptor, erro
 	}
 	d.Status, d.CreatedBy, d.CreatedAt, d.UpdatedAt = status, createdBy, createdAt, updatedAt
 	return d, nil
+}
+
+// ---- base job templates ----
+
+func (p *Postgres) UpsertBaseJobTemplate(ctx context.Context, t BaseJobTemplate) (BaseJobTemplate, error) {
+	if t.Name == "" {
+		return BaseJobTemplate{}, fmt.Errorf("store: base job template name required: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	t.CreatedAt, t.UpdatedAt = now, now
+	blob, err := json.Marshal(t)
+	if err != nil {
+		return BaseJobTemplate{}, fmt.Errorf("store: marshal base job template: %w", err)
+	}
+	const q = `
+INSERT INTO base_job_templates (name, status, version, content_hash, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+ON CONFLICT (name) DO UPDATE SET
+    status       = EXCLUDED.status,
+    version      = EXCLUDED.version,
+    content_hash = EXCLUDED.content_hash,
+    updated_at   = EXCLUDED.updated_at,
+    data         = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, t.Name, t.Status, t.Version, t.ContentHash, t.CreatedBy, now, blob)
+	if err := row.Scan(&t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return BaseJobTemplate{}, fmt.Errorf("store: upsert base job template: %w", err)
+	}
+	return t, nil
+}
+
+func (p *Postgres) GetBaseJobTemplate(ctx context.Context, name string) (BaseJobTemplate, error) {
+	const q = `SELECT data, status, version, content_hash, created_by, created_at, updated_at FROM base_job_templates WHERE name = $1`
+	return scanBaseJobTemplate(p.db.QueryRowContext(ctx, q, name), name)
+}
+
+func (p *Postgres) ListBaseJobTemplates(ctx context.Context) ([]BaseJobTemplate, error) {
+	const q = `SELECT data, status, version, content_hash, created_by, created_at, updated_at FROM base_job_templates ORDER BY name`
+	rows, err := p.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: list base job templates: %w", err)
+	}
+	defer rows.Close()
+	out := []BaseJobTemplate{}
+	for rows.Next() {
+		t, err := scanBaseJobTemplate(rows, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteBaseJobTemplate(ctx context.Context, name string) error {
+	return p.deleteByName(ctx, "base_job_templates", "base job template", name)
+}
+
+func scanBaseJobTemplate(row scanRow, name string) (BaseJobTemplate, error) {
+	var (
+		t           BaseJobTemplate
+		blob        []byte
+		status      string
+		version     int
+		contentHash string
+		createdBy   string
+		createdAt   time.Time
+		updatedAt   time.Time
+	)
+	err := row.Scan(&blob, &status, &version, &contentHash, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BaseJobTemplate{}, fmt.Errorf("store: base job template %q: %w", name, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return BaseJobTemplate{}, fmt.Errorf("store: get base job template: %w", err)
+	}
+	if err := json.Unmarshal(blob, &t); err != nil {
+		return BaseJobTemplate{}, fmt.Errorf("store: unmarshal base job template: %w", err)
+	}
+	t.Status, t.Version, t.ContentHash, t.CreatedBy, t.CreatedAt, t.UpdatedAt = status, version, contentHash, createdBy, createdAt, updatedAt
+	return t, nil
+}
+
+// ---- project templates ----
+
+func (p *Postgres) UpsertProjectTemplate(ctx context.Context, t ProjectTemplate) (ProjectTemplate, error) {
+	if t.Project == "" || t.Flavor == "" {
+		return ProjectTemplate{}, fmt.Errorf("store: project template requires project and flavor: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	t.CreatedAt, t.UpdatedAt = now, now
+	blob, err := json.Marshal(t)
+	if err != nil {
+		return ProjectTemplate{}, fmt.Errorf("store: marshal project template: %w", err)
+	}
+	const q = `
+INSERT INTO project_templates (project, flavor, status, base_version, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+ON CONFLICT (project, flavor) DO UPDATE SET
+    status       = EXCLUDED.status,
+    base_version = EXCLUDED.base_version,
+    updated_at   = EXCLUDED.updated_at,
+    data         = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, t.Project, t.Flavor, t.Status, t.BaseVersion, t.CreatedBy, now, blob)
+	if err := row.Scan(&t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return ProjectTemplate{}, fmt.Errorf("store: upsert project template: %w", err)
+	}
+	return t, nil
+}
+
+func (p *Postgres) GetProjectTemplate(ctx context.Context, project, flavor string) (ProjectTemplate, error) {
+	const q = `SELECT data, status, base_version, created_by, created_at, updated_at FROM project_templates WHERE project = $1 AND flavor = $2`
+	return scanProjectTemplate(p.db.QueryRowContext(ctx, q, project, flavor), project, flavor)
+}
+
+func (p *Postgres) ListProjectTemplates(ctx context.Context, project string) ([]ProjectTemplate, error) {
+	const q = `SELECT data, status, base_version, created_by, created_at, updated_at FROM project_templates WHERE project = $1 ORDER BY flavor`
+	rows, err := p.db.QueryContext(ctx, q, project)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project templates: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectTemplate{}
+	for rows.Next() {
+		t, err := scanProjectTemplate(rows, "", "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteProjectTemplate(ctx context.Context, project, flavor string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_templates WHERE project = $1 AND flavor = $2`, project, flavor)
+	if err != nil {
+		return fmt.Errorf("store: delete project template: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project template rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project template %s/%s: %w", project, flavor, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func scanProjectTemplate(row scanRow, project, flavor string) (ProjectTemplate, error) {
+	var (
+		t           ProjectTemplate
+		blob        []byte
+		status      string
+		baseVersion int
+		createdBy   string
+		createdAt   time.Time
+		updatedAt   time.Time
+	)
+	err := row.Scan(&blob, &status, &baseVersion, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectTemplate{}, fmt.Errorf("store: project template %s/%s: %w", project, flavor, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectTemplate{}, fmt.Errorf("store: get project template: %w", err)
+	}
+	if err := json.Unmarshal(blob, &t); err != nil {
+		return ProjectTemplate{}, fmt.Errorf("store: unmarshal project template: %w", err)
+	}
+	t.Status, t.BaseVersion, t.CreatedBy, t.CreatedAt, t.UpdatedAt = status, baseVersion, createdBy, createdAt, updatedAt
+	return t, nil
 }
 
 // ---- audit ----

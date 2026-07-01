@@ -41,13 +41,12 @@ func (s *Service) LocalSSHEnabled() bool { return s.cfg.SSHConfigPath != "" }
 type Service struct {
 	cfg   Config
 	store store.Store
-	vault *hashistack.Vault
 	nomad *hashistack.Nomad
 	bndry *hashistack.Boundary
 }
 
-func New(cfg Config, st store.Store, v *hashistack.Vault, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
-	return &Service{cfg: cfg, store: st, vault: v, nomad: n, bndry: b}
+func New(cfg Config, st store.Store, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
+	return &Service{cfg: cfg, store: st, nomad: n, bndry: b}
 }
 
 // CreateInput is the form payload plus the authenticated developer's identity.
@@ -184,14 +183,14 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 		return Workspace{}, err
 	}
 
-	// The template already carries this project's static values (baked in at
-	// publish time, see terraform/project/kv.tf); the portal fills only the
-	// per-workspace placeholders.
-	jobspec, err := s.vault.ReadJobTemplate(ctx, d.ProjectName, in.Flavor)
+	// The project template already carries this project's static values (baked in
+	// at project-template create, pass-1); the portal fills only the per-workspace
+	// placeholders (pass-2). Read from the Postgres control-plane store.
+	pt, err := s.store.GetProjectTemplate(ctx, d.ProjectName, in.Flavor)
 	if err != nil {
 		return Workspace{}, err
 	}
-	rendered, err := jobrender.Render(jobspec, map[string]string{
+	rendered, err := jobrender.Render(pt.RenderedSource, map[string]string{
 		"job_name":        name,
 		"ssh_port":        strconv.Itoa(port),
 		"volume_name":     volume,

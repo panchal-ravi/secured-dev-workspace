@@ -19,9 +19,11 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/admin"
 	"github.com/secured-dev-workspace/developer-portal/internal/api"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
+	"github.com/secured-dev-workspace/developer-portal/internal/basetmpladmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/config"
 	"github.com/secured-dev-workspace/developer-portal/internal/hashistack"
+	"github.com/secured-dev-workspace/developer-portal/internal/jobtemplate"
 	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/logging"
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
@@ -87,13 +89,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if err := jobtemplate.SeedBaseTemplates(startCtx, st); err != nil {
+		return err
+	}
 	projectRoles := projectrole.New(st)
 
 	svc := workspace.New(workspace.Config{
 		BoundaryPublicAddr: cfg.BoundaryPublicAddr,
 		PortRange:          cfg.PortRange,
 		SSHConfigPath:      cfg.SSHConfigPath,
-	}, st, vault, nomad, bndry)
+	}, st, nomad, bndry)
 
 	staticDir := os.Getenv("PORTAL_STATIC_DIR")
 	if staticDir == "" {
@@ -142,6 +147,7 @@ func run() error {
 		Auth:          authn,
 		Svc:           svc,
 		Admin:         adminHandlers,
+		BaseTmpl:      basetmpladmin.NewHandlers(basetmpladmin.New(st)),
 		ProjectCreate: projectCreate,
 		ProjectRoles:  projectRoles,
 		ProjectMCP:    projectMCP,

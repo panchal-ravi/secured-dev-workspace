@@ -167,6 +167,58 @@ type ProjectDescriptor struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
+// BaseJobTemplate is a platform-authored generic Nomad workspace job template
+// (standard / GPU / microVM), seeded from go:embed and editable by a portal-admin.
+// It is MUTABLE with a version that bumps on publish; a project template snapshots
+// its PublishedSource at create time, so editing a base never disturbs live
+// projects. Source carries the ${...} placeholders (10 project-static + 5
+// per-workspace); no secret material is stored.
+type BaseJobTemplate struct {
+	Name            string    `json:"name"`
+	Label           string    `json:"label,omitempty"`
+	Description     string    `json:"description,omitempty"`
+	Status          string    `json:"status"`  // draft | published
+	Version         int       `json:"version"` // bumps on publish
+	ContentHash     string    `json:"content_hash,omitempty"`
+	DraftSource     string    `json:"draft_source"`     // editable HCL
+	PublishedSource string    `json:"published_source"` // frozen at last publish
+	Features        []Feature `json:"features,omitempty"`
+	DefaultNodePool string    `json:"default_node_pool,omitempty"`
+	Runtime         string    `json:"runtime,omitempty"` // "", "nvidia", "kata" (informational)
+	CreatedBy       string    `json:"created_by,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// Feature is one capability a flavor surfaces in the workspace card. Mirrors
+// descriptor.Feature without the package dependency.
+type Feature struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// ProjectTemplate is a per-project "flavor": a snapshot of a base template's
+// PublishedSource with the 10 project-static placeholders baked in (pass-1), the
+// per-workspace ${...} tokens left for jobrender at launch. Created by a
+// project-admin (Phase C) or backfilled from Vault KV. No secret material.
+type ProjectTemplate struct {
+	Project        string    `json:"project"`
+	Flavor         string    `json:"flavor"`       // base template name it derives from
+	BaseVersion    int       `json:"base_version"` // BaseJobTemplate.Version snapshotted
+	Status         string    `json:"status"`
+	RenderedSource string    `json:"rendered_source"`
+	Label          string    `json:"label,omitempty"`
+	Description    string    `json:"description,omitempty"`
+	Image          string    `json:"image,omitempty"`
+	GitRepoURL     string    `json:"git_repo_url,omitempty"`
+	NodePool       string    `json:"node_pool,omitempty"`
+	Features       []Feature `json:"features,omitempty"`
+	CreatedBy      string    `json:"created_by,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // AuditEvent is one admin mutation: who did what to which target, and the outcome.
 type AuditEvent struct {
 	ID      int64          `json:"id"`
@@ -216,6 +268,18 @@ type Store interface {
 	GetProjectDescriptor(ctx context.Context, project string) (ProjectDescriptor, error)
 	ListProjectDescriptors(ctx context.Context) ([]ProjectDescriptor, error)
 	DeleteProjectDescriptor(ctx context.Context, project string) error
+
+	// Base job templates (platform-authored; was terraform/project templates + KV).
+	UpsertBaseJobTemplate(ctx context.Context, t BaseJobTemplate) (BaseJobTemplate, error)
+	GetBaseJobTemplate(ctx context.Context, name string) (BaseJobTemplate, error)
+	ListBaseJobTemplates(ctx context.Context) ([]BaseJobTemplate, error)
+	DeleteBaseJobTemplate(ctx context.Context, name string) error
+
+	// Project templates (per-project flavors; was Vault KV job-templates/<flavor>).
+	UpsertProjectTemplate(ctx context.Context, t ProjectTemplate) (ProjectTemplate, error)
+	GetProjectTemplate(ctx context.Context, project, flavor string) (ProjectTemplate, error)
+	ListProjectTemplates(ctx context.Context, project string) ([]ProjectTemplate, error)
+	DeleteProjectTemplate(ctx context.Context, project, flavor string) error
 
 	// Admin audit log.
 	AppendAudit(ctx context.Context, e AuditEvent) error

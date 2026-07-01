@@ -575,3 +575,55 @@ export function deleteBlueprint(id: string, version: number): Promise<void> {
     credentials: 'include',
   }).then(expectOK)
 }
+
+// ---- Platform Admin: base job templates ----
+
+// TemplateFeature is one capability card surfaced on a workspace flavor.
+export interface TemplateFeature {
+  key: string
+  label: string
+  description: string
+}
+
+// BaseJobTemplate is a platform-authored generic Nomad workspace job template.
+// Mutable with a version that bumps on publish; project templates snapshot the
+// published source at create time.
+export interface BaseJobTemplate {
+  name: string
+  label?: string
+  description?: string
+  status: string // "draft" | "published"
+  version: number
+  content_hash?: string
+  draft_source: string
+  published_source: string
+  features?: TemplateFeature[]
+  default_node_pool?: string
+  runtime?: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export function listBaseTemplates(): Promise<BaseJobTemplate[]> {
+  return fetch(`${adminBase}/base-templates`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.templates as BaseJobTemplate[]) || [])
+}
+
+export function getBaseTemplate(name: string): Promise<BaseJobTemplate> {
+  return fetch(`${adminBase}/base-templates/${encodeURIComponent(name)}`, { credentials: 'include' }).then(asJSON)
+}
+
+export function updateBaseTemplateDraft(name: string, source: string): Promise<BaseJobTemplate> {
+  return fetch(`${adminBase}/base-templates/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source }),
+  }).then(asJSON)
+}
+
+export function publishBaseTemplate(name: string): Promise<BaseJobTemplate> {
+  return post(`${adminBase}/base-templates/${encodeURIComponent(name)}/publish`)
+}
