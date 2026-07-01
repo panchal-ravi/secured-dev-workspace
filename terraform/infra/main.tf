@@ -47,6 +47,12 @@ module "identity" {
   nomad_addr          = module.secured_codespace.nomad_addr
   admin_group_name    = var.admin_group_name
   readonly_group_name = var.readonly_group_name
+
+  # Developer Portal OIDC app — created here (not hand-registered) only when the
+  # portal is deployed. The redirect URI is derived from the live NLB.
+  create_portal_app   = var.enable_developer_portal
+  portal_redirect_url = local.portal_redirect_url
+  portal_audiences    = var.portal_oidc_audiences
 }
 
 # Platform-tier Nomad↔Vault workload-identity federation: the single jwt-nomad

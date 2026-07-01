@@ -1,4 +1,8 @@
 # Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored (*.tfvars).
+#
+# Variables below are grouped to match the operator flow in PLATFORM-ADMIN-RUNBOOK.md:
+# base stack -> identity -> gateways -> developer portal -> platform-admin plane.
+# Anything with a sensible default is shown commented; uncomment only to override.
 
 # --- Base infrastructure ---
 owner            = "rp"
@@ -6,10 +10,30 @@ region           = "ap-southeast-1"
 instance_type    = "t3.large"
 boundary_version = "0.21.3+ent"
 nomad_version    = "1.11.6+ent"
+# vault_version  = "1.20.4+ent"   # informational; must match the baked AMI
 
-# Optional GPU Nomad client (NVIDIA T4 / g4dn.xlarge). Off by default because the
-# instance is costly — set true only when GPU workspaces are needed.
-# enable_gpu_node = true
+# --- Optional worker nodes (all off by default; opt in per flavor) ---
+
+# GPU Nomad client (NVIDIA T4 / g4dn.xlarge). Costly — on only for GPU workspaces.
+# enable_gpu_node      = true
+# gpu_instance_type    = "g4dn.xlarge"
+# gpu_root_volume_size = 60
+
+# Standard-CPU agent worker nodes (Nomad node pool "agents"). REQUIRED for the
+# platform-admin plane's default MCP node pool (platform_admin_mcp_node_pool="agents")
+# and for project-admin blueprint deploys — the runbook applies with
+# `-var enable_agent_nodes=true`. Set false only if you pin MCP servers to the
+# all-in-one node (platform_admin_mcp_node_pool = "").
+# enable_agent_nodes     = true
+# agent_node_count       = 1
+# agent_instance_type    = "t3.large"
+# agent_root_volume_size = 40
+
+# Kata microVM Nomad client (bare metal, e.g. c5.metal — needs /dev/kvm). Costly;
+# on only when the project tier offers a "microvm-workspace" template.
+# enable_microvm_node      = true
+# microvm_instance_type    = "c5.metal"
+# microvm_root_volume_size = 60
 
 # Initial Boundary admin + scopes (sensible defaults below).
 # NOTE: boundary_admin_password is sensitive — change it and never commit a real one.
@@ -33,6 +57,10 @@ ibm_verify_api_client_secret = "" # set locally; never commit
 # admin_group_name    = "secured-codespace-admins"
 # readonly_group_name = "secured-codespace-readonly"
 
+# --- ContextForge MCP gateway (see mcp-gateway.tf) ---
+# Optional: pin a concrete release tag rather than :latest.
+# mcp_gateway_image = "ghcr.io/ibm/mcp-context-forge:latest"
+
 # --- LiteLLM AI gateway (see llm-gateway.tf) ---
 # The ONE central provider key the gateway uses to reach DeepSeek. It lives only on
 # the gateway (Vault KV infra/llm-gateway); workspaces get per-project virtual keys,
@@ -41,3 +69,38 @@ deepseek_api_key = "" # set locally; never commit
 # Optional: pin concrete image tags rather than the floating defaults.
 # litellm_image          = "ghcr.io/berriai/litellm-database:main-stable"
 # litellm_postgres_image = "postgres:16-alpine"
+
+# --- Developer Portal (see developer-portal.tf) ---
+# The portal Nomad job. Off by default; the base stack + NLB :8443 listener
+# provision regardless. Turn on to deploy the portal AND create its Verify OIDC
+# app automatically (identity module — no hand-registration). PREREQUISITES:
+#   1. Build + push the image:  PORTAL_IMAGE=panchalravi/developer-portal:poc portal/scripts/build-image.sh
+#   2. Free a Verify app slot (tenant cap = 5): delete any old hand-registered
+#      `secured-codespace-portal` app so Terraform can create the managed one.
+#   3. Ensure the `groups` claim source (sourceId "4") is released in the tenant —
+#      the app emits `groups` (the group NAME) into the ID token for RBAC.
+enable_developer_portal = true
+# developer_portal_image = "panchalravi/developer-portal:poc"
+
+# Portal OIDC issuer — the full endpoint, e.g.
+# https://<tenant>.verify.ibm.com/oidc/endpoint/default. REQUIRED when
+# enable_developer_portal = true. The client id/secret are NO LONGER set here:
+# Terraform creates the app and wires the credentials in automatically.
+portal_oidc_issuer = "https://myorg.verify.ibm.com/oidc/endpoint/default"
+# Access-token audiences for the portal app (RFC 8693 OBO target). Defaults to the
+# token-exchange client id; override if your tenant uses a different one.
+# portal_oidc_audiences = ["7be9262c-f5c3-4174-a105-038a0892699f"]
+
+# --- Platform Admin onboarding plane (see platform-admin.tf) ---
+# Enables the in-portal MCP-server deploy + LLM-model onboarding plane AND the
+# project-admin blueprint-deploy grant (vault_policy.portal_provisioning). Gated:
+# requires enable_developer_portal + both gateways. The runbook applies with
+# `-var enable_platform_admin=true -var enable_agent_nodes=true`. Also REQUIRES a
+# Verify group named exactly `platform-admins` whose members get the role.
+enable_platform_admin = true
+# Node pool for portal-deployed MCP servers; "agents" needs enable_agent_nodes=true.
+# Set "" to run them on the all-in-one node instead.
+# platform_admin_mcp_node_pool = "agents"
+# Postgres backing the portal's onboarding control plane (deployed only when
+# enable_platform_admin = true).
+# portal_postgres_image = "postgres:16-alpine"

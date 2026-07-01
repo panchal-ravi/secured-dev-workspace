@@ -186,11 +186,12 @@ variable "deepseek_api_key" {
 # --- Developer Portal (see developer-portal.tf) ---
 
 # Deploy the portal as a Nomad job? Off by default: it requires the image pushed
-# (portal/scripts/build-image.sh), the Verify OIDC app registered with the NLB
-# `:8443` redirect URI, and the portal_oidc_* vars set. The base stack + the NLB
-# `:8443` listener provision regardless; flip this true for the portal job itself.
+# (portal/scripts/build-image.sh) and portal_oidc_issuer set. When true, the
+# identity module ALSO creates the portal's Verify OIDC app (no hand-registration)
+# — see modules/identity/verify.tf. The base stack + the NLB `:8443` listener
+# provision regardless; flip this true for the portal job + its Verify app.
 variable "enable_developer_portal" {
-  description = "Deploy the Developer Portal Nomad job (needs the image + Verify app + portal_oidc_* vars)."
+  description = "Deploy the Developer Portal Nomad job AND create its IBM Verify OIDC app (needs the image + portal_oidc_issuer)."
   type        = bool
   default     = false
 }
@@ -207,17 +208,14 @@ variable "portal_oidc_issuer" {
   default     = ""
 }
 
-variable "portal_oidc_client_id" {
-  description = "Client id of the portal's IBM Verify OIDC app (registered manually). Required only when enable_developer_portal = true."
-  type        = string
-  default     = ""
-}
-
-variable "portal_oidc_client_secret" {
-  description = "Client secret of the portal's IBM Verify OIDC app. Required only when enable_developer_portal = true."
-  type        = string
-  default     = ""
-  sensitive   = true
+# Access-token audiences stamped on the portal's Verify app. Typically the
+# token-exchange client id the RFC 8693 OBO flow targets. The portal's client
+# id/secret are NO LONGER vars — the identity module creates the app and surfaces
+# them as outputs.
+variable "portal_oidc_audiences" {
+  description = "Audiences for the portal Verify app's access token (e.g. the token-exchange app's client id)."
+  type        = list(string)
+  default     = ["7be9262c-f5c3-4174-a105-038a0892699f"]
 }
 
 # --- Platform Admin onboarding plane (see platform-admin.tf) ---
