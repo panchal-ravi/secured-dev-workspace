@@ -219,6 +219,7 @@ export interface McpServer {
   command?: string[]
   env?: Record<string, string>
   secret_refs?: Record<string, string>
+  inject_vault_token?: boolean
   transport: string
   port: number
   path?: string
@@ -240,6 +241,7 @@ export interface DeployMcpInput {
   command?: string[]
   env?: Record<string, string>
   secret_refs?: Record<string, string>
+  inject_vault_token?: boolean
   transport: string
   port: number
   path?: string
@@ -292,6 +294,22 @@ function post<T>(url: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then(asJSON)
+}
+
+// ---- Platform Admin: project create ----
+
+export interface CreateProjectInput {
+  project_name: string
+  developers_group_name: string
+  workspace_user?: string
+  first_admin: string
+}
+
+// createProject bootstraps a project's Vault namespace + Nomad namespace +
+// Boundary scope + descriptor and grants the first project-admin. Returns the
+// written descriptor (project_name/namespace/...).
+export function createProject(input: CreateProjectInput): Promise<{ project_name: string }> {
+  return post(`${adminBase}/projects`, input)
 }
 
 export function listMcpServers(): Promise<McpServer[]> {
@@ -377,12 +395,17 @@ export function listProjectRoles(project: string): Promise<ProjectRole[]> {
     .then((d) => (d.roles as ProjectRole[]) || [])
 }
 
-export function grantProjectRole(project: string, subject: string): Promise<ProjectRole> {
-  return post(`/api/projects/${encodeURIComponent(project)}/roles`, { subject, role: 'project-admin' })
+export function grantProjectRole(
+  project: string,
+  subject: string,
+  role = 'project-admin',
+): Promise<ProjectRole> {
+  return post(`/api/projects/${encodeURIComponent(project)}/roles`, { subject, role })
 }
 
-export function revokeProjectRole(project: string, subject: string): Promise<void> {
-  return fetch(`/api/projects/${encodeURIComponent(project)}/roles/${encodeURIComponent(subject)}`, {
+export function revokeProjectRole(project: string, subject: string, role = 'project-admin'): Promise<void> {
+  const q = new URLSearchParams({ role }).toString()
+  return fetch(`/api/projects/${encodeURIComponent(project)}/roles/${encodeURIComponent(subject)}?${q}`, {
     method: 'DELETE',
     credentials: 'include',
   }).then(expectOK)

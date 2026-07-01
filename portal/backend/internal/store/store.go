@@ -28,25 +28,26 @@ const (
 // config a Platform Admin transcribed from the server's Docker/K8s instructions)
 // plus its lifecycle state on the platform.
 type MCPServer struct {
-	Name         string            `json:"name"`
-	Image        string            `json:"image"`
-	Command      []string          `json:"command,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`           // non-secret env values
-	SecretRefs   map[string]string `json:"secret_refs,omitempty"`   // env key -> Vault KV "path#field" reference
-	BlueprintRef *BlueprintRef     `json:"blueprint_ref,omitempty"` // bound at publish for blueprint-backed server types
-	Transport    string            `json:"transport"`               // stdio | sse | streamable-http
-	Port         int               `json:"port,omitempty"`
-	Path         string            `json:"path,omitempty"`
-	Namespace    string            `json:"namespace"`
-	JobID        string            `json:"job_id,omitempty"`
-	PeerID       string            `json:"peer_id,omitempty"`
-	GatewayURL   string            `json:"gateway_url,omitempty"`
-	Status       string            `json:"status"`
-	Version      int               `json:"version"`
-	TestResult   *MCPTestResult    `json:"test_result,omitempty"`
-	CreatedBy    string            `json:"created_by,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
+	Name             string            `json:"name"`
+	Image            string            `json:"image"`
+	Command          []string          `json:"command,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`                // non-secret env values
+	SecretRefs       map[string]string `json:"secret_refs,omitempty"`        // env key -> Vault KV "path#field" reference
+	InjectVaultToken bool              `json:"inject_vault_token,omitempty"` // emit a bare vault{role} so Nomad injects a WIF VAULT_TOKEN (Vault-auth servers)
+	BlueprintRef     *BlueprintRef     `json:"blueprint_ref,omitempty"`      // bound at publish for blueprint-backed server types
+	Transport        string            `json:"transport"`                    // stdio | sse | streamable-http
+	Port             int               `json:"port,omitempty"`
+	Path             string            `json:"path,omitempty"`
+	Namespace        string            `json:"namespace"`
+	JobID            string            `json:"job_id,omitempty"`
+	PeerID           string            `json:"peer_id,omitempty"`
+	GatewayURL       string            `json:"gateway_url,omitempty"`
+	Status           string            `json:"status"`
+	Version          int               `json:"version"`
+	TestResult       *MCPTestResult    `json:"test_result,omitempty"`
+	CreatedBy        string            `json:"created_by,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 }
 
 // BlueprintRef is the immutable pin (id, version, content-hash) of the credential
@@ -71,6 +72,7 @@ type ProjectMCPServer struct {
 	JobID        string          `json:"job_id,omitempty"`
 	PeerID       string          `json:"peer_id,omitempty"`
 	GatewayURL   string          `json:"gateway_url,omitempty"`
+	Transport    string          `json:"transport,omitempty"` // sse | streamable-http; passed to the gateway at RegisterPeer
 	TestResult   *MCPTestResult  `json:"test_result,omitempty"`
 	CreatedBy    string          `json:"created_by,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`

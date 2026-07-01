@@ -212,7 +212,7 @@ func (s *Service) DeployServer(ctx context.Context, actor string, groups []strin
 	row := store.ProjectMCPServer{
 		Project: project, Name: t.Name, Status: store.StatusDeployed,
 		BlueprintRef: *t.BlueprintRef, Instance: instBlob, JobID: jobID,
-		GatewayURL: peerURL(ip, t), CreatedBy: actor,
+		GatewayURL: peerURL(ip, t), Transport: t.Transport, CreatedBy: actor,
 	}
 	saved, err := s.store.UpsertProjectMCPServer(ctx, row)
 	if err != nil {
@@ -237,7 +237,7 @@ func (s *Service) TestServer(ctx context.Context, actor string, groups []string,
 		return store.ProjectMCPServer{}, err
 	}
 
-	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(project, name), row.GatewayURL)
+	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(project, name), row.GatewayURL, row.Transport)
 	if err != nil {
 		s.audit(ctx, actor, "project-mcp.test", project+"/"+name, "error", nil)
 		return store.ProjectMCPServer{}, err

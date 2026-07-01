@@ -33,8 +33,10 @@ import (
 // tested against a fake gateway.
 type Client interface {
 	// RegisterPeer registers (or reuses, by name) a peer MCP server at url and
-	// returns its gateway id.
-	RegisterPeer(ctx context.Context, name, url string) (peerID string, err error)
+	// returns its gateway id. transport is the portal transport ("sse" or
+	// "streamable-http"); the gateway federates using it, so it must match the
+	// server or the registration handshake hangs.
+	RegisterPeer(ctx context.Context, name, url, transport string) (peerID string, err error)
 	// DiscoverTools polls until the gateway has discovered the peer's tools,
 	// returning their ids. Errors if none appear within the discovery window.
 	DiscoverTools(ctx context.Context, peerID string) (toolIDs []string, err error)
@@ -109,7 +111,7 @@ func New(baseURL, adminEmail, jwtSecret string, hc *http.Client) Client {
 	}
 }
 
-func (c *httpClient) RegisterPeer(ctx context.Context, name, url string) (string, error) {
+func (c *httpClient) RegisterPeer(ctx context.Context, name, url, transport string) (string, error) {
 	jwt, err := c.mintAdminJWT()
 	if err != nil {
 		return "", err
@@ -120,7 +122,7 @@ func (c *httpClient) RegisterPeer(ctx context.Context, name, url string) (string
 	} else if id != "" {
 		return id, nil
 	}
-	body, _ := json.Marshal(map[string]string{"name": name, "url": url})
+	body, _ := json.Marshal(map[string]string{"name": name, "url": url, "transport": cfTransport(transport)})
 	var created struct {
 		ID string `json:"id"`
 	}
@@ -131,6 +133,16 @@ func (c *httpClient) RegisterPeer(ctx context.Context, name, url string) (string
 		return "", fmt.Errorf("mcpgw: gateway returned no peer id for %q", name)
 	}
 	return created.ID, nil
+}
+
+// cfTransport maps the portal transport onto ContextForge's GatewayCreate.transport
+// enum. ContextForge defaults an unspecified transport to "SSE"; sending the wrong
+// one makes it federate over the wrong protocol and the registration handshake hangs.
+func cfTransport(transport string) string {
+	if transport == "streamable-http" {
+		return "STREAMABLEHTTP"
+	}
+	return "SSE"
 }
 
 func (c *httpClient) DiscoverTools(ctx context.Context, peerID string) ([]string, error) {

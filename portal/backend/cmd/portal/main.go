@@ -27,6 +27,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectbootstrap"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
@@ -104,16 +105,40 @@ func run() error {
 		logger.Info("platform-admin onboarding plane disabled (set PORTAL_MCP_GATEWAY_ADDR and PORTAL_LLM_GATEWAY_ADDR to enable)")
 	}
 
+	// Project-create plane (platform-admin) — additive and optional. Enabled when
+	// the creator broker is configured (a third Nomad workload identity + the
+	// root-ns project-creator role, applied by terraform/infra). Independent of the
+	// MCP/LLM onboarding plane.
+	var projectCreate *projectbootstrap.Handlers
+	if cfg.CreatorJWTPath != "" {
+		vc := projectbootstrap.NewVaultCreator(vault.APIClient(),
+			projectbootstrap.CreatorConfig{JWTPath: cfg.CreatorJWTPath, Role: cfg.CreatorRole, AuthMount: cfg.CreatorAuthMount},
+			projectbootstrap.JWKSConfig{URL: cfg.NomadJWKSURL, CAPEM: cfg.NomadCAPEM})
+		// The descriptor write goes through the ephemeral creator token (vc), not the
+		// standing read-only portal WIF token, which cannot write secret/data/projects/*.
+		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, vc, projectRoles, st, projectbootstrap.Config{
+			NomadOIDCAuthMethod:      cfg.NomadOIDCAuthMethodName,
+			BoundaryOrgScopeID:       cfg.BoundaryOrgScopeID,
+			BoundaryOIDCAuthMethodID: cfg.BoundaryOIDCAuthMethodID,
+			InstancePrivateIP:        cfg.InstancePrivateIP,
+		})
+		projectCreate = projectbootstrap.NewHandlers(pbSvc)
+		logger.Info("project-create plane enabled")
+	} else {
+		logger.Info("project-create plane disabled (set PORTAL_CREATOR_JWT_PATH to enable)")
+	}
+
 	mux := api.NewMux(api.Options{
-		Auth:         authn,
-		Svc:          svc,
-		Admin:        adminHandlers,
-		ProjectRoles: projectRoles,
-		ProjectMCP:   projectMCP,
-		Store:        st,
-		StaticDir:    staticDir,
-		Ready:        newReadinessCheck(vault, nomad),
-		RateLimit:    middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
+		Auth:          authn,
+		Svc:           svc,
+		Admin:         adminHandlers,
+		ProjectCreate: projectCreate,
+		ProjectRoles:  projectRoles,
+		ProjectMCP:    projectMCP,
+		Store:         st,
+		StaticDir:     staticDir,
+		Ready:         newReadinessCheck(vault, nomad),
+		RateLimit:     middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
 	})
 
 	// Cross-cutting middleware, outermost first: recover → request context (id) →
@@ -206,7 +231,11 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
 	llm := llmgw.New(cfg.LLMGatewayAddr, llmKey, nil)
 
-	vadmin := blueprint.NewVaultAdmin(vault.APIClient())
+	vadmin := blueprint.NewVaultAdmin(vault.APIClient(), blueprint.ProvisionerConfig{
+		JWTPath:   cfg.ProvisionerJWTPath,
+		Role:      cfg.ProvisionerRole,
+		AuthMount: cfg.ProvisionerAuthMount,
+	})
 	executor := blueprint.NewExecutor(vadmin, blueprint.ExecutorConfig{
 		AuthPath:      "jwt-nomad",
 		BoundAudience: "vault",

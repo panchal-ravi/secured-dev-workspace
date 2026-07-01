@@ -93,7 +93,8 @@ portal_oidc_issuer = "https://myorg.verify.ibm.com/oidc/endpoint/default"
 
 # --- Platform Admin onboarding plane (see platform-admin.tf) ---
 # Enables the in-portal MCP-server deploy + LLM-model onboarding plane AND the
-# project-admin blueprint-deploy grant (vault_policy.portal_provisioning). Gated:
+# portal's second (vault-provisioner) workload identity, which it brokers per-project
+# against the namespace-native portal-provisioner role (terraform/project). Gated:
 # requires enable_developer_portal + both gateways. The runbook applies with
 # `-var enable_platform_admin=true -var enable_agent_nodes=true`. Also REQUIRES a
 # Verify group named exactly `platform-admins` whose members get the role.

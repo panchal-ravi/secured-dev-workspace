@@ -44,3 +44,34 @@ func TestRenderMCPJobHCLStable(t *testing.T) {
 		}
 	}
 }
+
+// A Vault-authenticating server (no secret_refs) with InjectVaultToken set emits a
+// bare vault{role} block so Nomad injects a WIF VAULT_TOKEN — and NO template.
+func TestRenderMCPJobHCL_InjectVaultToken(t *testing.T) {
+	cfg := Config{MCPNamespace: "infra-mcp", MCPJobVaultRole: "infra-mcp-selftest"}.withDefaults()
+	srv := store.MCPServer{
+		Name:             "vault-mcp",
+		Image:            "hashicorp/vault-mcp-server:latest",
+		Command:          []string{"http"},
+		Transport:        "streamable-http",
+		Port:             8080,
+		InjectVaultToken: true,
+	}
+	hcl := renderMCPJobHCL(srv, cfg)
+	if !strings.Contains(hcl, `role = "infra-mcp-selftest"`) {
+		t.Fatalf("render missing bare vault role in:\n%s", hcl)
+	}
+	if strings.Contains(hcl, "template {") {
+		t.Fatalf("InjectVaultToken should emit no template block:\n%s", hcl)
+	}
+}
+
+// Without InjectVaultToken and without secret_refs, no vault block is emitted
+// (mcp.auth=none, byte-identical to prior behavior).
+func TestRenderMCPJobHCL_NoCredentialNoVaultBlock(t *testing.T) {
+	cfg := Config{MCPNamespace: "infra-mcp", MCPJobVaultRole: "infra-mcp-selftest"}.withDefaults()
+	srv := store.MCPServer{Name: "plain", Image: "img:1", Transport: "sse", Port: 9000}
+	if hcl := renderMCPJobHCL(srv, cfg); strings.Contains(hcl, "vault {") {
+		t.Fatalf("no-credential server should emit no vault block:\n%s", hcl)
+	}
+}

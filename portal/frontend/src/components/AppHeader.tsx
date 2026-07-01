@@ -55,6 +55,7 @@ export default function AppHeader({
   // Platform Admin onboarding plane — shown only to platform admins.
   if (isPlatformAdmin(me)) {
     items.push(
+      { label: 'Projects (admin)', path: '/admin/projects', icon: Folders, current: pathname.startsWith('/admin/projects') },
       { label: 'MCP servers', path: '/admin/mcp-servers', icon: Catalog, current: pathname.startsWith('/admin/mcp-servers') },
       { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
       { label: 'Vault blueprints', path: '/admin/blueprints', icon: DataStructured, current: pathname.startsWith('/admin/blueprints') },

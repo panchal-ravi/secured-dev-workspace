@@ -54,12 +54,14 @@ func (f *fakeVault) WriteKV(_ context.Context, path string, data map[string]any)
 }
 
 type fakeGateway struct {
-	probe       mcpgw.ScopeProbe
-	tools       []string
-	deletedPeer bool
+	probe         mcpgw.ScopeProbe
+	tools         []string
+	deletedPeer   bool
+	lastTransport string
 }
 
-func (f *fakeGateway) RegisterPeer(_ context.Context, name, url string) (string, error) {
+func (f *fakeGateway) RegisterPeer(_ context.Context, name, url, transport string) (string, error) {
+	f.lastTransport = transport
 	return "peer-" + name, nil
 }
 func (f *fakeGateway) DiscoverTools(_ context.Context, peerID string) ([]string, error) {
@@ -137,7 +139,7 @@ func TestMCPDeployTestPublish(t *testing.T) {
 	svc, _ := newService(n, g, &fakeLLM{}, v)
 	ctx := context.Background()
 
-	in := DeployMCPInput{Name: "vault-mcp", Image: "hashicorp/vault-mcp-server", Transport: "sse", Port: 9100}
+	in := DeployMCPInput{Name: "vault-mcp", Image: "hashicorp/vault-mcp-server", Transport: "sse", Port: 8080}
 	srv, err := svc.DeployMCPServer(ctx, "admin@x", in)
 	if err != nil {
 		t.Fatalf("DeployMCPServer: %v", err)
@@ -145,7 +147,7 @@ func TestMCPDeployTestPublish(t *testing.T) {
 	if srv.Status != store.StatusDeployed || srv.JobID != "jobid" {
 		t.Fatalf("unexpected deploy state: %+v", srv)
 	}
-	if srv.GatewayURL != "http://10.0.0.5:9100/sse" {
+	if srv.GatewayURL != "http://10.0.0.5:8080/sse" {
 		t.Fatalf("GatewayURL = %q", srv.GatewayURL)
 	}
 	if !strings.Contains(n.lastHCL, "image      = \"hashicorp/vault-mcp-server\"") {
@@ -164,6 +166,9 @@ func TestMCPDeployTestPublish(t *testing.T) {
 	if tested.TestResult == nil || !tested.TestResult.Passed || tested.TestResult.ToolsDiscovered != 2 {
 		t.Fatalf("unexpected test result: %+v", tested.TestResult)
 	}
+	if g.lastTransport != "sse" {
+		t.Fatalf("RegisterPeer transport = %q, want sse", g.lastTransport)
+	}
 
 	pub, err := svc.PublishMCPServer(ctx, "admin@x", "vault-mcp", nil)
 	if err != nil {
@@ -177,6 +182,36 @@ func TestMCPDeployTestPublish(t *testing.T) {
 	}
 }
 
+func TestDeployInjectVaultToken(t *testing.T) {
+	ctx := context.Background()
+
+	// Guard: flag set but no MCPJobVaultRole configured (infra not applied) → 400,
+	// and nothing is registered with Nomad.
+	n := &fakeNomad{}
+	noRole := New(store.NewMemory(), n, &fakeGateway{}, &fakeLLM{}, &fakeVault{}, nil, Config{})
+	_, err := noRole.DeployMCPServer(ctx, "admin@x", DeployMCPInput{
+		Name: "vault-mcp", Image: "img", Transport: "streamable-http", Port: 8080, InjectVaultToken: true,
+	})
+	if !errors.Is(err, apperr.ErrBadRequest) {
+		t.Fatalf("guard: want ErrBadRequest, got %v", err)
+	}
+	if n.lastHCL != "" {
+		t.Fatalf("guard should not register a job, got HCL:\n%s", n.lastHCL)
+	}
+
+	// Happy path: role configured → deploy renders the bare vault{role} block.
+	n2 := &fakeNomad{}
+	svc, _ := newService(n2, &fakeGateway{probe: passingProbe(), tools: []string{"t1"}}, &fakeLLM{}, &fakeVault{})
+	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{
+		Name: "vault-mcp", Image: "img", Transport: "streamable-http", Port: 8080, InjectVaultToken: true,
+	}); err != nil {
+		t.Fatalf("deploy with role: %v", err)
+	}
+	if !strings.Contains(n2.lastHCL, `role = "infra-mcp-job"`) {
+		t.Fatalf("rendered HCL missing vault role:\n%s", n2.lastHCL)
+	}
+}
+
 func TestPublishBindsBlueprintRef(t *testing.T) {
 	n := &fakeNomad{}
 	g := &fakeGateway{probe: passingProbe(), tools: []string{"t1"}}
@@ -187,7 +222,7 @@ func TestPublishBindsBlueprintRef(t *testing.T) {
 	if _, err := st.UpsertBlueprint(ctx, store.Blueprint{ID: "postgres-mcp", Version: 1, Class: "A", ContentHash: "h1", Status: store.StatusPublished}); err != nil {
 		t.Fatalf("seed blueprint: %v", err)
 	}
-	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "postgres-mcp", Image: "img", Transport: "sse", Port: 9300}); err != nil {
+	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "postgres-mcp", Image: "img", Transport: "sse", Port: 8080}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if _, err := svc.TestMCPServer(ctx, "admin@x", "postgres-mcp"); err != nil {
@@ -218,7 +253,7 @@ func TestMCPFailingProbeBlocksPublish(t *testing.T) {
 	svc, _ := newService(n, g, &fakeLLM{}, &fakeVault{})
 	ctx := context.Background()
 
-	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "bad-mcp", Image: "img", Transport: "streamable-http", Port: 9200}); err != nil {
+	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "bad-mcp", Image: "img", Transport: "streamable-http", Port: 8080}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	tested, _ := svc.TestMCPServer(ctx, "admin@x", "bad-mcp")
@@ -238,6 +273,8 @@ func TestMCPValidation(t *testing.T) {
 		{Name: "ok-name", Image: "", Transport: "sse", Port: 80},      // no image
 		{Name: "ok-name", Image: "img", Transport: "stdio", Port: 80}, // stdio not allowed
 		{Name: "ok-name", Image: "img", Transport: "sse", Port: 0},    // bad port
+		{Name: "ok-name", Image: "img", Transport: "sse", Port: 9000}, // port above the 8080-8099 band
+		{Name: "ok-name", Image: "img", Transport: "sse", Port: 8079}, // port below the band
 	}
 	for i, in := range cases {
 		if _, err := svc.DeployMCPServer(ctx, "admin@x", in); !errors.Is(err, apperr.ErrBadRequest) {
@@ -247,10 +284,10 @@ func TestMCPValidation(t *testing.T) {
 }
 
 func TestMCPPortConflict(t *testing.T) {
-	n := &fakeNomad{usedPorts: []int{9300}}
+	n := &fakeNomad{usedPorts: []int{8090}}
 	svc, _ := newService(n, &fakeGateway{}, &fakeLLM{}, &fakeVault{})
 	ctx := context.Background()
-	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "clash-mcp", Image: "img", Transport: "sse", Port: 9300}); !errors.Is(err, apperr.ErrConflict) {
+	if _, err := svc.DeployMCPServer(ctx, "admin@x", DeployMCPInput{Name: "clash-mcp", Image: "img", Transport: "sse", Port: 8090}); !errors.Is(err, apperr.ErrConflict) {
 		t.Fatalf("want ErrConflict on used port, got %v", err)
 	}
 }

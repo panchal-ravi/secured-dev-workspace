@@ -86,7 +86,7 @@ What this changes (all additive):
 | `litellm.nomad.hcl.tftpl` | flips `STORE_MODEL_IN_DB=true` (redeploys the litellm job) |
 | `nomad_acl_policy.portal_service_discovery` | job-scoped read of `infra`-namespace Nomad services, bound to the `developer-portal` workload identity (gateway discovery) |
 | `developer-portal` job | redeploys with `PORTAL_MCP_NAMESPACE=infra-mcp`, `PORTAL_AGENT_NODE_POOL=agents`, and a `nomadService` template that resolves `PORTAL_MCP_GATEWAY_ADDR` / `PORTAL_LLM_GATEWAY_ADDR` from the `mcp-gateway` / `llm-gateway` Nomad services at runtime (no loopback/co-location requirement) |
-| `vault_policy.portal_provisioning` | creates the **`portal-blueprint-provisioning`** policy and appends it to the portal's root WIF role (`infra-developer-portal`), so a **project-admin** can instantiate a credential blueprint into their project's Vault namespace. The portal's Executor scopes each Vault call to a child namespace via `WithNamespace`. **Confirmed limitation:** a root-token request to a child namespace is ACL-matched against the **namespace-prefixed** path (`<child>/…`); both a bare relative grant **and** the `+/` wildcard fail to match the namespace segment (only an explicit `<child>/…` prefix matches), so this policy **403s on a real deploy** as written. The project-deploy plane needs the **§5 hardening** first — per-project policy attachment or a dedicated per-namespace provisioner token. Containment is app-level (always-target-a-namespace + generated-policy lint) plus explicit `deny` stanzas — see `portal-provisioning-policy.hcl` / `terraform/infra/README.md`. **Enables the project-admin deploy plane (§5), pending the cross-namespace hardening.** |
+| portal **`vault-provisioner`** workload identity | gives the portal task a second Nomad workload identity (`aud = vault-provisioner`, JWT at `secrets/nomad_vault_provisioner.jwt`), so a **project-admin** can instantiate a credential blueprint into their project's Vault namespace. At deploy time the portal trades that identity at the **target namespace's** `jwt-nomad` backend (role `portal-provisioner`) for a short-TTL (300s) token **native to that namespace**, which evaluates a **relative-path** `portal-provisioner` policy — so the portal holds **no standing token** into any project and the old root-token `+/` namespace-prefix ACL problem never arises. The role + policy are created per-namespace by the **project tier** (`terraform/project/portal-provisioner.tf`), so each project must have had its `terraform/project` apply run first. See `terraform/infra/README.md`. **Enables the project-admin deploy plane (§5).** |
 
 > If the key-bootstrap `local-exec` can't reach the gateway, the apply still
 > succeeds; the portal logs a warning and disables only the admin plane. Manual
@@ -130,10 +130,33 @@ in the left nav (shown only to platform-admins → `/admin/mcp-servers`).
    - **Name** — lowercase letters/digits/dashes, e.g. `vault-mcp`.
    - **Container image** — e.g. `hashicorp/vault-mcp-server:latest`.
    - **Transport** — `SSE` or `Streamable HTTP`.
-   - **Listen port** — the port the server listens on in the container.
+   - **Listen port** — the port the server listens on in the container. **Must be in
+     `8080`–`8099`**: MCP jobs run on the `agents` node pool and the ContextForge gateway
+     (main node) dials them cross-node at `nodeIP:<port>`; only that band is opened
+     intra-SG on the agent nodes (`self=true`, `network.tf`). A port outside it deploys
+     but Test/Publish fail with `ConnectTimeout` (the gateway's dial is dropped), so the
+     portal rejects out-of-band ports with 400.
    - **MCP path** (optional) — defaults to `/sse` or `/mcp` by transport.
    - **Arguments** (optional, one per line) and **Environment** (optional, `KEY=VALUE`
      per line — **non-secret values only**; secrets are injected from Vault).
+   - **Inject a Vault (WIF) token as `VAULT_TOKEN`** (checkbox) — tick it for servers
+     that authenticate to Vault to open a session (e.g. the Vault MCP server). The
+     portal renders a bare `vault { role }` block on the job and **Nomad injects a
+     powerless self-test `VAULT_TOKEN`** over WIF (`infra-mcp-selftest`, grants only
+     token self-lookup — see `platform-admin.tf`). This exists solely so the
+     consumption-mirror Test can open a session and list tools; **real Vault access
+     comes only from the project-plane Class C blueprint token**, never this one.
+     Requires the infra tier applied (sets `PORTAL_MCP_JOB_VAULT_ROLE`); if unset the
+     deploy is rejected with 400.
+
+   For `hashicorp/vault-mcp-server` specifically: the image has **no `ENTRYPOINT`** and
+   its default `CMD` hardcodes the `stdio` subcommand (`/bin/vault-mcp-server stdio`), so
+   `TRANSPORT_MODE` env alone cannot flip it and passing just `http` as an argument fails
+   with `exec: "http": executable file not found`. You must replace the whole command.
+   Use: Transport **Streamable HTTP**, Listen port `8080`, **Arguments** (one per line)
+   `/bin/vault-mcp-server` then `http`, Environment `TRANSPORT_HOST=0.0.0.0` /
+   `TRANSPORT_PORT=8080`, and **tick Inject a Vault token**. `TRANSPORT_HOST=0.0.0.0` and
+   `TRANSPORT_PORT` = Listen port are both required, or the health check never passes.
 
    Click **Deploy**. The portal renders a Docker Nomad job in `infra-mcp`, waits
    healthy, and the row appears with status **deployed**.
@@ -145,6 +168,12 @@ in the left nav (shown only to platform-admins → `/admin/mcp-servers`).
 3. **Publish** — click **Publish** (enabled only once the test passes; disabled once
    published). Writes the descriptor to `secret/infra/mcp-servers/<name>`; the server
    becomes discoverable by projects. **Delete** (danger) tears the Nomad job down.
+
+   **Edit** (on the row) reopens the form prefilled with the current run config — use
+   it to fix a bad image/args/env/port without re-typing everything (e.g. the
+   `vault-mcp` arguments above). The name is the identity key and is locked. Saving
+   re-registers the Nomad job **in place** (a version bump), and resets the server to
+   **deployed** — re-run **Test** (and **Publish**) afterwards, since the run config changed.
 
 **Pass:** status **deployed** → **Test** green `passed (N tools)` (200 own-server, 403
 decoy isolation under the hood) → **Publish** flips status to **published** and writes
@@ -244,13 +273,43 @@ curl -s "$LLM/v1/chat/completions" -H "Authorization: Bearer $MASTER" -H 'Conten
 
 ---
 
+## 4b. Create a project from the Portal (project-create plane)
+
+The §1 apply also enables the **project-create plane** (`enable_platform_admin = true` +
+`enable_developer_portal = true`): the portal task gets its third workload identity (`aud =
+vault-creator`) and the `project-creator` Vault role, a dedicated Nomad token, and the F-A Boundary
+account. A platform-admin can now **create a project from the Portal** instead of running
+`terraform/project` by hand — from the **Projects (admin)** page (left nav): click **New project**,
+fill project name (`^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`), the IBM Verify developers group, the
+workspace user, and the first project-admin's email, then **Create project**. Equivalent API:
+
+```bash
+curl -sk -X POST "$PORTAL/api/admin/projects" -H "Cookie: portal_session=<value>" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_name":"project-acme","developers_group_name":"project-acme-developers","workspace_user":"dev","first_admin":"admin@org.com"}'
+```
+
+This creates the Vault child namespace (+ `jwt-nomad`, project KV, `portal-provisioner` role/policy,
+workspace WIF role), the Nomad namespace + `project-acme-dev` policy + binding rule, the Boundary
+project scope, the root-KV descriptor, and grants the first project-admin. **Prereqs:** the first
+admin must already be in the `project-acme-developers` Verify group; **per-project engines
+(SSH/GitHub/DB) and job-templates are set up afterward** (Phase 3) — a freshly created project lists
+with zero flavors until then.
+
+> **First-apply live checks:** confirm (a) the new Vault namespace has `jwt-nomad` +
+> `portal-provisioner` role/policy (validates the `project-creator` `+/…` cross-namespace globs), and
+> (b) a workspace still launches (validates the F-A Boundary grant set — see the infra README's
+> project-create-plane note). If a partial create fails mid-way, re-run the same call — every step is
+> idempotent and converges.
+
 ## 5. Enable project-admin self-service MCP deploy (R3 / B2)
 
 The platform-admin **deploy** in §3 places a server in the shared `infra-mcp` namespace. R3/B2 adds a
 *different* capability: a **project-admin** deploys a published, **blueprint-backed** MCP server into
 **their own project's** Vault + Nomad namespace, with credentials brokered by a platform-authored
-credential blueprint (never pasted). The §1 apply already attached the `portal-blueprint-provisioning`
-policy (the row above). These are the platform-admin steps that must happen **before** a project-admin
+credential blueprint (never pasted). The §1 apply already gave the portal its `vault-provisioner`
+workload identity (the row above); the per-namespace `portal-provisioner` role/policy it brokers against
+is created by each project's `terraform/project` apply. These are the platform-admin steps that must happen **before** a project-admin
 can deploy — do them in order, then hand off to
 [`../project/PROJECT-ADMIN-RUNBOOK.md`](../project/PROJECT-ADMIN-RUNBOOK.md).
 
@@ -295,17 +354,21 @@ can deploy — do them in order, then hand off to
    Project-admins then grant/revoke project-admin to other members of their own project (self-service,
    covered in the project-admin runbook).
 
-4. **Confirm the provisioning grant is live** (it was applied in §1; verify the portal actually carries
-   it after the restart):
+4. **Confirm the provisioner brokering is live** (the portal's second workload identity comes from §1;
+   the `portal-provisioner` role/policy it trades against are created per-namespace by each project's
+   `terraform/project` apply). Verify them **in the target project namespace**:
    ```bash
    export VAULT_ADDR="$(terraform output -raw vault_addr)" VAULT_SKIP_VERIFY=true
    export VAULT_TOKEN="$(terraform output -raw vault_root_token)"
-   vault policy read portal-blueprint-provisioning >/dev/null && echo "policy present"
-   vault read auth/jwt-nomad/role/infra-developer-portal -format=json | jq '.data.token_policies'
-   #   expect the list to include "portal-blueprint-provisioning"
+   vault policy read -namespace=project-acme portal-provisioner >/dev/null && echo "policy present"
+   vault read -namespace=project-acme auth/jwt-nomad/role/portal-provisioner -format=json \
+     | jq '{token_policies:.data.token_policies, token_ttl:.data.token_ttl, bound_claims:.data.bound_claims}'
+   #   expect token_policies=["portal-provisioner"], token_ttl=300, and bound_claims pinning
+   #   nomad_namespace=infra / nomad_job_id=developer-portal
    ```
-   If it's missing from the running portal's token, restart so it re-authenticates over WIF:
-   `nomad job restart -namespace infra -reschedule -on-error=fail developer-portal`.
+   If the role/policy are missing, the project hasn't been applied yet — run its `terraform/project`
+   apply first. If the portal itself was just restarted, it re-mints the `vault-provisioner` JWT over WIF
+   on start: `nomad job restart -namespace infra -reschedule -on-error=fail developer-portal`.
 
 ### 5a. Verify & manage in the Portal UI
 
@@ -350,9 +413,12 @@ terraform apply -var enable_platform_admin=false
 ```
 
 Drops the env/policy/namespace and reverts `STORE_MODEL_IN_DB`; the portal returns to
-byte-identical developer-only behavior. This also drops `vault_policy.portal_provisioning`
-and detaches `portal-blueprint-provisioning` from the portal WIF role, so the
-**project-admin deploy plane (§5) becomes unavailable** — already-deployed project MCP
+byte-identical developer-only behavior. This also drops the portal's second
+`vault-provisioner` workload identity, so the portal can no longer broker a
+provisioner token into any project namespace and the
+**project-admin deploy plane (§5) becomes unavailable** — the per-namespace
+`portal-provisioner` role/policy remain in each project until that project's tier is
+destroyed. Already-deployed project MCP
 servers + their Vault state are untouched (delete them via the project-admin runbook
 first if you want a clean teardown). Models already persisted in LiteLLM's Postgres
 remain there but are no longer managed by the portal.

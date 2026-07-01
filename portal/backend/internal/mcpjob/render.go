@@ -45,6 +45,17 @@ type WIFCredential struct {
 
 func (WIFCredential) isCredential() {}
 
+// WIFTokenCredential renders a bare `vault { role }` block and no template. Nomad
+// mints a WIF token for the task and auto-injects it as VAULT_TOKEN. Used by the
+// platform reference instance of a Vault-authenticating server (e.g. the Vault MCP
+// server) so its MCP session can open with a powerless self-test token; real
+// capability comes from the project-plane Class C token.
+type WIFTokenCredential struct {
+	VaultRole string
+}
+
+func (WIFTokenCredential) isCredential() {}
+
 // Render builds the Docker-driver Nomad job HCL. The output for a KVCredential is
 // byte-identical to the platform admin's prior renderMCPJobHCL (regression-guarded
 // by the admin golden test).
@@ -121,6 +132,10 @@ func Render(s RenderSpec) string {
 
 func renderCredential(w func(string, ...any), c Credential) {
 	switch cred := c.(type) {
+	case WIFTokenCredential:
+		w("\n      vault {\n")
+		w("        role = %q\n", cred.VaultRole)
+		w("      }\n")
 	case KVCredential:
 		if len(cred.SecretRefs) == 0 {
 			return

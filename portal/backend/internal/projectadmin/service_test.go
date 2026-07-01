@@ -79,7 +79,7 @@ type fakeGateway struct {
 	deletedVS    []string
 }
 
-func (f *fakeGateway) RegisterPeer(_ context.Context, name, _ string) (string, error) {
+func (f *fakeGateway) RegisterPeer(_ context.Context, name, _, _ string) (string, error) {
 	f.registered = append(f.registered, name)
 	return "peer-" + name, nil
 }

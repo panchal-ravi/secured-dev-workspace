@@ -48,6 +48,40 @@ resource "vault_policy" "infra_platform_admin" {
   HCL
 }
 
+# Self-test WIF token for platform reference MCP instances. Some MCP servers need a
+# Vault token merely to open an MCP session (e.g. hashicorp/vault-mcp-server fails
+# session creation without one), so the platform-admin consumption-mirror Test can't
+# discover their tools tokenless. When a Platform Admin ticks "Inject a Vault token"
+# on deploy, the portal renders a bare `vault { role }` block on the reference job and
+# Nomad mints/injects/renews/revokes VAULT_TOKEN over WIF — the same mechanism the
+# project-plane Class C deploy uses. This policy is intentionally POWERLESS: it grants
+# only token self-lookup. Real Vault capability comes solely from the project-plane
+# Class C WIF token, scoped by the bound blueprint inside the project namespace.
+resource "vault_policy" "infra_mcp_selftest" {
+  count = local.platform_admin_count
+  name  = "infra-mcp-selftest"
+
+  policy = <<-HCL
+    path "auth/token/lookup-self" {
+      capabilities = ["read"]
+    }
+  HCL
+}
+
+resource "vault_jwt_auth_backend_role" "infra_mcp_selftest" {
+  count                   = local.platform_admin_count
+  backend                 = module.nomad_vault_wif.backend_path
+  role_name               = "infra-mcp-selftest"
+  role_type               = "jwt"
+  bound_audiences         = ["vault.io"]
+  user_claim              = "/nomad_job_id"
+  user_claim_json_pointer = true
+  token_policies          = [vault_policy.infra_mcp_selftest[0].name]
+  token_ttl               = 1800
+  token_max_ttl           = 3600
+  token_type              = "service"
+}
+
 # Mint the portal-admin (non-master) LiteLLM key once the gateway is up and store it
 # in the llm-gateway KV secret. Re-runs if the gateway job is replaced. The portal
 # degrades gracefully (admin plane disabled, developer flows unaffected) if this has

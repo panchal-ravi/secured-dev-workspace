@@ -1,8 +1,7 @@
-package projectrole
+package projectbootstrap
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -19,40 +18,24 @@ type Handlers struct {
 // NewHandlers wraps a Service in its HTTP adapter.
 func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
 
-func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
-	roles, err := h.svc.List(r.Context(), r.PathValue("name"))
-	if err != nil {
-		fail(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"roles": roles})
+// Register mounts the project-create route. mutate must apply auth +
+// platform-admin gate + rate limiting (wired in api.NewMux).
+func (h *Handlers) Register(mux *http.ServeMux, mutate func(http.HandlerFunc) http.Handler) {
+	mux.Handle("POST /api/admin/projects", mutate(h.createProject))
 }
 
-func (h *Handlers) Grant(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Subject string `json:"subject"`
-		Role    string `json:"role"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && err != io.EOF {
+func (h *Handlers) createProject(w http.ResponseWriter, r *http.Request) {
+	var in CreateProjectInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
 		return
 	}
-	pr, err := h.svc.Grant(r.Context(), actor(r), r.PathValue("name"), in.Subject, in.Role)
+	d, err := h.svc.CreateProject(r.Context(), actor(r), in)
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, pr)
-}
-
-func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
-	// role is an optional query param; empty defaults to project-admin in Service.
-	role := r.URL.Query().Get("role")
-	if err := h.svc.Revoke(r.Context(), actor(r), r.PathValue("name"), r.PathValue("subject"), role); err != nil {
-		fail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusCreated, d)
 }
 
 func actor(r *http.Request) string {
@@ -66,7 +49,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeErr(w, status, err.Error(), rid)
 		return
 	}
-	slog.Error("project-role request failed", "err", err, "request_id", rid, "method", r.Method, "path", r.URL.Path)
+	slog.Error("project-create request failed", "err", err, "request_id", rid, "method", r.Method, "path", r.URL.Path)
 	writeErr(w, http.StatusBadGateway, "upstream service error", rid)
 }
 

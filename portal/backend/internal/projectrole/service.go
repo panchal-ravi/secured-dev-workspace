@@ -23,7 +23,10 @@ func New(st store.Store) *Service { return &Service{store: st} }
 
 // allowed is the set of roles a caller may grant. Kept explicit so a typo can
 // never mint an unexpected role.
-var allowed = map[string]bool{string(rbac.RoleProjectAdmin): true}
+var allowed = map[string]bool{
+	string(rbac.RoleProjectAdmin):     true,
+	string(rbac.RoleProjectDeveloper): true,
+}
 
 func normalize(subject string) string { return strings.ToLower(strings.TrimSpace(subject)) }
 
@@ -46,27 +49,36 @@ func (s *Service) Grant(ctx context.Context, actor, project, subject, role strin
 	return pr, nil
 }
 
-// Revoke removes a project-admin grant. The last-admin guard refuses a revoke
-// that would leave the project with zero project-admins (platform-admin remains
-// the recovery path).
-func (s *Service) Revoke(ctx context.Context, actor, project, subject string) error {
+// Revoke removes a (subject, role) grant. An empty role defaults to project-admin
+// for backward compatibility. The last-admin guard applies only to project-admin:
+// it refuses a revoke that would leave the project with zero project-admins
+// (platform-admin remains the recovery path). Revoking a project-developer is
+// never guarded.
+func (s *Service) Revoke(ctx context.Context, actor, project, subject, role string) error {
 	subject = normalize(subject)
-	role := string(rbac.RoleProjectAdmin)
-	admins, err := s.store.ListProjectRoles(ctx, project)
-	if err != nil {
-		return err
+	if role == "" {
+		role = string(rbac.RoleProjectAdmin)
 	}
-	count, isAdmin := 0, false
-	for _, pr := range admins {
-		if pr.Role == role {
-			count++
-			if pr.Subject == subject {
-				isAdmin = true
+	if !allowed[role] {
+		return fmt.Errorf("unknown role %q: %w", role, apperr.ErrBadRequest)
+	}
+	if role == string(rbac.RoleProjectAdmin) {
+		admins, err := s.store.ListProjectRoles(ctx, project)
+		if err != nil {
+			return err
+		}
+		count, isAdmin := 0, false
+		for _, pr := range admins {
+			if pr.Role == role {
+				count++
+				if pr.Subject == subject {
+					isAdmin = true
+				}
 			}
 		}
-	}
-	if isAdmin && count <= 1 {
-		return fmt.Errorf("cannot remove the last project-admin: %w", apperr.ErrConflict)
+		if isAdmin && count <= 1 {
+			return fmt.Errorf("cannot remove the last project-admin: %w", apperr.ErrConflict)
+		}
 	}
 	if err := s.store.RevokeProjectRole(ctx, project, subject, role); err != nil {
 		return err

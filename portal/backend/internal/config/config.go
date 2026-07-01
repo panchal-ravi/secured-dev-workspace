@@ -78,6 +78,44 @@ type Config struct {
 	AgentNodePool   string // PORTAL_AGENT_NODE_POOL (default "agents")
 	MCPJobVaultRole string // PORTAL_MCP_JOB_VAULT_ROLE (WIF role for MCP jobs that reference Vault secrets)
 	DBDSN           string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
+
+	// Blueprint provisioner (project-deploy plane). The portal brokers a token
+	// native to each project namespace via a second Nomad workload identity, then
+	// provisions with it — no standing cross-namespace privilege. Empty JWTPath
+	// disables the broker (plane off / infra not applied); Instantiate then returns
+	// a 400 rather than a raw 403.
+	ProvisionerJWTPath   string // PORTAL_PROVISIONER_JWT_PATH (Nomad-written workload-identity JWT file)
+	ProvisionerRole      string // PORTAL_PROVISIONER_ROLE (default "portal-provisioner")
+	ProvisionerAuthMount string // PORTAL_PROVISIONER_AUTH_MOUNT (default "jwt-nomad")
+
+	// Project-creator broker (project-create plane). A third Nomad workload
+	// identity the portal exchanges at the ROOT-namespace jwt-nomad backend for a
+	// short-TTL token scoped to create child namespaces + bootstrap their auth.
+	// Empty JWTPath disables project creation (plane off / infra not applied).
+	CreatorJWTPath   string // PORTAL_CREATOR_JWT_PATH (Nomad-written workload-identity JWT file)
+	CreatorRole      string // PORTAL_CREATOR_ROLE (default "project-creator")
+	CreatorAuthMount string // PORTAL_CREATOR_AUTH_MOUNT (default "jwt-nomad")
+
+	// Nomad JWKS trust the creator installs into each new project namespace's
+	// jwt-nomad backend so project workloads can federate.
+	NomadJWKSURL   string // PORTAL_NOMAD_JWKS_URL (default "https://127.0.0.1:4646/.well-known/jwks.json")
+	NomadCAPEM     string // PORTAL_NOMAD_CA_PEM (PEM literal; may be empty)
+	NomadCAPEMFile string // PORTAL_NOMAD_CA_PEM_FILE (multi-line PEM is delivered as a file)
+
+	// NomadOIDCAuthMethodName is the Nomad OIDC auth method the per-project ACL
+	// binding rule attaches to. PORTAL_NOMAD_OIDC_AUTH_METHOD.
+	NomadOIDCAuthMethodName string
+
+	// BoundaryOIDCAuthMethodID is recorded in each project descriptor so the
+	// workspace connect flow knows which Boundary auth method to use.
+	BoundaryOIDCAuthMethodID string // PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID
+
+	// BoundaryOrgScopeID is the parent org scope under which project scopes are
+	// created. PORTAL_BOUNDARY_ORG_SCOPE_ID.
+	BoundaryOrgScopeID string
+
+	// InstancePrivateIP is written into each project descriptor (all-in-one node).
+	InstancePrivateIP string // PORTAL_INSTANCE_PRIVATE_IP
 }
 
 // AdminEnabled reports whether the Platform Admin onboarding plane is configured.
@@ -121,6 +159,22 @@ func Load() (Config, error) {
 		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
 		MCPJobVaultRole:      os.Getenv("PORTAL_MCP_JOB_VAULT_ROLE"),
 		DBDSN:                os.Getenv("PORTAL_DB_DSN"),
+		ProvisionerJWTPath:   os.Getenv("PORTAL_PROVISIONER_JWT_PATH"),
+		ProvisionerRole:      env("PORTAL_PROVISIONER_ROLE", "portal-provisioner"),
+		ProvisionerAuthMount: env("PORTAL_PROVISIONER_AUTH_MOUNT", "jwt-nomad"),
+
+		CreatorJWTPath:   os.Getenv("PORTAL_CREATOR_JWT_PATH"),
+		CreatorRole:      env("PORTAL_CREATOR_ROLE", "project-creator"),
+		CreatorAuthMount: env("PORTAL_CREATOR_AUTH_MOUNT", "jwt-nomad"),
+
+		NomadJWKSURL:            env("PORTAL_NOMAD_JWKS_URL", "https://127.0.0.1:4646/.well-known/jwks.json"),
+		NomadCAPEM:              os.Getenv("PORTAL_NOMAD_CA_PEM"),
+		NomadCAPEMFile:          os.Getenv("PORTAL_NOMAD_CA_PEM_FILE"),
+		NomadOIDCAuthMethodName: os.Getenv("PORTAL_NOMAD_OIDC_AUTH_METHOD"),
+
+		BoundaryOIDCAuthMethodID: os.Getenv("PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID"),
+		BoundaryOrgScopeID:       os.Getenv("PORTAL_BOUNDARY_ORG_SCOPE_ID"),
+		InstancePrivateIP:        os.Getenv("PORTAL_INSTANCE_PRIVATE_IP"),
 	}
 
 	// Secure cookies: explicit override, else inferred from the redirect scheme.
@@ -132,6 +186,16 @@ func Load() (Config, error) {
 	// only PORTAL_BOUNDARY_ADDR (already the NLB), so it falls through to that.
 	if c.BoundaryPublicAddr == "" {
 		c.BoundaryPublicAddr = c.BoundaryAddr
+	}
+
+	// Nomad JWKS CA is multi-line PEM, so it is delivered as a file the creator
+	// broker installs into each new project namespace's jwt-nomad config.
+	if c.NomadCAPEM == "" && c.NomadCAPEMFile != "" {
+		b, err := os.ReadFile(c.NomadCAPEMFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: read PORTAL_NOMAD_CA_PEM_FILE: %w", err)
+		}
+		c.NomadCAPEM = string(b)
 	}
 
 	// WIF deploy: the Vault token lives in a Nomad-managed file. Seed the initial

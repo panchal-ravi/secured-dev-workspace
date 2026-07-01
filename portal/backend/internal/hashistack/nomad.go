@@ -37,6 +37,58 @@ func (n *Nomad) Ping(ctx context.Context) error {
 	return nil
 }
 
+// CreateNamespace registers (upserts) a Nomad namespace. Idempotent by nature —
+// Register overwrites an existing namespace of the same name.
+func (n *Nomad) CreateNamespace(name, description string) error {
+	_, err := n.c.Namespaces().Register(&napi.Namespace{Name: name, Description: description}, nil)
+	if err != nil {
+		return fmt.Errorf("nomad: register namespace %q: %w", name, err)
+	}
+	return nil
+}
+
+// UpsertACLPolicy creates or replaces an ACL policy (upsert semantics).
+func (n *Nomad) UpsertACLPolicy(name, description, rulesHCL string) error {
+	_, err := n.c.ACLPolicies().Upsert(&napi.ACLPolicy{Name: name, Description: description, Rules: rulesHCL}, nil)
+	if err != nil {
+		return fmt.Errorf("nomad: upsert acl policy %q: %w", name, err)
+	}
+	return nil
+}
+
+// CreateBindingRule creates a policy binding rule on an OIDC auth method, binding
+// the selector to bindName. Idempotent: an equivalent rule (same auth method,
+// selector, and bind name) is left untouched rather than duplicated, since Nomad
+// binding-rule IDs are server-generated and Create is not upsert.
+func (n *Nomad) CreateBindingRule(authMethod, selector, bindName string) error {
+	stubs, _, err := n.c.ACLBindingRules().List(nil)
+	if err != nil {
+		return fmt.Errorf("nomad: list binding rules: %w", err)
+	}
+	for _, s := range stubs {
+		if s.AuthMethod != authMethod {
+			continue
+		}
+		rule, _, err := n.c.ACLBindingRules().Get(s.ID, nil)
+		if err != nil {
+			return fmt.Errorf("nomad: get binding rule %s: %w", s.ID, err)
+		}
+		if rule.Selector == selector && rule.BindName == bindName {
+			return nil // equivalent rule already present
+		}
+	}
+	_, _, err = n.c.ACLBindingRules().Create(&napi.ACLBindingRule{
+		AuthMethod: authMethod,
+		Selector:   selector,
+		BindType:   "policy",
+		BindName:   bindName,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("nomad: create binding rule (%s): %w", authMethod, err)
+	}
+	return nil
+}
+
 // CreateHostVolume creates the persistent /home/dev dynamic host volume (mkdir
 // plugin, single-node-writer/file-system), mirroring the dev-workspace tier. The
 // volume is pinned to a specific ready node in the job's target node pool so it

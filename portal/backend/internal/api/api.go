@@ -18,6 +18,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectbootstrap"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
@@ -35,15 +36,16 @@ type server struct {
 // and RateLimit throttles mutating endpoints per user. Admin is the optional
 // Platform Admin onboarding plane; when nil its routes are simply not mounted.
 type Options struct {
-	Auth         *auth.Authenticator
-	Svc          *workspace.Service
-	Admin        *admin.Handlers
-	ProjectRoles *projectrole.Service   // optional; project-role plane
-	ProjectMCP   *projectadmin.Handlers // optional; project MCP-deploy plane
-	Store        rbac.ProjectRoleStore
-	StaticDir    string
-	Ready        func(context.Context) error
-	RateLimit    middleware.RateLimitConfig
+	Auth          *auth.Authenticator
+	Svc           *workspace.Service
+	Admin         *admin.Handlers
+	ProjectCreate *projectbootstrap.Handlers // optional; platform-admin project-create plane
+	ProjectRoles  *projectrole.Service       // optional; project-role plane
+	ProjectMCP    *projectadmin.Handlers     // optional; project MCP-deploy plane
+	Store         rbac.ProjectRoleStore
+	StaticDir     string
+	Ready         func(context.Context) error
+	RateLimit     middleware.RateLimitConfig
 }
 
 // NewMux wires every route and returns the root handler.
@@ -85,6 +87,9 @@ func NewMux(opts Options) http.Handler {
 	}
 	if opts.Admin != nil {
 		opts.Admin.Register(mux, adminProtect, adminMutate)
+	}
+	if opts.ProjectCreate != nil {
+		opts.ProjectCreate.Register(mux, adminMutate)
 	}
 
 	// Project-role plane (optional): self-service grant/revoke gated on project-admin

@@ -15,6 +15,11 @@ import (
 // It is a DB elevation of a project member, not a Verify group.
 const RoleProjectAdmin Role = "project-admin"
 
+// RoleProjectDeveloper marks a project member as a developer within one project.
+// Like project-admin it is a Portal-DB elevation gated by the project's single
+// Verify group — the admin/developer distinction lives here, not in the IdP.
+const RoleProjectDeveloper Role = "project-developer"
+
 // ProjectRoleStore is the read side of project-role grants the guard consults
 // (satisfied by *store.Memory / *store.Postgres).
 type ProjectRoleStore interface {

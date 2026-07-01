@@ -308,6 +308,19 @@ resource "aws_security_group" "instance" {
     self        = true
   }
 
+  # Platform-admin MCP servers run as Nomad jobs on the "agents" node pool and the
+  # ContextForge gateway (main node) federates to them at nodeIP:<port> to run the
+  # consumption-mirror test/publish. The portal allocates their static listen port
+  # from the 8080-8099 band, so open exactly that band intra-SG (self=true confines
+  # it to cluster members). Without this the gateway's dial is dropped → ConnectTimeout.
+  ingress {
+    description = "MCP servers on agent nodes reached by the ContextForge gateway (main node)"
+    from_port   = 8080
+    to_port     = 8099
+    protocol    = "tcp"
+    self        = true
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

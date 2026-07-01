@@ -18,6 +18,10 @@
 locals {
   developer_portal_port = 8443
   portal_count          = var.enable_developer_portal ? 1 : 0
+  # The project-create plane rides on the platform-admin plane (both are portal-admin
+  # capabilities): a scoped-ephemeral Vault creator role, a dedicated Nomad token, and
+  # a scoped Boundary account (see boundary-portal.tf).
+  project_creator_count = var.enable_developer_portal && var.enable_platform_admin ? 1 : 0
   # The portal's Verify app redirect URI MUST be registered to match this exactly.
   portal_redirect_url = "https://${module.secured_codespace.nlb_dns_name}:${local.developer_portal_port}/auth/callback"
 }
@@ -62,12 +66,16 @@ resource "vault_kv_secret_v2" "developer_portal" {
   # The portal-postgres password is copied here (when the admin plane is on) so the
   # portal can assemble PORTAL_DB_DSN in its jobspec over its existing WIF read of
   # this path — no second WIF role for the portal.
+  # When the project-create plane is on, the portal uses tightened creds: a
+  # dedicated (revocable) Nomad management token and a scoped Boundary account
+  # (org-subtree admin, not the global bootstrap admin). Otherwise it falls back to
+  # the bootstrap admin creds it used before.
   data_json = jsonencode(merge({
     oidc_client_secret = module.identity.portal_app_client_secret
     session_secret     = random_password.portal_session_secret[0].result
-    boundary_login     = module.secured_codespace.admin_login_name
-    boundary_password  = module.secured_codespace.admin_password
-    nomad_token        = module.secured_codespace.nomad_management_token
+    boundary_login     = local.project_creator_count > 0 ? boundary_account_password.portal[0].login_name : module.secured_codespace.admin_login_name
+    boundary_password  = local.project_creator_count > 0 ? random_password.portal_boundary[0].result : module.secured_codespace.admin_password
+    nomad_token        = local.project_creator_count > 0 ? nomad_acl_token.portal[0].secret_id : module.secured_codespace.nomad_management_token
     tls_cert           = tls_self_signed_cert.portal[0].cert_pem
     tls_key            = tls_private_key.portal[0].private_key_pem
     }, var.enable_platform_admin ? {
@@ -97,18 +105,6 @@ resource "vault_policy" "infra_portal_read" {
   HCL
 }
 
-# Blueprint-provisioning grant for the project-MCP deploy plane (B2 / R3). Attached
-# to the portal WIF role below; applies INSIDE whichever project namespace the
-# portal's blueprint Executor targets via client.WithNamespace(<project>). See
-# portal-provisioning-policy.hcl for the (honest) containment rationale. Gated on the
-# onboarding plane, exactly like infra_platform_admin — the project deploy plane only
-# initializes when the admin plane is enabled.
-resource "vault_policy" "portal_provisioning" {
-  count  = local.platform_admin_count
-  name   = "portal-blueprint-provisioning"
-  policy = file("${path.module}/portal-provisioning-policy.hcl")
-}
-
 resource "vault_jwt_auth_backend_role" "infra_portal" {
   count                   = local.portal_count
   backend                 = module.nomad_vault_wif.backend_path
@@ -121,12 +117,92 @@ resource "vault_jwt_auth_backend_role" "infra_portal" {
     [vault_policy.infra_portal_read[0].name],
     var.enable_platform_admin ? [
       vault_policy.infra_platform_admin[0].name,
-      vault_policy.portal_provisioning[0].name,
     ] : [],
   )
   token_ttl     = 1800
   token_max_ttl = 3600
   token_type    = "service"
+}
+
+# ---------------------------------------------------------------------------
+# Project-create plane. A third portal workload identity (aud=vault-creator) is
+# exchanged at the ROOT-namespace jwt-nomad backend for a SHORT-TTL token that can
+# create a child namespace and bootstrap its auth (enable jwt-nomad, mount the
+# project KV, seed the portal-provisioner role/policy + workspace WIF role) — then
+# it is discarded. The §5 provisioner plane takes over for in-namespace engine
+# work. No standing cross-namespace privilege. Driver: portal/backend/internal/
+# projectbootstrap.
+#
+# KNOWN LIVE-VALIDATION ITEM: the "+/…" single-segment globs must match a
+# child-namespace path (e.g. project-acme/sys/auth/jwt-nomad) for a root-minted
+# token operating cross-namespace — the §5 ACL seam in reverse. Confirm against
+# Vault Enterprise; if the glob does not match, widen "+/…" paths to "+/*" (same
+# denies).
+resource "vault_policy" "project_creator" {
+  count = local.project_creator_count
+  name  = "project-creator"
+
+  policy = <<-HCL
+    # Create + inspect child namespaces (root namespace op).
+    path "sys/namespaces/*" {
+      capabilities = ["create", "read", "update"]
+    }
+    # Bootstrap a freshly-created child namespace (namespace-prefixed globs). Enabling
+    # an auth method requires sudo on the child's sys/auth path.
+    path "+/sys/mounts/*" {
+      capabilities = ["create", "read", "update", "delete"]
+    }
+    path "+/sys/auth/*" {
+      capabilities = ["create", "read", "update", "delete", "sudo"]
+    }
+    path "+/auth/jwt-nomad/*" {
+      capabilities = ["create", "read", "update", "delete"]
+    }
+    path "+/sys/policies/acl" {
+      capabilities = ["list"]
+    }
+    path "+/sys/policies/acl/*" {
+      capabilities = ["create", "read", "update", "delete", "list"]
+    }
+    # Descriptor + job-templates in the shared ROOT KV.
+    path "${vault_mount.kv.path}/data/projects/*" {
+      capabilities = ["create", "read", "update"]
+    }
+    path "${vault_mount.kv.path}/metadata/projects/*" {
+      capabilities = ["read", "list"]
+    }
+    # Denies win — no identity engine, no cross-namespace secret exfiltration.
+    path "identity/*" { capabilities = ["deny"] }
+    path "+/identity/*" { capabilities = ["deny"] }
+    path "cubbyhole/*" { capabilities = ["deny"] }
+  HCL
+}
+
+resource "vault_jwt_auth_backend_role" "project_creator" {
+  count                   = local.project_creator_count
+  backend                 = module.nomad_vault_wif.backend_path
+  role_name               = "project-creator"
+  role_type               = "jwt"
+  bound_audiences         = ["vault-creator"]
+  user_claim              = "/nomad_job_id"
+  user_claim_json_pointer = true
+  bound_claims = {
+    nomad_namespace = "infra"
+    nomad_job_id    = "developer-portal"
+  }
+  token_policies = [vault_policy.project_creator[0].name]
+  token_ttl      = 120
+  token_type     = "service"
+}
+
+# Dedicated, revocable Nomad management token for the portal — replaces the shared
+# bootstrap management token in the KV secret above. Nomad namespace/ACL/binding-rule
+# administration is management-only (no capability-scoped equivalent), so this is a
+# revocability/auditability tightening, not a true privilege scope-down.
+resource "nomad_acl_token" "portal" {
+  count = local.project_creator_count
+  name  = "developer-portal"
+  type  = "management"
 }
 
 # detach=false waits for the alloc to become healthy on apply. The portal reaches
@@ -159,10 +235,24 @@ resource "nomad_job" "developer_portal" {
     # jobspec (nomadService "mcp-gateway"/"llm-gateway"), not injected here.
     mcp_namespace   = var.enable_platform_admin ? nomad_namespace.infra_mcp[0].name : ""
     agent_node_pool = var.platform_admin_mcp_node_pool
+    # WIF role stamped on a reference MCP job when the operator ticks "Inject a Vault
+    # token" — Nomad then injects a powerless self-test VAULT_TOKEN (see platform-admin.tf).
+    mcp_job_vault_role = var.enable_platform_admin ? vault_jwt_auth_backend_role.infra_mcp_selftest[0].role_name : ""
     # Postgres reachable on the all-in-one node (host-network); the portal builds
     # PORTAL_DB_DSN from this + the pg_password it reads over WIF. Unused when the
     # admin plane is off (the jobspec omits the DSN line entirely).
     db_host = "${module.secured_codespace.instance_private_ip}:${local.portal_pg_port}"
+
+    # Project-create plane. The creator identity + env render only when the plane is
+    # on; the coordinates below are baked into each new project's descriptor + child
+    # namespace auth. nomad_ca_pem (multi-line) is written to a file, not env.
+    enable_project_creator  = local.project_creator_count > 0
+    nomad_jwks_url          = "https://127.0.0.1:4646/.well-known/jwks.json"
+    nomad_ca_pem            = module.secured_codespace.nomad_ca_pem
+    nomad_oidc_auth_method  = module.identity.nomad_oidc_auth_method_name
+    boundary_org_scope_id   = module.secured_codespace.org_scope_id
+    boundary_oidc_method_id = module.identity.boundary_oidc_auth_method_id
+    instance_private_ip     = module.secured_codespace.instance_private_ip
   })
 
   depends_on = [

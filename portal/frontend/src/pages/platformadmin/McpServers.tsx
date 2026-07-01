@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Button,
+  InlineLoading,
   InlineNotification,
   Loading,
   Table,
@@ -33,7 +34,9 @@ export default function McpServers() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
+  const [busyLabel, setBusyLabel] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing] = useState<McpServer | null>(null)
   const [publishFor, setPublishFor] = useState('')
 
   const refresh = () =>
@@ -46,8 +49,9 @@ export default function McpServers() {
     refresh()
   }, [])
 
-  const run = async (name: string, fn: () => Promise<unknown>) => {
+  const run = async (name: string, label: string, fn: () => Promise<unknown>) => {
     setBusy(name)
+    setBusyLabel(label)
     setErr('')
     try {
       await fn()
@@ -56,6 +60,7 @@ export default function McpServers() {
       setErr((e as Error).message)
     } finally {
       setBusy('')
+      setBusyLabel('')
     }
   }
 
@@ -65,7 +70,13 @@ export default function McpServers() {
     <div className="page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <h2>MCP servers</h2>
-        <Button renderIcon={Add} onClick={() => setModalOpen(true)}>
+        <Button
+          renderIcon={Add}
+          onClick={() => {
+            setEditing(null)
+            setModalOpen(true)
+          }}
+        >
           Deploy MCP server
         </Button>
       </div>
@@ -114,32 +125,51 @@ export default function McpServers() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <Button
-                          size="sm"
-                          kind="tertiary"
-                          disabled={busy === s.name}
-                          onClick={() => run(s.name, () => testMcpServer(s.name))}
-                        >
-                          Test
-                        </Button>
-                        <Button
-                          size="sm"
-                          kind="primary"
-                          disabled={busy === s.name || !tested || s.status === 'published'}
-                          onClick={() => setPublishFor(s.name)}
-                        >
-                          Publish
-                        </Button>
-                        <Button
-                          size="sm"
-                          kind="danger--ghost"
-                          disabled={busy === s.name}
-                          onClick={() => run(s.name, () => deleteMcpServer(s.name))}
-                        >
-                          Delete
-                        </Button>
-                      </div>
+                      {busy === s.name ? (
+                        <InlineLoading
+                          status="active"
+                          description={
+                            busyLabel === 'Testing'
+                              ? 'Running consumption-mirror test — can take up to a minute…'
+                              : `${busyLabel}…`
+                          }
+                        />
+                      ) : (
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <Button
+                            size="sm"
+                            kind="ghost"
+                            onClick={() => {
+                              setEditing(s)
+                              setModalOpen(true)
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            kind="tertiary"
+                            onClick={() => run(s.name, 'Testing', () => testMcpServer(s.name))}
+                          >
+                            Test
+                          </Button>
+                          <Button
+                            size="sm"
+                            kind="primary"
+                            disabled={!tested || s.status === 'published'}
+                            onClick={() => setPublishFor(s.name)}
+                          >
+                            Publish
+                          </Button>
+                          <Button
+                            size="sm"
+                            kind="danger--ghost"
+                            onClick={() => run(s.name, 'Deleting', () => deleteMcpServer(s.name))}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      )}
                     </TableCell>
                   </TableRow>
                 )
@@ -148,7 +178,15 @@ export default function McpServers() {
           </Table>
         </TableContainer>
       )}
-      <DeployMcpServerModal open={modalOpen} onClose={() => setModalOpen(false)} onDeployed={refresh} />
+      <DeployMcpServerModal
+        open={modalOpen}
+        initial={editing}
+        onClose={() => {
+          setModalOpen(false)
+          setEditing(null)
+        }}
+        onDeployed={refresh}
+      />
       <PublishServerTypeModal
         open={publishFor !== ''}
         serverName={publishFor}

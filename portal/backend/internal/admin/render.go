@@ -18,8 +18,11 @@ var defaultPaths = map[string]string{
 // group, static host port, discovery tags, Vault-WIF secret template) is unchanged.
 func renderMCPJobHCL(s store.MCPServer, cfg Config) string {
 	var cred mcpjob.Credential
-	if len(s.SecretRefs) > 0 {
+	switch {
+	case len(s.SecretRefs) > 0:
 		cred = mcpjob.KVCredential{VaultRole: cfg.MCPJobVaultRole, SecretRefs: s.SecretRefs}
+	case s.InjectVaultToken:
+		cred = mcpjob.WIFTokenCredential{VaultRole: cfg.MCPJobVaultRole}
 	}
 	return mcpjob.Render(mcpjob.RenderSpec{
 		JobName:     jobName(s.Name),

@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/boundary/api/hostsets"
 	"github.com/hashicorp/boundary/api/managedgroups"
 	"github.com/hashicorp/boundary/api/roles"
+	"github.com/hashicorp/boundary/api/scopes"
 	"github.com/hashicorp/boundary/api/targets"
 )
 
@@ -54,6 +55,32 @@ func NewBoundary(ctx context.Context, addr, authMethodID, login, password string
 	}
 	c.SetToken(tok.Token)
 	return &Boundary{c: c}, nil
+}
+
+// CreateProjectScope creates a project scope under the org scope and returns its
+// id. Idempotent: an existing scope of the same name under orgScopeID is returned
+// as-is. auto_create_admin_role is left on (WithSkipAdminRoleCreation(false)),
+// matching the terraform/project boundary_scope resource.
+func (b *Boundary) CreateProjectScope(ctx context.Context, orgScopeID, name, description string) (string, error) {
+	sc := scopes.NewClient(b.c)
+	list, err := sc.List(ctx, orgScopeID)
+	if err != nil {
+		return "", fmt.Errorf("boundary: list scopes: %w", err)
+	}
+	for _, s := range list.Items {
+		if s.Name == name {
+			return s.Id, nil
+		}
+	}
+	res, err := sc.Create(ctx, orgScopeID,
+		scopes.WithName(name),
+		scopes.WithDescription(description),
+		scopes.WithSkipAdminRoleCreation(false),
+	)
+	if err != nil {
+		return "", fmt.Errorf("boundary: create scope %q: %w", name, err)
+	}
+	return res.Item.Id, nil
 }
 
 // ProvisionInput carries everything needed to wire one workspace's access.

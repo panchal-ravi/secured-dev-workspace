@@ -21,6 +21,8 @@ type fakeGateway struct {
 	servers map[string]string // id -> name
 	tokens  map[string]string // id -> name
 	nextID  int
+
+	lastTransport string // transport sent on the most recent POST /gateways
 }
 
 func newFakeGateway() *fakeGateway {
@@ -48,8 +50,9 @@ func (f *fakeGateway) handler() http.Handler {
 		writeJSON(w, 200, out)
 	})
 	mux.HandleFunc("POST /gateways", func(w http.ResponseWriter, r *http.Request) {
-		var in struct{ Name, URL string }
+		var in struct{ Name, URL, Transport string }
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		f.lastTransport = in.Transport
 		id := f.id("peer")
 		f.peers[id] = in.Name
 		// one tool auto-discovered for the new peer
@@ -153,12 +156,16 @@ func TestOnboardingFlow(t *testing.T) {
 	c := New(srv.URL, "admin@acme.example", "test-secret", srv.Client())
 	ctx := context.Background()
 
-	peerID, err := c.RegisterPeer(ctx, "vault-mcp", "http://node:9000/sse")
+	peerID, err := c.RegisterPeer(ctx, "vault-mcp", "http://node:9000/mcp", "streamable-http")
 	if err != nil {
 		t.Fatalf("RegisterPeer: %v", err)
 	}
+	// the portal transport is mapped onto ContextForge's enum
+	if gw.lastTransport != "STREAMABLEHTTP" {
+		t.Fatalf("transport sent to gateway = %q, want STREAMABLEHTTP", gw.lastTransport)
+	}
 	// idempotent: a second call reuses the same peer
-	if again, err := c.RegisterPeer(ctx, "vault-mcp", "http://node:9000/sse"); err != nil || again != peerID {
+	if again, err := c.RegisterPeer(ctx, "vault-mcp", "http://node:9000/mcp", "streamable-http"); err != nil || again != peerID {
 		t.Fatalf("RegisterPeer idempotency: id=%s again=%s err=%v", peerID, again, err)
 	}
 

@@ -95,14 +95,15 @@ var providerRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
 // DeployMCPInput is a request to deploy an existing MCP server as a Nomad job.
 type DeployMCPInput struct {
-	Name       string            `json:"name"`
-	Image      string            `json:"image"`
-	Command    []string          `json:"command,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	SecretRefs map[string]string `json:"secret_refs,omitempty"`
-	Transport  string            `json:"transport"`
-	Port       int               `json:"port"`
-	Path       string            `json:"path,omitempty"`
+	Name             string            `json:"name"`
+	Image            string            `json:"image"`
+	Command          []string          `json:"command,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	SecretRefs       map[string]string `json:"secret_refs,omitempty"`
+	InjectVaultToken bool              `json:"inject_vault_token,omitempty"`
+	Transport        string            `json:"transport"`
+	Port             int               `json:"port"`
+	Path             string            `json:"path,omitempty"`
 }
 
 func (in DeployMCPInput) validate() error {
@@ -115,11 +116,22 @@ func (in DeployMCPInput) validate() error {
 	if _, ok := defaultPaths[in.Transport]; !ok {
 		return fmt.Errorf("transport must be sse or streamable-http (stdio needs the auth wrapper): %w", apperr.ErrBadRequest)
 	}
-	if in.Port < 1 || in.Port > 65535 {
-		return fmt.Errorf("port must be 1-65535: %w", apperr.ErrBadRequest)
+	// MCP servers listen on a static host port that the ContextForge gateway
+	// (main node) dials cross-node. Only the 8080-8099 band is opened intra-SG on
+	// the agent nodes (see terraform/.../network.tf); a port outside it deploys but
+	// the gateway can't reach it (ConnectTimeout at test/publish), so reject early.
+	if in.Port < mcpPortMin || in.Port > mcpPortMax {
+		return fmt.Errorf("port must be %d-%d (the intra-SG band opened for MCP servers): %w", mcpPortMin, mcpPortMax, apperr.ErrBadRequest)
 	}
 	return nil
 }
+
+// MCP-server host-port band. Kept in lockstep with the self=true 8080-8099 ingress
+// on the shared instance security group; widening one requires widening the other.
+const (
+	mcpPortMin = 8080
+	mcpPortMax = 8099
+)
 
 // DeployMCPServer renders and registers the Nomad job, resolves its placement to
 // build the gateway peer URL, and records the server as "deployed" (not yet
@@ -128,24 +140,28 @@ func (s *Service) DeployMCPServer(ctx context.Context, actor string, in DeployMC
 	if err := in.validate(); err != nil {
 		return store.MCPServer{}, err
 	}
+	if in.InjectVaultToken && s.cfg.MCPJobVaultRole == "" {
+		return store.MCPServer{}, fmt.Errorf("inject_vault_token requires PORTAL_MCP_JOB_VAULT_ROLE (apply the infra tier): %w", apperr.ErrBadRequest)
+	}
 	if err := s.ensurePortFree(in.Port, in.Name); err != nil {
 		return store.MCPServer{}, err
 	}
 
 	prev, _ := s.store.GetMCPServer(ctx, in.Name)
 	srv := store.MCPServer{
-		Name:       in.Name,
-		Image:      in.Image,
-		Command:    in.Command,
-		Env:        in.Env,
-		SecretRefs: in.SecretRefs,
-		Transport:  in.Transport,
-		Port:       in.Port,
-		Path:       in.Path,
-		Namespace:  s.cfg.MCPNamespace,
-		Status:     store.StatusDeployed,
-		Version:    prev.Version + 1,
-		CreatedBy:  actor,
+		Name:             in.Name,
+		Image:            in.Image,
+		Command:          in.Command,
+		Env:              in.Env,
+		SecretRefs:       in.SecretRefs,
+		InjectVaultToken: in.InjectVaultToken,
+		Transport:        in.Transport,
+		Port:             in.Port,
+		Path:             in.Path,
+		Namespace:        s.cfg.MCPNamespace,
+		Status:           store.StatusDeployed,
+		Version:          prev.Version + 1,
+		CreatedBy:        actor,
 	}
 
 	jobID, err := s.nomad.RegisterJob(s.cfg.MCPNamespace, renderMCPJobHCL(srv, s.cfg), "")
@@ -181,7 +197,7 @@ func (s *Service) TestMCPServer(ctx context.Context, actor, name string) (store.
 		return store.MCPServer{}, err
 	}
 
-	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(name), srv.GatewayURL)
+	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(name), srv.GatewayURL, srv.Transport)
 	if err != nil {
 		s.audit(ctx, actor, "mcp-server.test", name, "error")
 		return store.MCPServer{}, err
@@ -271,7 +287,7 @@ func (s *Service) PublishMCPServer(ctx context.Context, actor, name string, blue
 		return store.MCPServer{}, fmt.Errorf("server %q must pass the consumption-mirror test before publish: %w", name, apperr.ErrConflict)
 	}
 
-	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(name), srv.GatewayURL)
+	peerID, err := s.gateway.RegisterPeer(ctx, serviceName(name), srv.GatewayURL, srv.Transport)
 	if err != nil {
 		s.audit(ctx, actor, "mcp-server.publish", name, "error")
 		return store.MCPServer{}, err
