@@ -22,6 +22,7 @@ type seedMeta struct {
 	file            string
 	label           string
 	description     string
+	image           string // container image baked into project templates (portal-admin owned)
 	defaultNodePool string
 	runtime         string
 	features        []store.Feature
@@ -31,12 +32,6 @@ var claudeFeature = store.Feature{
 	Key:         "claude-deepseek",
 	Label:       "Claude Code CLI (governed model)",
 	Description: "Pre-configured AI coding assistant. The API key is injected per session from Vault and never lands on the persistent home volume.",
-}
-
-var dbMCPFeature = store.Feature{
-	Key:         "db-mcp-readonly",
-	Label:       "Database MCP (read-only)",
-	Description: "A read-only Postgres MCP server, federated through the central ContextForge MCP gateway as this project's virtual MCP server. Backed by a Vault-dynamic, read-only database credential.",
 }
 
 var gitPATFeature = store.Feature{
@@ -50,29 +45,32 @@ var seeds = map[string]seedMeta{
 	"dev-workspace": {
 		file:        "seeds/dev-workspace.nomad.hcl",
 		label:       "Standard Dev Workspace",
-		description: "Full dev environment: Claude Code (governed model), read-only DB MCP, dynamic Git PAT.",
-		features:    []store.Feature{claudeFeature, dbMCPFeature, gitPATFeature},
+		description: "Full dev environment: Claude Code (governed model), dynamic Git PAT.",
+		image:       "panchalravi/dev-workspace:poc",
+		features:    []store.Feature{claudeFeature, gitPATFeature},
 	},
 	"gpu-workspace": {
 		file:            "seeds/gpu-workspace.nomad.hcl",
 		label:           "GPU Workspace (NVIDIA T4)",
 		description:     "Everything in the standard workspace plus a CUDA toolchain on an NVIDIA T4 GPU.",
+		image:           "panchalravi/gpu-workspace:poc",
 		defaultNodePool: "gpu",
 		runtime:         "nvidia",
 		features: []store.Feature{
 			{Key: "nvidia-t4-gpu", Label: "NVIDIA T4 GPU", Description: "Scheduled on a GPU node (g4dn.xlarge, NVIDIA T4). nvidia-smi and nvcc are available; a CUDA vectorAdd sample is included in the repo."},
-			claudeFeature, dbMCPFeature, gitPATFeature,
+			claudeFeature, gitPATFeature,
 		},
 	},
 	"microvm-workspace": {
 		file:            "seeds/microvm-workspace.nomad.hcl",
 		label:           "Hardened Workspace (microVM)",
 		description:     "Everything in the standard workspace, isolated in a Kata microVM (separate guest kernel) on a bare-metal node.",
+		image:           "panchalravi/dev-workspace:poc",
 		defaultNodePool: "microvm",
 		runtime:         "kata",
 		features: []store.Feature{
 			{Key: "kata-microvm-isolation", Label: "Hardware-isolated microVM", Description: "Runs inside a Kata Containers microVM with its own guest kernel on a dedicated bare-metal node — a hardware-virtualization (KVM) boundary around AI-agent code, not just shared-kernel namespaces."},
-			claudeFeature, dbMCPFeature, gitPATFeature,
+			claudeFeature, gitPATFeature,
 		},
 	},
 }
@@ -109,6 +107,7 @@ func SeedBaseTemplates(ctx context.Context, st store.Store) error {
 			ContentHash:     HashSource(string(src)),
 			DraftSource:     string(src),
 			PublishedSource: string(src),
+			Image:           meta.image,
 			Features:        meta.features,
 			DefaultNodePool: meta.defaultNodePool,
 			Runtime:         meta.runtime,

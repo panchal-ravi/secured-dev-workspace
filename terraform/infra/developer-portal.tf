@@ -253,6 +253,13 @@ resource "nomad_job" "developer_portal" {
     boundary_org_scope_id   = module.secured_codespace.org_scope_id
     boundary_oidc_method_id = module.identity.boundary_oidc_auth_method_id
     instance_private_ip     = module.secured_codespace.instance_private_ip
+
+    # Governed LLM models (single source: local.llm_model_* in llm-gateway.tf). The
+    # portal bakes these into project templates (Claude Code model slots) + uses the
+    # list as the allowed set on each project's LiteLLM virtual key.
+    llm_models        = join(",", local.llm_model_names)
+    llm_model_primary = local.llm_model_primary
+    llm_model_fast    = local.llm_model_fast
   })
 
   depends_on = [

@@ -30,7 +30,9 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectbootstrap"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectengines"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
+	"github.com/secured-dev-workspace/developer-portal/internal/projecttemplate"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
@@ -44,6 +46,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "backfill-from-vault" {
 		if err := runBackfill(); err != nil {
 			slog.Error("backfill exited", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "provision-project" {
+		if err := runProvision(); err != nil {
+			slog.Error("provision exited", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -110,10 +120,20 @@ func run() error {
 	// from Vault at startup so no secret material lives in the portal's env.
 	var adminHandlers *admin.Handlers
 	var projectMCP *projectadmin.Handlers
+	var projectTmpl *projecttemplate.Handlers
+	var projectEng *projectengines.Handlers
+	// engineProvisioner (nil unless the admin plane is on) auto-provisions the standard
+	// engines when a project is created via the project-create plane below.
+	var engineProvisioner projectbootstrap.EngineProvisioner
 	if cfg.AdminEnabled() {
-		adminHandlers, projectMCP, err = buildAdminPlane(startCtx, cfg, st, svc, vault, nomad)
-		if err != nil {
-			return err
+		planes, perr := buildAdminPlane(startCtx, cfg, st, svc, vault, nomad, bndry)
+		if perr != nil {
+			return perr
+		}
+		adminHandlers, projectMCP = planes.admin, planes.projectMCP
+		projectTmpl, projectEng = planes.projectTmpl, planes.projectEng
+		if planes.engineSvc != nil {
+			engineProvisioner = planes.engineSvc
 		}
 		logger.Info("platform-admin onboarding plane enabled", "mcp_gateway", cfg.MCPGatewayAddr, "llm_gateway", cfg.LLMGatewayAddr)
 	} else {
@@ -131,7 +151,7 @@ func run() error {
 			projectbootstrap.JWKSConfig{URL: cfg.NomadJWKSURL, CAPEM: cfg.NomadCAPEM})
 		// The descriptor is persisted to the Postgres control-plane store (st), not
 		// Vault KV — portal control-plane state lives in Postgres.
-		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, st, projectRoles, st, projectbootstrap.Config{
+		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, st, projectRoles, engineProvisioner, st, projectbootstrap.Config{
 			NomadOIDCAuthMethod:      cfg.NomadOIDCAuthMethodName,
 			BoundaryOrgScopeID:       cfg.BoundaryOrgScopeID,
 			BoundaryOIDCAuthMethodID: cfg.BoundaryOIDCAuthMethodID,
@@ -151,6 +171,8 @@ func run() error {
 		ProjectCreate: projectCreate,
 		ProjectRoles:  projectRoles,
 		ProjectMCP:    projectMCP,
+		ProjectTmpl:   projectTmpl,
+		ProjectEng:    projectEng,
 		Store:         st,
 		StaticDir:     staticDir,
 		Ready:         newReadinessCheck(vault, nomad),
@@ -226,22 +248,36 @@ func buildStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 	return pg, nil
 }
 
+// onboardingPlanes bundles the optional project-onboarding HTTP handlers built
+// together because they share the gateway/LLM clients + the §5 Vault broker.
+type onboardingPlanes struct {
+	admin       *admin.Handlers
+	projectMCP  *projectadmin.Handlers
+	projectTmpl *projecttemplate.Handlers
+	projectEng  *projectengines.Handlers
+	// engineSvc is the engine-provision Service (not just its handlers) so the
+	// project-create plane can auto-provision engines at create via ProvisionAtCreate.
+	engineSvc *projectengines.Service
+}
+
 // buildAdminPlane wires the Platform Admin onboarding service: it reads the MCP
 // gateway admin JWT secret/email and the LiteLLM portal-admin key from Vault (the
 // portal never holds them in env), constructs the gateway/LLM clients over the
-// shared control-plane store, and returns the HTTP handlers.
-func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsvc *workspace.Service, vault *hashistack.Vault, nomad *hashistack.Nomad) (*admin.Handlers, *projectadmin.Handlers, error) {
+// shared control-plane store, and returns the HTTP handlers. It also wires the
+// project-facing template + engine-provision planes, which reuse the same LLM client
+// and §5 Vault broker (vadmin) and the Boundary admin client.
+func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsvc *workspace.Service, vault *hashistack.Vault, nomad *hashistack.Nomad, bndry *hashistack.Boundary) (*onboardingPlanes, error) {
 	jwtSecret, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "jwt_secret_key")
 	if err != nil {
-		return nil, nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
+		return nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
 	}
 	adminEmail, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "admin_email")
 	if err != nil {
-		return nil, nil, fmt.Errorf("admin plane: read mcp-gateway admin email: %w", err)
+		return nil, fmt.Errorf("admin plane: read mcp-gateway admin email: %w", err)
 	}
 	llmKey, err := vault.ReadKVField(ctx, "infra/llm-gateway", "portal_admin_key")
 	if err != nil {
-		return nil, nil, fmt.Errorf("admin plane: read llm-gateway portal-admin key: %w", err)
+		return nil, fmt.Errorf("admin plane: read llm-gateway portal-admin key: %w", err)
 	}
 
 	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
@@ -267,7 +303,27 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, projectadmin.Config{
 		NodePool: cfg.AgentNodePool,
 	})
-	return admin.NewHandlers(adminSvc), projectadmin.NewHandlers(pmSvc), nil
+	peSvc := projectengines.New(vadmin, bndry, llm, gateway, st, wsvc, st, projectengines.Config{
+		VaultCredStoreAddress:     cfg.VaultCredStoreAddress,
+		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
+		MCPGatewayEndpoint:        cfg.MCPGatewayAddr,
+		GithubPluginVersion:       cfg.GithubPluginVersion,
+		LLMModels:                 cfg.LLMModels,
+	})
+	// The template plane reuses the engine service to (a) mount extra add-on engines
+	// and (b) wire MCP servers from the catalog into a flavor's rendered source.
+	ptSvc := projecttemplate.New(st, wsvc, st, peSvc, peSvc, projecttemplate.Config{
+		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
+		LLMModelPrimary:           cfg.LLMModelPrimary,
+		LLMModelFast:              cfg.LLMModelFast,
+	})
+	return &onboardingPlanes{
+		admin:       admin.NewHandlers(adminSvc),
+		projectMCP:  projectadmin.NewHandlers(pmSvc),
+		projectTmpl: projecttemplate.NewHandlers(ptSvc),
+		projectEng:  projectengines.NewHandlers(peSvc),
+		engineSvc:   peSvc,
+	}, nil
 }
 
 // newReadinessCheck returns a /readyz probe that pings Vault and Nomad, caching

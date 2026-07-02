@@ -1,6 +1,6 @@
 // Package jobtemplate owns the portal's Nomad workspace job templates: the three
 // base templates (standard / GPU / microVM) seeded into the Postgres store, and
-// the placeholder contract shared by the two render passes. A template mixes 10
+// the placeholder contract shared by the two render passes. A template mixes 12
 // project-static ${...} placeholders (filled at project-template create, pass-1)
 // and 5 per-workspace ${...} placeholders (filled by jobrender at launch, pass-2);
 // consul-template {{ }} and bash $(...) are left untouched by both.
@@ -19,6 +19,7 @@ import (
 var ProjectStaticPlaceholders = []string{
 	"namespace", "image", "git_repo_url", "wif_role", "vault_namespace",
 	"ssh_ca_path", "github_token_path", "mcp_kv_path", "llm_kv_path", "llm_base_url",
+	"llm_model_primary", "llm_model_fast",
 }
 
 // PerWorkspacePlaceholders are filled by jobrender.Render at workspace launch (pass-2).

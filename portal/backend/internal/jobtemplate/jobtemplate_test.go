@@ -27,7 +27,9 @@ func TestValidatePlaceholders(t *testing.T) {
 
 func TestSeedsAreValidAndComplete(t *testing.T) {
 	// Every shipped seed must reference only known placeholders and must include
-	// all 15 (the templates use the full set).
+	// the full set EXCEPT mcp_kv_path, which is reserved for add-on injection
+	// (C-R.6) — the base body carries no MCP wiring.
+	notInBaseBody := map[string]bool{"mcp_kv_path": true}
 	for name, meta := range seeds {
 		src, err := seedFS.ReadFile(meta.file)
 		if err != nil {
@@ -38,6 +40,9 @@ func TestSeedsAreValidAndComplete(t *testing.T) {
 		}
 		s := string(src)
 		for _, ph := range append(append([]string{}, ProjectStaticPlaceholders...), PerWorkspacePlaceholders...) {
+			if notInBaseBody[ph] {
+				continue
+			}
 			if !strings.Contains(s, "${"+ph+"}") {
 				t.Errorf("seed %q missing placeholder ${%s}", name, ph)
 			}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Button, InlineNotification, Loading, Tag, Modal, TextArea,
+  Button, InlineNotification, Loading, Tag, Modal, TextArea, TextInput,
   Table, TableBody, TableCell, TableContainer, TableHead, TableHeader, TableRow,
 } from '@carbon/react'
 import {
@@ -21,6 +21,7 @@ export default function BaseTemplates() {
   // Edit modal state.
   const [editing, setEditing] = useState<BaseJobTemplate | null>(null)
   const [source, setSource] = useState('')
+  const [image, setImage] = useState('')
   const [modalErr, setModalErr] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -50,6 +51,7 @@ export default function BaseTemplates() {
   const openEdit = (t: BaseJobTemplate) => {
     setEditing(t)
     setSource(t.draft_source)
+    setImage(t.image || '')
     setModalErr('')
   }
 
@@ -58,7 +60,7 @@ export default function BaseTemplates() {
     setSaving(true)
     setModalErr('')
     try {
-      await updateBaseTemplateDraft(editing.name, source)
+      await updateBaseTemplateDraft(editing.name, source, image)
       setEditing(null)
       await refresh()
     } catch (e) {
@@ -94,6 +96,7 @@ export default function BaseTemplates() {
               <TableRow>
                 <TableHeader>Name</TableHeader>
                 <TableHeader>Label</TableHeader>
+                <TableHeader>Image</TableHeader>
                 <TableHeader>Node pool</TableHeader>
                 <TableHeader>Version</TableHeader>
                 <TableHeader>Status</TableHeader>
@@ -105,6 +108,7 @@ export default function BaseTemplates() {
                 <TableRow key={t.name}>
                   <TableCell>{t.name}</TableCell>
                   <TableCell>{t.label || '—'}</TableCell>
+                  <TableCell>{t.image || '—'}</TableCell>
                   <TableCell>{t.default_node_pool || 'default'}</TableCell>
                   <TableCell>{t.version}</TableCell>
                   <TableCell>
@@ -157,6 +161,14 @@ export default function BaseTemplates() {
               onCloseButtonClick={() => setModalErr('')}
             />
           )}
+          <TextInput
+            id="base-image"
+            labelText="Container image (baked into project templates; project-admins see it readonly)"
+            placeholder="panchalravi/dev-workspace:poc"
+            value={image}
+            onChange={(e) => setImage(e.target.value)}
+            style={{ marginBottom: '1rem' }}
+          />
           <TextArea
             labelText="Template source (Nomad HCL)"
             value={source}

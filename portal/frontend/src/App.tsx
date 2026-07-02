@@ -16,6 +16,8 @@ import BaseTemplates from './pages/platformadmin/BaseTemplates'
 import AdminProjects from './pages/platformadmin/Projects'
 import Members from './pages/projectadmin/Members'
 import ProjectMcpServers from './pages/projectadmin/McpServers'
+import ProjectTemplates from './pages/projectadmin/Templates'
+import ProjectEngines from './pages/projectadmin/Engines'
 
 type ThemeName = 'white' | 'g100'
 
@@ -82,6 +84,8 @@ export default function App() {
           {isPlatformAdmin(me) && <Route path="/admin/base-templates" element={<BaseTemplates />} />}
           <Route path="/projects/:name/members" element={<Members />} />
           <Route path="/projects/:name/mcp-servers" element={<ProjectMcpServers />} />
+          <Route path="/projects/:name/templates" element={<ProjectTemplates />} />
+          <Route path="/projects/:name/engines" element={<ProjectEngines />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </main>

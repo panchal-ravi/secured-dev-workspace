@@ -8,6 +8,8 @@ import (
 	bapi "github.com/hashicorp/boundary/api"
 	"github.com/hashicorp/boundary/api/aliases"
 	"github.com/hashicorp/boundary/api/authmethods"
+	"github.com/hashicorp/boundary/api/credentiallibraries"
+	"github.com/hashicorp/boundary/api/credentialstores"
 	"github.com/hashicorp/boundary/api/hostcatalogs"
 	"github.com/hashicorp/boundary/api/hosts"
 	"github.com/hashicorp/boundary/api/hostsets"
@@ -79,6 +81,70 @@ func (b *Boundary) CreateProjectScope(ctx context.Context, orgScopeID, name, des
 	)
 	if err != nil {
 		return "", fmt.Errorf("boundary: create scope %q: %w", name, err)
+	}
+	return res.Item.Id, nil
+}
+
+// CreateVaultCredentialStore creates (idempotently) a Vault credential store in the
+// project scope. Boundary authenticates to Vault with the project's dedicated
+// least-privilege periodic token. Ports terraform/project/boundary.tf's
+// boundary_credential_store_vault.this. On re-provision (store already exists) the
+// token is refreshed, since the periodic token is re-minted each provision.
+func (b *Boundary) CreateVaultCredentialStore(ctx context.Context, scopeID, name, vaultAddr, vaultNamespace, token string) (string, error) {
+	cl := credentialstores.NewClient(b.c)
+	list, err := cl.List(ctx, scopeID)
+	if err != nil {
+		return "", fmt.Errorf("boundary: list credential stores: %w", err)
+	}
+	for _, s := range list.Items {
+		if s.Name == name {
+			if _, err := cl.Update(ctx, s.Id, s.Version,
+				credentialstores.WithVaultCredentialStoreToken(token)); err != nil {
+				return "", fmt.Errorf("boundary: refresh credential store token: %w", err)
+			}
+			return s.Id, nil
+		}
+	}
+	res, err := cl.Create(ctx, "vault", scopeID,
+		credentialstores.WithName(name),
+		credentialstores.WithVaultCredentialStoreAddress(vaultAddr),
+		credentialstores.WithVaultCredentialStoreNamespace(vaultNamespace),
+		credentialstores.WithVaultCredentialStoreToken(token),
+		credentialstores.WithVaultCredentialStoreTlsSkipVerify(true), // base uses a self-signed cert
+	)
+	if err != nil {
+		return "", fmt.Errorf("boundary: create vault credential store %q: %w", name, err)
+	}
+	return res.Item.Id, nil
+}
+
+// CreateSSHCertLibrary creates (idempotently) an SSH-certificate credential library
+// in the given store and returns its id — the credential_library_id the workspace
+// Provision path consumes. Ports boundary_credential_library_vault_ssh_certificate:
+// path=ssh/sign/dev-workspace, key_type=ed25519, key_id="{{.User.Email}}" (passed
+// verbatim — a Boundary session template, not a Go template).
+func (b *Boundary) CreateSSHCertLibrary(ctx context.Context, storeID, name, path, username, keyID string) (string, error) {
+	cl := credentiallibraries.NewClient(b.c)
+	list, err := cl.List(ctx, storeID)
+	if err != nil {
+		return "", fmt.Errorf("boundary: list credential libraries: %w", err)
+	}
+	for _, l := range list.Items {
+		if l.Name == name {
+			return l.Id, nil
+		}
+	}
+	// The library subtype must be "vault-ssh-certificate" (the SDK's typed attribute
+	// helpers target that type); "ssh_certificate" is not a known Boundary type.
+	res, err := cl.Create(ctx, "vault-ssh-certificate", storeID,
+		credentiallibraries.WithName(name),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryPath(path),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryUsername(username),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryKeyType("ed25519"),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryKeyId(keyID),
+	)
+	if err != nil {
+		return "", fmt.Errorf("boundary: create ssh-cert library %q: %w", name, err)
 	}
 	return res.Item.Id, nil
 }

@@ -597,6 +597,7 @@ export interface BaseJobTemplate {
   content_hash?: string
   draft_source: string
   published_source: string
+  image?: string // container image baked into project templates (portal-admin owned)
   features?: TemplateFeature[]
   default_node_pool?: string
   runtime?: string
@@ -615,15 +616,155 @@ export function getBaseTemplate(name: string): Promise<BaseJobTemplate> {
   return fetch(`${adminBase}/base-templates/${encodeURIComponent(name)}`, { credentials: 'include' }).then(asJSON)
 }
 
-export function updateBaseTemplateDraft(name: string, source: string): Promise<BaseJobTemplate> {
+export function updateBaseTemplateDraft(name: string, source: string, image: string): Promise<BaseJobTemplate> {
   return fetch(`${adminBase}/base-templates/${encodeURIComponent(name)}`, {
     method: 'PUT',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, image }),
   }).then(asJSON)
 }
 
 export function publishBaseTemplate(name: string): Promise<BaseJobTemplate> {
   return post(`${adminBase}/base-templates/${encodeURIComponent(name)}/publish`)
+}
+
+// ---- Project Admin: project templates (create a flavor from a base template) ----
+
+// BaseOption is a published base template a project-admin can build a flavor from.
+export interface BaseOption {
+  name: string
+  label?: string
+  description?: string
+  version: number
+  image?: string // baked into the project template; readonly to the project-admin
+  default_node_pool?: string
+  runtime?: string
+  features?: TemplateFeature[]
+}
+
+// ProjectTemplate is a per-project flavor: a base template with the project-static
+// placeholders baked in (pass-1); the per-workspace ${...} tokens stay for launch.
+export interface AddonSecretFile {
+  kv_field: string
+  dest_file: string
+  env?: string
+}
+
+export interface AddonEngine {
+  mount: string
+  type: string
+  kv_path?: string
+  secret_files?: AddonSecretFile[]
+}
+
+// TemplateAddons is a flavor's structured extension: MCP servers (from the catalog)
+// and extra secret engines injected into the workspace template.
+export interface TemplateAddons {
+  mcp_servers?: string[]
+  engines?: AddonEngine[]
+}
+
+export interface ProjectTemplate {
+  project: string
+  flavor: string
+  base_version: number
+  status: string
+  rendered_source: string
+  baked_base?: string
+  label?: string
+  description?: string
+  image?: string
+  git_repo_url?: string
+  node_pool?: string
+  features?: TemplateFeature[]
+  addons?: TemplateAddons
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+// Image is NOT accepted here — it is a property of the base template (portal-admin
+// owned), baked in at create.
+export interface CreateProjectTemplateInput {
+  base: string
+  flavor?: string
+  git_repo_url: string
+  label?: string
+  description?: string
+  node_pool?: string
+}
+
+export function listProjectBaseTemplates(project: string): Promise<BaseOption[]> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/base-templates`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d as BaseOption[]) || [])
+}
+
+export function listProjectTemplates(project: string): Promise<ProjectTemplate[]> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/templates`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d as ProjectTemplate[]) || [])
+}
+
+export function createProjectTemplate(project: string, in_: CreateProjectTemplateInput): Promise<ProjectTemplate> {
+  return post(`/api/projects/${encodeURIComponent(project)}/templates`, in_)
+}
+
+export function deleteProjectTemplate(project: string, flavor: string): Promise<void> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/templates/${encodeURIComponent(flavor)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}
+
+// updateTemplateAddons sets a flavor's structured add-ons (MCP servers + extra
+// engines); the server provisions the engines/MCP wiring and re-renders the template.
+export function updateTemplateAddons(project: string, flavor: string, addons: TemplateAddons): Promise<ProjectTemplate> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/templates/${encodeURIComponent(flavor)}/addons`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(addons),
+  }).then(asJSON)
+}
+
+// ---- Project Admin: engine provisioning (SSH CA / GitHub App / LLM / Boundary) ----
+
+export interface ProvisionEnginesInput {
+  github_app_id: number
+  github_app_installation_id: number
+  github_app_private_key: string
+  github_repositories?: string[]
+}
+
+// ProvisionResult is the (subset of the) project descriptor returned after a
+// successful engine provision — the credential library id proves Boundary is wired.
+export interface ProvisionResult {
+  project_name: string
+  namespace: string
+  credential_library_id?: string
+}
+
+export function provisionProjectEngines(project: string, in_: ProvisionEnginesInput): Promise<ProvisionResult> {
+  return post(`/api/projects/${encodeURIComponent(project)}/provision`, in_)
+}
+
+// EngineStatus is the non-secret provisioning state the Engines page reads.
+export interface EngineStatus {
+  provisioned: boolean
+  github_configured: boolean
+  credential_library_id?: string
+  status: string
+}
+
+export function getEngineStatus(project: string): Promise<EngineStatus> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/engines`, { credentials: 'include' }).then(asJSON)
+}
+
+// setGithubCredentials sets/updates the project's GitHub App config on the pre-existing
+// github mount (the private key is write-only). The engines themselves are provisioned
+// automatically at project-create.
+export function setGithubCredentials(project: string, in_: ProvisionEnginesInput): Promise<{ status: string }> {
+  return post(`/api/projects/${encodeURIComponent(project)}/engines/github`, in_)
 }

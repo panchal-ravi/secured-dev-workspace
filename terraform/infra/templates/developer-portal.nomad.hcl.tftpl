@@ -171,6 +171,16 @@ EOH
         PORTAL_PROVISIONER_JWT_PATH   = "$${NOMAD_SECRETS_DIR}/nomad_vault_provisioner.jwt"
         PORTAL_PROVISIONER_ROLE       = "portal-provisioner"
         PORTAL_PROVISIONER_AUTH_MOUNT = "jwt-nomad"
+        # Project engine-provision plane (Phase C): the node-private LiteLLM endpoint
+        # baked into project templates (llm_base_url) + used as the virtual key's
+        # base_url. PORTAL_VAULT_CRED_STORE_ADDR defaults to PORTAL_VAULT_ADDR and
+        # PORTAL_GITHUB_PLUGIN_VERSION to 2.3.2 (the registered plugin), so neither is
+        # set here unless they need to diverge.
+        PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT = "http://${instance_private_ip}:4000"
+        # Governed LLM models, single-sourced from terraform/infra (local.llm_model_*).
+        PORTAL_LLM_MODELS        = "${llm_models}"
+        PORTAL_LLM_MODEL_PRIMARY = "${llm_model_primary}"
+        PORTAL_LLM_MODEL_FAST    = "${llm_model_fast}"
 %{ endif ~}
 %{ if enable_project_creator ~}
         # Project-create plane: broker a short-TTL creator token via the third

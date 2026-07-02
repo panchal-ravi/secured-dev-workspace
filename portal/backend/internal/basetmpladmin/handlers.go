@@ -49,12 +49,13 @@ func (h *Handlers) get(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) updateDraft(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Source string `json:"source"`
+		Image  string `json:"image"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
 		return
 	}
-	t, err := h.svc.UpdateDraft(r.Context(), actor(r), r.PathValue("name"), in.Source)
+	t, err := h.svc.UpdateDraft(r.Context(), actor(r), r.PathValue("name"), in.Source, in.Image)
 	if err != nil {
 		fail(w, r, err)
 		return

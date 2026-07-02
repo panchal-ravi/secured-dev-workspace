@@ -27,19 +27,22 @@ func TestUpdateDraftValidatesAndMarksDraft(t *testing.T) {
 	// without touching the published source/version.
 	before, _ := s.Get(ctx, "dev-workspace")
 	good := `job "${job_name}" { namespace = "${namespace}" }`
-	got, err := s.UpdateDraft(ctx, "admin@x", "dev-workspace", good)
+	got, err := s.UpdateDraft(ctx, "admin@x", "dev-workspace", good, "you/dev-workspace:v2")
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if got.Status != store.StatusDraft || got.DraftSource != good {
 		t.Fatalf("draft not saved/marked: %+v", got)
 	}
+	if got.Image != "you/dev-workspace:v2" {
+		t.Fatalf("image not saved: %+v", got)
+	}
 	if got.PublishedSource != before.PublishedSource || got.Version != before.Version {
 		t.Fatalf("published source/version disturbed by a draft edit: %+v", got)
 	}
 
 	// An unknown placeholder is rejected.
-	if _, err := s.UpdateDraft(ctx, "admin@x", "dev-workspace", `${bogus}`); !errors.Is(err, apperr.ErrBadRequest) {
+	if _, err := s.UpdateDraft(ctx, "admin@x", "dev-workspace", `${bogus}`, ""); !errors.Is(err, apperr.ErrBadRequest) {
 		t.Fatalf("want ErrBadRequest for unknown placeholder, got %v", err)
 	}
 }
@@ -49,7 +52,7 @@ func TestPublishBumpsVersionAndFreezesSource(t *testing.T) {
 	ctx := context.Background()
 
 	edited := `job "${job_name}" { namespace = "${namespace}" image = "${image}" }`
-	if _, err := s.UpdateDraft(ctx, "admin@x", "dev-workspace", edited); err != nil {
+	if _, err := s.UpdateDraft(ctx, "admin@x", "dev-workspace", edited, "you/dev-workspace:v2"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	pub, err := s.Publish(ctx, "admin@x", "dev-workspace")

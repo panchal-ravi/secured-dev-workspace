@@ -29,6 +29,17 @@ type DBRole struct {
 	MaxTTLSeconds      int
 }
 
+// SSHRole is a Vault SSH signing role (key_type=ca). Ports
+// terraform/project/vault.tf's vault_ssh_secret_backend_role.dev_workspace: locks
+// the cert to the workspace user, permits a pty + TCP port forwarding (required
+// for VSCode Remote-SSH), short TTLs. Boundary stamps key_id = developer email.
+type SSHRole struct {
+	AllowedUsers string
+	DefaultUser  string
+	TTL          string // e.g. "5m"
+	MaxTTL       string // e.g. "30m"
+}
+
 // WIFRole binds a Nomad-WIF jwt role to token policies (the generated policy).
 type WIFRole struct {
 	BoundAudiences []string
@@ -47,6 +58,19 @@ type VaultAdmin interface {
 	ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error
 	RotateRoot(ctx context.Context, ns, mount, name string) error
 	WriteDBRole(ctx context.Context, ns, mount, name string, role DBRole) error
+
+	// SSH CA engine (ssh secrets engine in signing/CA mode).
+	WriteSSHCA(ctx context.Context, ns, mount string) error
+	WriteSSHRole(ctx context.Context, ns, mount, name string, role SSHRole) error
+
+	// GitHub App secrets engine (external plugin vault-plugin-secrets-github).
+	// The private key is write-only (never read back, never persisted outside Vault).
+	WriteGitHubConfig(ctx context.Context, ns, mount string, appID int, privKeyPEM string) error
+	WriteGitHubPermissionSet(ctx context.Context, ns, mount, name string, installID int, perms map[string]string, repos []string) error
+
+	// CreatePeriodicToken mints a periodic, orphan, renewable token bound to the
+	// given namespace-local policies (the Boundary credential-store auth token).
+	CreatePeriodicToken(ctx context.Context, ns string, policies []string, period string) (token string, err error)
 
 	WriteKVv2(ctx context.Context, ns, mount, relPath string, data map[string]any) error
 
@@ -199,6 +223,125 @@ func (a *vaultAdmin) WriteDBRole(ctx context.Context, ns, mount, name string, ro
 		"max_ttl":             role.MaxTTLSeconds,
 	})
 	return wrap("write db role", err)
+}
+
+// WriteSSHCA generates + holds the CA signing key inside Vault (ed25519 so OpenSSH
+// accepts the signature without deprecated ssh-rsa/SHA-1).
+func (a *vaultAdmin) WriteSSHCA(ctx context.Context, ns, mount string) error {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return err
+	}
+	// Idempotent: the CA is generate-once (Vault rejects a second generate_signing_key
+	// while keys exist), so skip when already configured. This keeps re-provision safe —
+	// a re-run after a mid-provision failure must converge, not error on the SSH CA.
+	if sec, rerr := cl.Logical().ReadWithContext(ctx, mount+"/config/ca"); rerr == nil && sec != nil {
+		if pk, _ := sec.Data["public_key"].(string); pk != "" {
+			return nil
+		}
+	}
+	_, err = cl.Logical().WriteWithContext(ctx, mount+"/config/ca", map[string]any{
+		"generate_signing_key": true,
+		"key_type":             "ed25519",
+	})
+	return wrap("write ssh ca", err)
+}
+
+func (a *vaultAdmin) WriteSSHRole(ctx context.Context, ns, mount, name string, role SSHRole) error {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return err
+	}
+	_, err = cl.Logical().WriteWithContext(ctx, mount+"/roles/"+name, map[string]any{
+		"key_type":                "ca",
+		"allow_user_certificates": true,
+		"allow_user_key_ids":      true, // Boundary stamps key_id = developer email (audit)
+		"allowed_users":           role.AllowedUsers,
+		"default_user":            role.DefaultUser,
+		"default_extensions": map[string]string{
+			"permit-pty":             "",
+			"permit-port-forwarding": "",
+		},
+		"ttl":     role.TTL,
+		"max_ttl": role.MaxTTL,
+	})
+	return wrap("write ssh role", err)
+}
+
+// WriteGitHubConfig configures the GitHub App broker with the project's App id +
+// private key. prv_key is write-only: never read back, never persisted outside Vault.
+func (a *vaultAdmin) WriteGitHubConfig(ctx context.Context, ns, mount string, appID int, privKeyPEM string) error {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return err
+	}
+	_, err = cl.Logical().WriteWithContext(ctx, mount+"/config", map[string]any{
+		"app_id":  appID,
+		"prv_key": privKeyPEM,
+	})
+	return wrap("write github config", err)
+}
+
+// WriteGitHubPermissionSet defines a pre-scoped installation-token set (installation
+// id + minimal permissions, optionally repo-constrained). The workspace reads
+// github/token/<name> with no params, so the scope never leaves Vault.
+func (a *vaultAdmin) WriteGitHubPermissionSet(ctx context.Context, ns, mount, name string, installID int, perms map[string]string, repos []string) error {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return err
+	}
+	data := map[string]any{
+		"installation_id": installID,
+		"permissions":     perms,
+	}
+	if len(repos) > 0 {
+		data["repositories"] = repos
+	}
+	_, err = cl.Logical().WriteWithContext(ctx, mount+"/permissionset/"+name, data)
+	return wrap("write github permissionset", err)
+}
+
+// CreatePeriodicToken mints a periodic, orphan, renewable token bound to policies —
+// what Boundary authenticates to Vault with (it self-renews indefinitely; orphan so
+// its lifecycle is independent of the brokered token that created it).
+func (a *vaultAdmin) CreatePeriodicToken(ctx context.Context, ns string, policies []string, period string) (string, error) {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return "", err
+	}
+	// Vault forbids a non-root token from creating an orphan token or from assigning a
+	// policy it does not itself hold ("child policies must be subset of parent"). A token
+	// role authorizes both explicitly — without granting the provisioner blanket sudo:
+	// allowed_policies whitelists the policy and orphan makes the token parentless. The
+	// role name is deterministic per policy set and re-created idempotently; the period on
+	// the role makes tokens minted through it periodic.
+	// Boundary's Vault credential store requires a PERIODIC token; Vault requires sudo to
+	// mint one. A token role does not by itself yield a periodic token here (its period is
+	// applied as a renewable TTL, not a period), so the period is passed at create — the
+	// provisioner policy scopes sudo to auth/token/create/periodic-* for exactly this. The
+	// role's allowed_policies whitelist + orphan bound what the token may carry. The role
+	// name is deterministic per policy set and re-created idempotently.
+	role := "periodic-" + strings.Join(policies, "-")
+	if _, err := cl.Logical().WriteWithContext(ctx, "auth/token/roles/"+role, map[string]any{
+		"allowed_policies": policies,
+		"orphan":           true,
+		"renewable":        true,
+		"token_type":       "service",
+	}); err != nil {
+		return "", wrap("create token role", err)
+	}
+	sec, err := cl.Logical().WriteWithContext(ctx, "auth/token/create/"+role, map[string]any{
+		"policies": policies,
+		"period":   period,
+		"metadata": map[string]string{"purpose": "boundary-credential-store"},
+	})
+	if err != nil {
+		return "", wrap("create periodic token", err)
+	}
+	if sec == nil || sec.Auth == nil || sec.Auth.ClientToken == "" {
+		return "", fmt.Errorf("vaultadmin: create periodic token returned no token")
+	}
+	return sec.Auth.ClientToken, nil
 }
 
 func (a *vaultAdmin) WriteKVv2(ctx context.Context, ns, mount, relPath string, data map[string]any) error {

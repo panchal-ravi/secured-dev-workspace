@@ -116,6 +116,19 @@ type Config struct {
 
 	// InstancePrivateIP is written into each project descriptor (all-in-one node).
 	InstancePrivateIP string // PORTAL_INSTANCE_PRIVATE_IP
+
+	// Project engine-provisioning (Phase C). Values the portal bakes into project
+	// templates + uses when standing up per-project engines from the Portal.
+	LLMGatewayPrivateEndpoint string // PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT (node-ip:4000 — what a workspace uses as llm_base_url)
+	VaultCredStoreAddress     string // PORTAL_VAULT_CRED_STORE_ADDR (Vault addr Boundary reaches Vault at; defaults to VaultAddr)
+	GithubPluginVersion       string // PORTAL_GITHUB_PLUGIN_VERSION (default "2.3.2"; mounted as v<version>)
+
+	// Governed LLM models, defined once in terraform/infra (the LiteLLM model_list)
+	// and threaded here so the per-project virtual key's allowed set and the base
+	// templates' Claude Code model mapping reference the same names.
+	LLMModels       []string // PORTAL_LLM_MODELS (comma-separated; allowed models on a project virtual key)
+	LLMModelPrimary string   // PORTAL_LLM_MODEL_PRIMARY (opus/sonnet slot; baked as llm_model_primary)
+	LLMModelFast    string   // PORTAL_LLM_MODEL_FAST (haiku/subagent slot; baked as llm_model_fast)
 }
 
 // AdminEnabled reports whether the Platform Admin onboarding plane is configured.
@@ -175,6 +188,19 @@ func Load() (Config, error) {
 		BoundaryOIDCAuthMethodID: os.Getenv("PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID"),
 		BoundaryOrgScopeID:       os.Getenv("PORTAL_BOUNDARY_ORG_SCOPE_ID"),
 		InstancePrivateIP:        os.Getenv("PORTAL_INSTANCE_PRIVATE_IP"),
+
+		LLMGatewayPrivateEndpoint: os.Getenv("PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT"),
+		VaultCredStoreAddress:     os.Getenv("PORTAL_VAULT_CRED_STORE_ADDR"),
+		GithubPluginVersion:       env("PORTAL_GITHUB_PLUGIN_VERSION", "2.3.2"),
+
+		LLMModels:       splitList(env("PORTAL_LLM_MODELS", "deepseek-v4-pro,deepseek-v4-flash")),
+		LLMModelPrimary: env("PORTAL_LLM_MODEL_PRIMARY", "deepseek-v4-pro"),
+		LLMModelFast:    env("PORTAL_LLM_MODEL_FAST", "deepseek-v4-flash"),
+	}
+
+	// Boundary reaches Vault at the same address the portal does unless overridden.
+	if c.VaultCredStoreAddress == "" {
+		c.VaultCredStoreAddress = c.VaultAddr
 	}
 
 	// Secure cookies: explicit override, else inferred from the redirect scheme.
@@ -258,6 +284,17 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitList parses a comma-separated env value into a trimmed, non-empty slice.
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func envBool(key string, def bool) bool {

@@ -182,6 +182,7 @@ type BaseJobTemplate struct {
 	ContentHash     string    `json:"content_hash,omitempty"`
 	DraftSource     string    `json:"draft_source"`     // editable HCL
 	PublishedSource string    `json:"published_source"` // frozen at last publish
+	Image           string    `json:"image,omitempty"`  // container image baked into project templates (portal-admin owned)
 	Features        []Feature `json:"features,omitempty"`
 	DefaultNodePool string    `json:"default_node_pool,omitempty"`
 	Runtime         string    `json:"runtime,omitempty"` // "", "nvidia", "kata" (informational)
@@ -207,16 +208,45 @@ type ProjectTemplate struct {
 	Flavor         string    `json:"flavor"`       // base template name it derives from
 	BaseVersion    int       `json:"base_version"` // BaseJobTemplate.Version snapshotted
 	Status         string    `json:"status"`
-	RenderedSource string    `json:"rendered_source"`
+	RenderedSource string    `json:"rendered_source"`      // pass-1 baked + add-ons injected (what launch renders pass-2)
+	BakedBase      string    `json:"baked_base,omitempty"` // pass-1 baked with @project-addons markers intact (snapshot; re-injected on add-on change)
 	Label          string    `json:"label,omitempty"`
 	Description    string    `json:"description,omitempty"`
 	Image          string    `json:"image,omitempty"`
 	GitRepoURL     string    `json:"git_repo_url,omitempty"`
 	NodePool       string    `json:"node_pool,omitempty"`
 	Features       []Feature `json:"features,omitempty"`
-	CreatedBy      string    `json:"created_by,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	// Addons is the project-admin's structured extension of the base template: MCP
+	// servers (from the catalog) and extra secret engines wired into the workspace.
+	// The RenderedSource above is (re)generated from the base + these add-ons.
+	Addons    TemplateAddons `json:"addons,omitempty"`
+	CreatedBy string         `json:"created_by,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+// TemplateAddons is the project-specific extension layer injected into a base
+// template at the @project-addons markers. No secret material (secrets are read at
+// workspace runtime from Vault over WIF).
+type TemplateAddons struct {
+	MCPServers []string      `json:"mcp_servers,omitempty"` // deployed MCP server names to register in the workspace
+	Engines    []AddonEngine `json:"engines,omitempty"`     // extra Vault secret engines wired into the workspace
+}
+
+// AddonEngine is an extra Vault secret engine a project-admin mounts in the project
+// namespace and surfaces in the workspace as one or more /secrets files.
+type AddonEngine struct {
+	Mount       string            `json:"mount"`                  // Vault mount path (e.g. "kv-tools")
+	Type        string            `json:"type"`                   // engine type (e.g. "kv-v2")
+	KVPath      string            `json:"kv_path,omitempty"`      // Vault read path the workspace consumes
+	SecretFiles []AddonSecretFile `json:"secret_files,omitempty"` // field → /secrets file (+ optional env)
+}
+
+// AddonSecretFile maps one Vault KV field to a /secrets file the workspace reads.
+type AddonSecretFile struct {
+	KVField  string `json:"kv_field"`      // field under the KV path (KV v2 .Data.data.<field>)
+	DestFile string `json:"dest_file"`     // /secrets file name written by consul-template
+	Env      string `json:"env,omitempty"` // optional env var exported in the entrypoint
 }
 
 // AuditEvent is one admin mutation: who did what to which target, and the outcome.

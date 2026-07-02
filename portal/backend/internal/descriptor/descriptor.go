@@ -46,6 +46,10 @@ type Descriptor struct {
 	WorkspaceUser            string   `json:"workspace_user"`
 	AliasSuffix              string   `json:"alias_suffix"`
 	Flavors                  []Flavor `json:"flavors"`
+	// GithubConfigured reports whether the project's GitHub App credentials have been
+	// set (the github mount always exists after provision; the App config is supplied
+	// later by a project-admin). Non-secret status flag — never the key material.
+	GithubConfigured bool `json:"github_configured,omitempty"`
 }
 
 // Parse decodes the descriptor JSON string stored under the "descriptor" KV key.

@@ -74,13 +74,13 @@ EOH
         change_mode = "restart"
         data        = <<EOH
 model_list:
-  - model_name: deepseek-v4-pro
+  - model_name: ${model_primary}
     litellm_params:
-      model: deepseek/deepseek-chat   # confirm the real id on the DeepSeek dashboard
+      model: ${model_backend}   # confirm the real id on the DeepSeek dashboard
       api_key: os.environ/DEEPSEEK_API_KEY
-  - model_name: deepseek-v4-flash
+  - model_name: ${model_fast}
     litellm_params:
-      model: deepseek/deepseek-chat   # point at a cheaper/faster id when available
+      model: ${model_backend}   # point at a cheaper/faster id when available
       api_key: os.environ/DEEPSEEK_API_KEY
 
 litellm_settings:

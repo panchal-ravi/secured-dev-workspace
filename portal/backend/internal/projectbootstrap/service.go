@@ -43,6 +43,13 @@ type RoleGranter interface {
 	Grant(ctx context.Context, actor, project, subject, role string) (store.ProjectRole, error)
 }
 
+// EngineProvisioner stands up the project's standard secret engines (SSH + GitHub
+// mount + LLM virtual key + Boundary) at create time, with GitHub App config left
+// empty for the project-admin to supply later (satisfied by *projectengines.Service).
+type EngineProvisioner interface {
+	ProvisionAtCreate(ctx context.Context, actor, project string) (descriptor.Descriptor, error)
+}
+
 // Auditor records create-project events (satisfied by store.Store).
 type Auditor interface {
 	AppendAudit(ctx context.Context, ev store.AuditEvent) error
@@ -68,13 +75,15 @@ type Service struct {
 	boundary BoundaryScopeClient
 	desc     DescriptorStore
 	roles    RoleGranter
+	engines  EngineProvisioner
 	audit    Auditor
 	cfg      Config
 }
 
-// NewService builds the project-create orchestration service.
-func NewService(vc *VaultCreator, nomad NomadNSClient, boundary BoundaryScopeClient, desc DescriptorStore, roles RoleGranter, audit Auditor, cfg Config) *Service {
-	return &Service{vc: vc, nomad: nomad, boundary: boundary, desc: desc, roles: roles, audit: audit, cfg: cfg}
+// NewService builds the project-create orchestration service. engines may be nil (the
+// standard-engine auto-provision at create is then skipped — e.g. in unit tests).
+func NewService(vc *VaultCreator, nomad NomadNSClient, boundary BoundaryScopeClient, desc DescriptorStore, roles RoleGranter, engines EngineProvisioner, audit Auditor, cfg Config) *Service {
+	return &Service{vc: vc, nomad: nomad, boundary: boundary, desc: desc, roles: roles, engines: engines, audit: audit, cfg: cfg}
 }
 
 // CreateProjectInput is the platform-admin's request. Flavors/templates are a
@@ -173,6 +182,19 @@ func (s *Service) CreateProject(ctx context.Context, actor string, in CreateProj
 	// 5. Bootstrap the first project-admin.
 	if _, err := s.roles.Grant(ctx, actor, p, admin, string(rbac.RoleProjectAdmin)); err != nil {
 		return s.failf(ctx, actor, p, "role.grant", err)
+	}
+
+	// 6. Auto-provision the standard secret engines (SSH + GitHub mount + LLM virtual
+	// key + Boundary cred-store/library) with EMPTY GitHub App config. The project-admin
+	// supplies the GitHub creds later via the Engines page. Idempotent-forward: an engine
+	// failure marks the descriptor errored and a re-run converges. Returns the updated
+	// descriptor (credential_library_id filled).
+	if s.engines != nil {
+		provisioned, err := s.engines.ProvisionAtCreate(ctx, actor, p)
+		if err != nil {
+			return s.failf(ctx, actor, p, "engines.provision", err)
+		}
+		d = provisioned
 	}
 
 	s.record(ctx, actor, p, "ok", map[string]any{"first_admin": admin, "developers_group": group})

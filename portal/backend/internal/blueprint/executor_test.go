@@ -15,14 +15,23 @@ type recVault struct {
 	lastPolicy string
 }
 
-func (r *recVault) log(s string)                                            { r.ops = append(r.ops, s) }
-func (r *recVault) MountEngine(_ context.Context, ns, p, t, v string) error { r.log("mount " + p); return nil }
-func (r *recVault) UnmountEngine(_ context.Context, ns, p string) error     { r.log("unmount " + p); return nil }
+func (r *recVault) log(s string) { r.ops = append(r.ops, s) }
+func (r *recVault) MountEngine(_ context.Context, ns, p, t, v string) error {
+	r.log("mount " + p)
+	return nil
+}
+func (r *recVault) UnmountEngine(_ context.Context, ns, p string) error {
+	r.log("unmount " + p)
+	return nil
+}
 func (r *recVault) ConfigureDBConnection(_ context.Context, ns, m, n string, c DBConnectionConfig) error {
 	r.log("dbconfig " + m + "/" + n)
 	return nil
 }
-func (r *recVault) RotateRoot(_ context.Context, ns, m, n string) error { r.log("rotate-root " + m + "/" + n); return nil }
+func (r *recVault) RotateRoot(_ context.Context, ns, m, n string) error {
+	r.log("rotate-root " + m + "/" + n)
+	return nil
+}
 func (r *recVault) WriteDBRole(_ context.Context, ns, m, n string, role DBRole) error {
 	r.log("dbrole " + m + "/" + n)
 	return nil
@@ -36,22 +45,48 @@ func (r *recVault) WritePolicy(_ context.Context, ns, n, h string) error {
 	r.lastPolicy = h
 	return nil
 }
-func (r *recVault) DeletePolicy(_ context.Context, ns, n string) error   { r.log("policy- " + n); return nil }
+func (r *recVault) DeletePolicy(_ context.Context, ns, n string) error {
+	r.log("policy- " + n)
+	return nil
+}
 func (r *recVault) WriteWIFRole(_ context.Context, ns, a, n string, role WIFRole) error {
 	r.log("wif+ " + n)
 	return nil
 }
-func (r *recVault) DeleteWIFRole(_ context.Context, ns, a, n string) error { r.log("wif- " + n); return nil }
+func (r *recVault) DeleteWIFRole(_ context.Context, ns, a, n string) error {
+	r.log("wif- " + n)
+	return nil
+}
 func (r *recVault) RevokeLeasesByPrefix(_ context.Context, ns, p string) error {
 	r.log("revoke " + p)
 	return nil
+}
+func (r *recVault) WriteSSHCA(_ context.Context, ns, m string) error {
+	r.log("ssh-ca " + m)
+	return nil
+}
+func (r *recVault) WriteSSHRole(_ context.Context, ns, m, n string, role SSHRole) error {
+	r.log("ssh-role " + m + "/" + n)
+	return nil
+}
+func (r *recVault) WriteGitHubConfig(_ context.Context, ns, m string, appID int, pem string) error {
+	r.log("gh-config " + m)
+	return nil
+}
+func (r *recVault) WriteGitHubPermissionSet(_ context.Context, ns, m, n string, id int, perms map[string]string, repos []string) error {
+	r.log("gh-permset " + m + "/" + n)
+	return nil
+}
+func (r *recVault) CreatePeriodicToken(_ context.Context, ns string, policies []string, period string) (string, error) {
+	r.log("periodic-token")
+	return "periodic-tok", nil
 }
 
 func classAManifest() BlueprintManifest {
 	return BlueprintManifest{
 		ID: "postgres-mcp", Version: 1, Class: ClassA, Description: "pg",
-		Engines: []EngineSpec{{Type: "database", Plugin: "postgresql-database-plugin", MountPathTpl: "database/{{.Namespace}}-pg"}},
-		Role:    &RoleSpec{NameTpl: "ro", CreationStatements: []string{"CREATE ROLE x;"}, DefaultTTLSeconds: 3600, MaxTTLSeconds: 7200},
+		Engines:   []EngineSpec{{Type: "database", Plugin: "postgresql-database-plugin", MountPathTpl: "database/{{.Namespace}}-pg"}},
+		Role:      &RoleSpec{NameTpl: "ro", CreationStatements: []string{"CREATE ROLE x;"}, DefaultTTLSeconds: 3600, MaxTTLSeconds: 7200},
 		PolicyTpl: `path "{{.Mount}}/creds/{{.Role}}" { capabilities = ["read"] }`,
 		WIFRole:   WIFRoleSpec{NameTpl: "mcp-postgres-mcp", TokenTTL: "1h"},
 		Params: []ParamSpec{

@@ -22,9 +22,11 @@
 #   wif_role          — per-project Nomad↔Vault WIF role (= project name)
 #   ssh_ca_path       — per-project Vault SSH CA config path (ssh/config/ca)
 #   github_token_path — per-project Vault GitHub permission-set token path
-#   mcp_kv_path       — per-project Vault KV path for the virtual-MCP coordinates (secret/data/projects/mcp)
 #   llm_kv_path       — per-project Vault KV path for the LiteLLM virtual key (secret/data/projects/llm)
 #   llm_base_url      — node-private LiteLLM gateway base URL (Claude Code's ANTHROPIC_BASE_URL)
+#   llm_model_primary llm_model_fast — governed model names (from terraform/infra LiteLLM model_list)
+# MCP wiring is NOT in the base template — a project-admin attaches MCP servers from the
+# catalog via structured template extension (injected at the @project-addons markers below).
 #
 # Per-workspace placeholders (escaped "$$" here; filled by the portal at create):
 #   job_name ssh_port volume_name developer_email git_user_name
@@ -106,28 +108,11 @@ EOH
 EOH
       }
 
-      # The project's REMOTE virtual MCP server on the central ContextForge gateway:
-      # its URL + a per-project client bearer token, written to Vault KV by the
-      # project tier's gateway orchestration (mcp-gateway.tf). Rendered to the
-      # /secrets tmpfs over WIF; the entrypoint registers them with Claude.
-      # change_mode=noop so a re-render NEVER restarts sshd; never lands on /home/dev.
-      template {
-        destination = "secrets/mcp-url"
-        perms       = "0644"
-        change_mode = "noop"
-        data        = <<EOH
-{{ with secret "${mcp_kv_path}" }}{{ .Data.data.url }}{{ end }}
-EOH
-      }
-
-      template {
-        destination = "secrets/mcp-token"
-        perms       = "0644"
-        change_mode = "noop"
-        data        = <<EOH
-{{ with secret "${mcp_kv_path}" }}{{ .Data.data.token }}{{ end }}
-EOH
-      }
+      # Project add-on secret templates are injected here by the portal when a
+      # project-admin attaches MCP servers (from the catalog) or extra secret engines
+      # to this flavor (structured template extension). The base template ships with
+      # NO MCP wiring — MCP is a per-project choice.
+      # @project-addons:secrets
 
       # Per-project LiteLLM virtual key (KV v2), minted into the /secrets tmpfs over
       # WIF. Claude Code is pointed at the shared LiteLLM gateway (managed-settings.json
@@ -161,11 +146,11 @@ EOH
   "env": {
     "DISABLE_AUTOUPDATER": "1",
     "ANTHROPIC_BASE_URL": "${llm_base_url}",
-    "ANTHROPIC_MODEL": "deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",
+    "ANTHROPIC_MODEL": "${llm_model_primary}",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${llm_model_primary}",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${llm_model_primary}",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${llm_model_fast}",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "${llm_model_fast}",
     "CLAUDE_CODE_EFFORT_LEVEL": "max"
   }
 }
@@ -208,17 +193,11 @@ HELPER
 chmod 0755 /local/git-credential-helper
 sudo -u dev git config --global 'credential.https://github.com.helper' /local/git-credential-helper
 
-# Register the project's REMOTE virtual MCP server (demo-db) on the central
-# ContextForge gateway for the dev user, user-scoped so it is available from any
-# directory. The URL + per-project bearer token are rendered to /secrets over WIF
-# (templates above). Idempotent — only add when not already present — and a
-# registration failure WARNs without aborting the workspace (a missing MCP tool
-# must never cost the developer their SSH session).
-if ! sudo -u dev claude mcp list 2>/dev/null | grep -q 'demo-db'; then
-  sudo -u dev claude mcp add --scope user --transport sse demo-db "$(cat /secrets/mcp-url)" \
-    --header "Authorization: Bearer $(cat /secrets/mcp-token)" \
-    || echo "WARN: failed to register remote demo-db MCP server" >&2
-fi
+# Project add-on MCP registrations are injected here by the portal when a
+# project-admin attaches MCP servers from the catalog. Each is registered user-scoped
+# and idempotently; a failure WARNs without aborting the workspace (a missing MCP tool
+# must never cost the developer their SSH session). The base template registers none.
+# @project-addons:entrypoint
 
 # Clone the project repo on first boot only. Private repos work: the credential
 # helper supplies the GitHub App token for the HTTPS github.com clone.

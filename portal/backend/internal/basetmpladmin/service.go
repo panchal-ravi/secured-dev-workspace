@@ -32,10 +32,12 @@ func (s *Service) Get(ctx context.Context, name string) (store.BaseJobTemplate, 
 	return s.store.GetBaseJobTemplate(ctx, name)
 }
 
-// UpdateDraft validates and saves the editable draft source, marking the template
-// as having pending changes (status=draft). The published source and version are
-// untouched, so projects deriving from the last publish are unaffected.
-func (s *Service) UpdateDraft(ctx context.Context, actor, name, source string) (store.BaseJobTemplate, error) {
+// UpdateDraft validates and saves the editable draft source + the container image,
+// marking the template as having pending changes (status=draft). The published
+// source and version are untouched, so projects deriving from the last publish are
+// unaffected. The image is a template property (not versioned) that project
+// templates bake in; a project-admin never supplies it.
+func (s *Service) UpdateDraft(ctx context.Context, actor, name, source, image string) (store.BaseJobTemplate, error) {
 	source = strings.TrimSpace(source)
 	if err := jobtemplate.ValidatePlaceholders(source); err != nil {
 		s.audit(ctx, actor, "base-template.update", name, "error")
@@ -46,6 +48,7 @@ func (s *Service) UpdateDraft(ctx context.Context, actor, name, source string) (
 		return store.BaseJobTemplate{}, err
 	}
 	t.DraftSource = source
+	t.Image = strings.TrimSpace(image)
 	t.Status = store.StatusDraft
 	saved, err := s.store.UpsertBaseJobTemplate(ctx, t)
 	if err != nil {

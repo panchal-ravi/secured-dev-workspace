@@ -7,6 +7,8 @@ import {
   SideNav,
   SideNavItems,
   SideNavLink,
+  SideNavDivider,
+  Dropdown,
 } from '@carbon/react'
 import {
   Logout,
@@ -62,24 +64,20 @@ export default function AppHeader({
       { label: 'Base templates', path: '/admin/base-templates', icon: Catalog, current: pathname.startsWith('/admin/base-templates') },
     )
   }
-  // Project admins get a Members entry per administered project.
-  for (const p of adminProjects(me)) {
-    items.push({
-      label: `${p} · members`,
-      path: `/projects/${encodeURIComponent(p)}/members`,
-      icon: UserMultiple,
-      current: pathname === `/projects/${encodeURIComponent(p)}/members`,
-    })
-  }
-  // Project admins get an MCP-servers entry per administered project.
-  for (const p of adminProjects(me)) {
-    items.push({
-      label: `${p} · mcp servers`,
-      path: `/projects/${encodeURIComponent(p)}/mcp-servers`,
-      icon: Catalog,
-      current: pathname === `/projects/${encodeURIComponent(p)}/mcp-servers`,
-    })
-  }
+  // Project admins get a single project SWITCHER (dropdown) + a fixed set of
+  // per-project sub-nav links, instead of one flat entry per (project × section).
+  // The active project is derived from the current route so deep-links stay in
+  // sync; it falls back to the first administered project. The dropdown navigates
+  // to the selected project's members page.
+  const admin = adminProjects(me)
+  const projectSections = [
+    { key: 'members', label: 'members', icon: UserMultiple },
+    { key: 'mcp-servers', label: 'mcp servers', icon: Catalog },
+    { key: 'templates', label: 'templates', icon: Catalog },
+    { key: 'engines', label: 'engines', icon: DataStructured },
+  ]
+  const routeMatch = pathname.match(/^\/projects\/([^/]+)\/(members|mcp-servers|templates|engines)/)
+  const activeProject = routeMatch ? decodeURIComponent(routeMatch[1]) : admin[0]
 
   return (
     <Header aria-label="Secured Dev Workspace" className="cds--g100">
@@ -135,6 +133,39 @@ export default function AppHeader({
               {it.label}
             </SideNavLink>
           ))}
+          {admin.length > 0 && activeProject && (
+            <>
+              <SideNavDivider />
+              <div style={{ padding: '0.5rem 1rem' }}>
+                <Dropdown
+                  id="project-switcher"
+                  size="sm"
+                  titleText="Administered project"
+                  label="Select a project"
+                  items={admin}
+                  selectedItem={activeProject}
+                  itemToString={(p) => p ?? ''}
+                  onChange={({ selectedItem }) => {
+                    if (selectedItem) nav(`/projects/${encodeURIComponent(selectedItem)}/members`)
+                  }}
+                />
+              </div>
+              {projectSections.map((s) => {
+                const path = `/projects/${encodeURIComponent(activeProject)}/${s.key}`
+                return (
+                  <SideNavLink
+                    key={s.key}
+                    renderIcon={s.icon}
+                    href={path}
+                    isActive={pathname === path}
+                    onClick={(e: MouseEvent) => go(e, path)}
+                  >
+                    {s.label}
+                  </SideNavLink>
+                )
+              })}
+            </>
+          )}
         </SideNavItems>
       </SideNav>
     </Header>

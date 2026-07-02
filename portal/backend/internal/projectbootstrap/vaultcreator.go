@@ -242,9 +242,21 @@ func wrap(op string, err error) error {
 	return fmt.Errorf("projectbootstrap: %s: %w", op, err)
 }
 
-// provisionerPolicyHCL is the §5 namespace-local provisioning policy, kept in sync
-// with terraform/project/portal-provisioner.tf. Relative paths (a namespace-native
-// token evaluates them correctly); denies win.
+// provisionerPolicyHCL is the §5 namespace-local provisioning policy. This Go const
+// is now the SOLE source of truth: the former Terraform mirror
+// (terraform/project/portal-provisioner.tf) is retired in the collapse of the
+// project tier into the portal. Relative paths (a namespace-native token evaluates
+// them correctly); denies win. ssh/*, github/*, and the token role/create paths are
+// granted so the portal's engine-provision orchestrator can stand up the SSH CA, the
+// GitHub App broker, and the Boundary credential-store periodic token — all within the
+// project namespace. Boundary requires a PERIODIC Vault token, and Vault requires sudo
+// to mint one. Rather than grant blanket sudo on auth/token/create, the provisioner
+// creates a token ROLE (auth/token/roles/*) whose allowed_policies whitelist + orphan
+// flag bound the token, and sudo is scoped to auth/token/create/periodic-* — it can mint
+// periodic tokens ONLY through those roles (carrying only the role's whitelisted
+// policies), never arbitrary tokens. The denies (identity, sys/namespaces, self-policy)
+// still bound the blast radius to this namespace. Existing projects re-run
+// SeedProvisioner (idempotent) to pick up the widened grants.
 const provisionerPolicyHCL = `path "sys/mounts" { capabilities = ["read"] }
 path "sys/mounts/*" { capabilities = ["create", "read", "update", "delete"] }
 path "sys/policies/acl" { capabilities = ["list"] }
@@ -252,6 +264,10 @@ path "sys/policies/acl/*" { capabilities = ["create", "read", "update", "delete"
 path "auth/jwt-nomad/role/*" { capabilities = ["create", "read", "update", "delete"] }
 path "database/*" { capabilities = ["create", "read", "update", "delete"] }
 path "secret/*" { capabilities = ["create", "read", "update", "delete"] }
+path "ssh/*" { capabilities = ["create", "read", "update", "delete"] }
+path "github/*" { capabilities = ["create", "read", "update", "delete"] }
+path "auth/token/create/periodic-*" { capabilities = ["create", "update", "sudo"] }
+path "auth/token/roles/*" { capabilities = ["create", "read", "update", "delete"] }
 path "sys/leases/revoke-force/*" { capabilities = ["update"] }
 
 path "identity/*" { capabilities = ["deny"] }

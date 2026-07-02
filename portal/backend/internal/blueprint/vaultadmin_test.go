@@ -96,6 +96,97 @@ func TestBrokersNamespaceNativeToken(t *testing.T) {
 	}
 }
 
+// TestEngineWritesUseBrokeredToken proves the SSH/GitHub/periodic-token methods all
+// carry the brokered namespace-native token (never the root token) and post the
+// expected payloads to the expected namespace-local paths.
+func TestEngineWritesUseBrokeredToken(t *testing.T) {
+	seen := map[string]map[string]any{} // path -> decoded JSON body
+	tokens := map[string]string{}       // path -> X-Vault-Token
+	nss := map[string]string{}          // path -> X-Vault-Namespace
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/jwt-nomad/login", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"auth": map[string]any{"client_token": "brokered-tok", "lease_duration": 300},
+		})
+	})
+	record := func(path string, resp map[string]any) {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			seen[path] = body
+			tokens[path] = r.Header.Get("X-Vault-Token")
+			nss[path] = r.Header.Get("X-Vault-Namespace")
+			if resp != nil {
+				_ = json.NewEncoder(w).Encode(resp)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+	}
+	record("/v1/ssh/config/ca", nil)
+	record("/v1/ssh/roles/dev-workspace", nil)
+	record("/v1/github/config", nil)
+	record("/v1/github/permissionset/dev-workspace", nil)
+	record("/v1/auth/token/roles/periodic-boundary-cred-store", nil)
+	record("/v1/auth/token/create/periodic-boundary-cred-store", map[string]any{
+		"auth": map[string]any{"client_token": "periodic-tok"},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	va := NewVaultAdmin(newClient(t, srv.URL), ProvisionerConfig{
+		JWTPath: writeJWT(t, "the-jwt"), Role: "portal-provisioner", AuthMount: "jwt-nomad",
+	})
+	ctx := context.Background()
+	ns := "project-beta"
+
+	if err := va.WriteSSHCA(ctx, ns, "ssh"); err != nil {
+		t.Fatalf("WriteSSHCA: %v", err)
+	}
+	if err := va.WriteSSHRole(ctx, ns, "ssh", "dev-workspace", SSHRole{AllowedUsers: "dev", DefaultUser: "dev", TTL: "5m", MaxTTL: "30m"}); err != nil {
+		t.Fatalf("WriteSSHRole: %v", err)
+	}
+	if err := va.WriteGitHubConfig(ctx, ns, "github", 42, "PEM"); err != nil {
+		t.Fatalf("WriteGitHubConfig: %v", err)
+	}
+	if err := va.WriteGitHubPermissionSet(ctx, ns, "github", "dev-workspace", 99, map[string]string{"contents": "write"}, []string{"acme/repo"}); err != nil {
+		t.Fatalf("WriteGitHubPermissionSet: %v", err)
+	}
+	tok, err := va.CreatePeriodicToken(ctx, ns, []string{"boundary-cred-store"}, "24h")
+	if err != nil {
+		t.Fatalf("CreatePeriodicToken: %v", err)
+	}
+	if tok != "periodic-tok" {
+		t.Fatalf("periodic token = %q, want periodic-tok", tok)
+	}
+
+	for path, tk := range tokens {
+		if tk != "brokered-tok" {
+			t.Fatalf("%s used token %q, want brokered-tok (root token leaked!)", path, tk)
+		}
+		if nss[path] != ns {
+			t.Fatalf("%s namespace = %q, want %q", path, nss[path], ns)
+		}
+	}
+	if seen["/v1/ssh/config/ca"]["generate_signing_key"] != true || seen["/v1/ssh/config/ca"]["key_type"] != "ed25519" {
+		t.Fatalf("ssh ca payload = %v", seen["/v1/ssh/config/ca"])
+	}
+	if seen["/v1/github/config"]["prv_key"] != "PEM" {
+		t.Fatalf("github config payload = %v", seen["/v1/github/config"])
+	}
+	role := seen["/v1/auth/token/roles/periodic-boundary-cred-store"]
+	if role["orphan"] != true {
+		t.Fatalf("token role payload = %v", role)
+	}
+	if pols, ok := role["allowed_policies"].([]any); !ok || len(pols) != 1 || pols[0] != "boundary-cred-store" {
+		t.Fatalf("token role allowed_policies = %v", role["allowed_policies"])
+	}
+	if create := seen["/v1/auth/token/create/periodic-boundary-cred-store"]; create["period"] != "24h" {
+		t.Fatalf("token create payload = %v", create)
+	}
+}
+
 // TestUnconfiguredIsBadRequest proves that with no provisioner JWT path the admin
 // fails closed with ErrBadRequest and makes ZERO network calls.
 func TestUnconfiguredIsBadRequest(t *testing.T) {

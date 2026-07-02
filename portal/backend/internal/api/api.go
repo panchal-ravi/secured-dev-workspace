@@ -20,7 +20,9 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectbootstrap"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectengines"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
+	"github.com/secured-dev-workspace/developer-portal/internal/projecttemplate"
 	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
@@ -44,6 +46,8 @@ type Options struct {
 	ProjectCreate *projectbootstrap.Handlers // optional; platform-admin project-create plane
 	ProjectRoles  *projectrole.Service       // optional; project-role plane
 	ProjectMCP    *projectadmin.Handlers     // optional; project MCP-deploy plane
+	ProjectTmpl   *projecttemplate.Handlers  // optional; project-template create plane
+	ProjectEng    *projectengines.Handlers   // optional; project engine-provision plane
 	Store         rbac.ProjectRoleStore
 	StaticDir     string
 	Ready         func(context.Context) error
@@ -119,6 +123,12 @@ func NewMux(opts Options) http.Handler {
 
 		if opts.ProjectMCP != nil {
 			opts.ProjectMCP.Register(mux, paProtect, paMutate)
+		}
+		if opts.ProjectTmpl != nil {
+			opts.ProjectTmpl.Register(mux, paProtect, paMutate)
+		}
+		if opts.ProjectEng != nil {
+			opts.ProjectEng.Register(mux, paProtect, paMutate)
 		}
 	}
 
