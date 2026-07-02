@@ -33,7 +33,7 @@ type Executor interface {
 
 type NomadClient interface {
 	RegisterJob(namespace, jobHCL, flavor string) (string, error)
-	ResolvePlacementIP(namespace, jobID string) (string, error)
+	ResolvePlacement(namespace, jobID string) (ip string, port int, err error)
 	PurgeJob(namespace, jobID string) error
 	JobExists(namespace, jobID string) (bool, error)
 }
@@ -193,15 +193,20 @@ func (s *Service) DeployServer(ctx context.Context, actor string, groups []strin
 		ServiceName: serviceName(project, t.Name),
 		Tags:        projectDiscoveryTags(project, t),
 		Credential:  mcpjob.WIFCredential{VaultNamespace: ns, WIFRole: rec.WIFRoleName, EnvTemplates: credEnv},
+		DynamicPort: true,
 	})
 	jobID, err := s.nomad.RegisterJob(ns, hcl, "")
 	if err != nil {
 		return fail("register-job", err)
 	}
-	ip, err := s.nomad.ResolvePlacementIP(ns, jobID)
+	ip, hostPort, err := s.nomad.ResolvePlacement(ns, jobID)
 	if err != nil {
 		_ = s.nomad.PurgeJob(ns, jobID)
 		return fail("resolve-placement", err)
+	}
+	if hostPort == 0 {
+		_ = s.nomad.PurgeJob(ns, jobID)
+		return fail("resolve-placement", fmt.Errorf("nomad: no http host port assigned for %q", jobID))
 	}
 
 	instBlob, err := json.Marshal(rec)
@@ -212,7 +217,7 @@ func (s *Service) DeployServer(ctx context.Context, actor string, groups []strin
 	row := store.ProjectMCPServer{
 		Project: project, Name: t.Name, Status: store.StatusDeployed,
 		BlueprintRef: *t.BlueprintRef, Instance: instBlob, JobID: jobID,
-		GatewayURL: peerURL(ip, t), Transport: t.Transport, CreatedBy: actor,
+		GatewayURL: peerURL(ip, hostPort, t), Transport: t.Transport, CreatedBy: actor,
 	}
 	saved, err := s.store.UpsertProjectMCPServer(ctx, row)
 	if err != nil {

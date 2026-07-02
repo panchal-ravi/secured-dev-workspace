@@ -59,6 +59,18 @@ func TestRenderWIFCredential(t *testing.T) {
 	}
 }
 
+func TestRenderDynamicPort(t *testing.T) {
+	s := baseSpec()
+	s.DynamicPort = true
+	hcl := Render(s)
+	if strings.Contains(hcl, "static = 9100") {
+		t.Fatalf("dynamic-port render must not pin a static host port:\n%s", hcl)
+	}
+	if !strings.Contains(hcl, "to     = 9100") {
+		t.Fatalf("dynamic-port render must still map to the container port:\n%s", hcl)
+	}
+}
+
 func TestRenderNoCredential(t *testing.T) {
 	s := baseSpec()
 	hcl := Render(s) // Credential nil → no vault stanza, no template

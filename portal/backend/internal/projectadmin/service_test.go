@@ -61,11 +61,11 @@ func (f *fakeNomad) RegisterJob(_, jobHCL, _ string) (string, error) {
 	}
 	return f.jobID, nil
 }
-func (f *fakeNomad) ResolvePlacementIP(_, _ string) (string, error) {
+func (f *fakeNomad) ResolvePlacement(_, _ string) (string, int, error) {
 	if f.ipErr != nil {
-		return "", f.ipErr
+		return "", 0, f.ipErr
 	}
-	return "10.0.0.5", nil
+	return "10.0.0.5", 9100, nil
 }
 func (f *fakeNomad) PurgeJob(_, jobID string) error      { f.purged = append(f.purged, jobID); return nil }
 func (f *fakeNomad) JobExists(_, _ string) (bool, error) { return f.existsResp, nil }
@@ -182,8 +182,8 @@ func TestLoadManifest_HashDriftAndParseError(t *testing.T) {
 		rowManifest string
 		refHash     string
 	}{
-		{"row-hash-drift", "stale-hash", manifestJSON, hash},           // bp.ContentHash != ref.ContentHash
-		{"malformed-manifest", hash, "{not-json", hash},                // json.Unmarshal fails
+		{"row-hash-drift", "stale-hash", manifestJSON, hash},                  // bp.ContentHash != ref.ContentHash
+		{"malformed-manifest", hash, "{not-json", hash},                       // json.Unmarshal fails
 		{"stored-manifest-hash-mismatch", "spoofed", manifestJSON, "spoofed"}, // m.ContentHash() != ref after decode
 	}
 	for _, tc := range cases {
@@ -240,6 +240,14 @@ func TestDeployServerHappyPath(t *testing.T) {
 	}
 	if want := `DATABASE_URI={{ with secret "database/project-acme-pg/creds/ro" }}postgresql://{{ .Data.username }}:{{ .Data.password }}@demo-db:5432/app{{ end }}`; !strings.Contains(n.lastHCL, want) {
 		t.Fatalf("HCL missing rendered credential env:\n%s", n.lastHCL)
+	}
+	// Project-plane jobs must use a dynamic host port (no static collision on the
+	// shared node) and the peer URL must carry the port resolved from placement.
+	if strings.Contains(n.lastHCL, "static =") {
+		t.Fatalf("project MCP job must not pin a static host port:\n%s", n.lastHCL)
+	}
+	if want := "http://10.0.0.5:9100"; !strings.Contains(saved.GatewayURL, want) {
+		t.Fatalf("gateway URL %q must use the resolved host port (%s)", saved.GatewayURL, want)
 	}
 
 	if _, err := svc.DeployServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme",

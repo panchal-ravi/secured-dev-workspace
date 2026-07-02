@@ -20,6 +20,13 @@ type RenderSpec struct {
 	ServiceName string
 	Tags        []string
 	Credential  Credential
+	// DynamicPort maps the container port to a Nomad-assigned host port instead of
+	// pinning the host side to Port. Project-plane instances set this so many
+	// deployments of the same catalog server (which all share Port) can co-locate on
+	// one node without a static host-port collision; the caller resolves the real
+	// host port from the placed allocation. The platform reference instance leaves it
+	// false (canonical static port, discovery byte-identical to the admin golden).
+	DynamicPort bool
 }
 
 // Credential is the secret-delivery variant: KV (platform secret_refs) or WIF
@@ -74,7 +81,9 @@ func Render(s RenderSpec) string {
 	w("    count = 1\n\n")
 	w("    network {\n")
 	w("      port \"http\" {\n")
-	w("        static = %d\n", s.Port)
+	if !s.DynamicPort {
+		w("        static = %d\n", s.Port)
+	}
 	w("        to     = %d\n", s.Port)
 	w("      }\n")
 	w("    }\n\n")

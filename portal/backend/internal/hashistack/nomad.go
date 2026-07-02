@@ -185,34 +185,52 @@ func (n *Nomad) readyNodeInPool(pool string) (string, error) {
 // a job whose node-pool/GPU-device constraints can't be met never places, and this
 // returns a clear error instead of guessing a host.
 func (n *Nomad) ResolvePlacementIP(namespace, jobID string) (string, error) {
+	ip, _, err := n.ResolvePlacement(namespace, jobID)
+	return ip, err
+}
+
+// ResolvePlacement waits for the job's first allocation to be placed and returns the
+// node's private IP plus the host port assigned to the "http" label. For a static
+// port the assigned value equals the declared port; for a Nomad-assigned dynamic
+// port (project-plane MCP jobs) it is the only way to learn the reachable host port
+// for the ContextForge peer URL. port is 0 if the allocation exposes no "http" port.
+func (n *Nomad) ResolvePlacement(namespace, jobID string) (ip string, port int, err error) {
 	qo := &napi.QueryOptions{Namespace: namespace}
-	var nodeID string
+	var alloc *napi.AllocationListStub
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		allocs, _, err := n.c.Jobs().Allocations(jobID, false, qo)
 		if err != nil {
-			return "", fmt.Errorf("nomad: list allocations for %q: %w", jobID, err)
+			return "", 0, fmt.Errorf("nomad: list allocations for %q: %w", jobID, err)
 		}
 		if len(allocs) > 0 && allocs[0].NodeID != "" {
-			nodeID = allocs[0].NodeID
+			alloc = allocs[0]
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	if nodeID == "" {
-		return "", fmt.Errorf("nomad: job %q has no placement after 30s (node pool or GPU device unavailable?)", jobID)
+	if alloc == nil {
+		return "", 0, fmt.Errorf("nomad: job %q has no placement after 30s (node pool or GPU device unavailable?)", jobID)
 	}
-	node, _, err := n.c.Nodes().Info(nodeID, qo)
+	if alloc.AllocatedResources != nil {
+		for _, p := range alloc.AllocatedResources.Shared.Ports {
+			if p.Label == "http" {
+				port = p.Value
+				break
+			}
+		}
+	}
+	node, _, err := n.c.Nodes().Info(alloc.NodeID, qo)
 	if err != nil {
-		return "", fmt.Errorf("nomad: node info %q: %w", nodeID, err)
+		return "", 0, fmt.Errorf("nomad: node info %q: %w", alloc.NodeID, err)
 	}
-	if ip := node.Attributes["unique.platform.aws.local-ipv4"]; ip != "" {
-		return ip, nil
+	if v := node.Attributes["unique.platform.aws.local-ipv4"]; v != "" {
+		return v, port, nil
 	}
 	if host, _, err := net.SplitHostPort(node.HTTPAddr); err == nil && host != "" {
-		return host, nil
+		return host, port, nil
 	}
-	return "", fmt.Errorf("nomad: could not resolve private IP for node %q", nodeID)
+	return "", 0, fmt.Errorf("nomad: could not resolve private IP for node %q", alloc.NodeID)
 }
 
 // RegisterJob parses the rendered HCL on the server (so HCL2 functions resolve
