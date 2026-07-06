@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
+	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 )
 
@@ -193,6 +195,7 @@ func TestSetGitHubCredentials(t *testing.T) {
 
 	if err := svc.SetGitHubCredentials(ctx, "admin@x", nil, "project-beta", ProvisionInput{
 		GithubAppID: 42, GithubAppInstallationID: 99, GithubAppPrivateKey: "PEM-DATA",
+		GithubRepositories: []string{"org/repo-a"},
 	}); err != nil {
 		t.Fatalf("SetGitHubCredentials: %v", err)
 	}
@@ -212,6 +215,35 @@ func TestSetGitHubCredentials(t *testing.T) {
 	}
 	if !stt.GithubConfigured {
 		t.Fatalf("status github_configured = false, want true")
+	}
+	// Non-secret coordinates are echoed back for form prefill; never the key.
+	// Repositories are normalized to bare names (URL/owner-prefixed forms would
+	// 422 at token mint).
+	if stt.GithubAppID != 42 || stt.GithubAppInstallationID != 99 || !slices.Contains(stt.GithubRepositories, "repo-a") {
+		t.Fatalf("status github coords not persisted/normalized: %+v", stt)
+	}
+}
+
+// normalizeRepos accepts what admins naturally paste and reduces each entry to
+// the bare repository name the GitHub App API expects.
+func TestNormalizeRepos(t *testing.T) {
+	got := normalizeRepos([]string{
+		"https://github.com/panchal-ravi/confused-deputy-aws.git",
+		"git@github.com:owner/ssh-repo.git",
+		"owner/plain-repo",
+		"bare-repo",
+		"  spaced-repo  ",
+		"",
+		"https://github.com/owner/trailing/",
+	})
+	want := []string{"confused-deputy-aws", "ssh-repo", "plain-repo", "bare-repo", "spaced-repo", "trailing"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeRepos = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("normalizeRepos[%d] = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
 	}
 }
 
@@ -238,5 +270,108 @@ func TestProvision_FailureMarksDescriptorError(t *testing.T) {
 	pd, _ := st.GetProjectDescriptor(context.Background(), "project-beta")
 	if pd.Status != store.StatusError {
 		t.Fatalf("descriptor status = %q, want error", pd.Status)
+	}
+}
+
+// fakeGateway embeds mcpgw.Client (nil): only the methods WireMCPServer calls are
+// overridden. It mirrors ContextForge's decisive token semantics (verified live):
+// a token name is reserved FOREVER once used — creating a duplicate fails even
+// after the original was revoked.
+type fakeGateway struct {
+	mcpgw.Client
+	peerName, vsName string
+	tokenNames       []string        // every CreateScopedToken name, in order
+	usedNames        map[string]bool // reserved forever, revoke does not free
+	revoked          []string        // RevokeTokensByPrefix prefixes, in order
+}
+
+func (g *fakeGateway) RegisterPeer(_ context.Context, name, url, transport string) (string, error) {
+	g.peerName = name
+	return "peer-1", nil
+}
+func (g *fakeGateway) DiscoverTools(_ context.Context, peerID string) ([]string, error) {
+	return []string{"t1"}, nil
+}
+func (g *fakeGateway) CreateVirtualServer(_ context.Context, name, desc string, toolIDs []string) (string, error) {
+	g.vsName = name
+	return "vs-1", nil
+}
+func (g *fakeGateway) CreateScopedToken(_ context.Context, name string, days int, serverID string) (string, error) {
+	if g.usedNames[name] {
+		return "", fmt.Errorf("mcpgw: POST /tokens: status 400: token name %q already exists", name)
+	}
+	if g.usedNames == nil {
+		g.usedNames = map[string]bool{}
+	}
+	g.usedNames[name] = true
+	g.tokenNames = append(g.tokenNames, name)
+	return "tok-" + name, nil
+}
+func (g *fakeGateway) RevokeTokensByPrefix(_ context.Context, prefix string) error {
+	g.revoked = append(g.revoked, prefix)
+	return nil
+}
+
+// TestWireMCPServer_PeerNameMatchesDeployPlane pins the cross-plane contract behind
+// the add-ons 409 "Gateway already exists": the deploy plane (projectadmin Test)
+// registers the peer as mcp-<project>-<server>, and ContextForge dedupes gateways by
+// URL, so WireMCPServer MUST reuse the same name for RegisterPeer's by-name
+// idempotency to find it.
+func TestWireMCPServer_PeerNameMatchesDeployPlane(t *testing.T) {
+	st, fv, _, _ := setup(t)
+	d := descriptor.Descriptor{ProjectName: "project-beta", Namespace: "project-beta", ProjectScopeID: "p_1", WorkspaceUser: "dev"}
+	gw := &fakeGateway{}
+	svc := New(fv, &fakeBoundary{}, &fakeLLM{}, gw, st, fakeProjects{d: d}, st, Config{
+		MCPGatewayEndpoint: "http://10.0.0.9:4444",
+	})
+	if _, err := st.UpsertProjectMCPServer(context.Background(), store.ProjectMCPServer{
+		Project: "project-beta", Name: "everything", Status: "deployed",
+		GatewayURL: "http://10.0.0.5:21800/mcp", Transport: "streamable-http",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.WireMCPServer(context.Background(), "project-beta", "everything"); err != nil {
+		t.Fatalf("WireMCPServer: %v", err)
+	}
+	if gw.peerName != "mcp-project-beta-everything" {
+		t.Errorf("peer name = %q, want mcp-project-beta-everything (must match the deploy plane's service name)", gw.peerName)
+	}
+	if !slices.Contains(fv.ops, "kv:projects/mcp/everything") {
+		t.Errorf("kv write missing: ops = %v", fv.ops)
+	}
+}
+
+// TestWireMCPServer_RewireConverges pins the delete+redeploy regression: applying
+// add-ons a second time must succeed even though ContextForge reserves token names
+// forever (a fixed "<peer>-client" name 400s on the second wire). The wiring must
+// revoke prior client tokens by prefix and mint a uniquely-named fresh one.
+func TestWireMCPServer_RewireConverges(t *testing.T) {
+	st, fv, _, _ := setup(t)
+	d := descriptor.Descriptor{ProjectName: "project-beta", Namespace: "project-beta", ProjectScopeID: "p_1", WorkspaceUser: "dev"}
+	gw := &fakeGateway{}
+	svc := New(fv, &fakeBoundary{}, &fakeLLM{}, gw, st, fakeProjects{d: d}, st, Config{
+		MCPGatewayEndpoint: "http://10.0.0.9:4444",
+	})
+	if _, err := st.UpsertProjectMCPServer(context.Background(), store.ProjectMCPServer{
+		Project: "project-beta", Name: "everything", Status: "deployed",
+		GatewayURL: "http://10.0.0.5:21800/mcp", Transport: "streamable-http",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		if err := svc.WireMCPServer(context.Background(), "project-beta", "everything"); err != nil {
+			t.Fatalf("WireMCPServer (wire %d): %v", i, err)
+		}
+	}
+	if len(gw.tokenNames) != 2 || gw.tokenNames[0] == gw.tokenNames[1] {
+		t.Fatalf("token names = %v, want 2 distinct", gw.tokenNames)
+	}
+	for _, n := range gw.tokenNames {
+		if !strings.HasPrefix(n, "mcp-project-beta-everything-client") {
+			t.Errorf("token name %q lacks the mcp-project-beta-everything-client prefix (revoke-by-prefix would miss it)", n)
+		}
+	}
+	if !slices.Contains(gw.revoked, "mcp-project-beta-everything-client") {
+		t.Errorf("stale client tokens not revoked by prefix: revoked = %v", gw.revoked)
 	}
 }

@@ -213,40 +213,6 @@ export interface McpTestResult {
   at: string
 }
 
-export interface McpServer {
-  name: string
-  image: string
-  command?: string[]
-  env?: Record<string, string>
-  secret_refs?: Record<string, string>
-  inject_vault_token?: boolean
-  transport: string
-  port: number
-  path?: string
-  namespace: string
-  job_id?: string
-  peer_id?: string
-  gateway_url?: string
-  status: string
-  version: number
-  test_result?: McpTestResult
-  created_by?: string
-  created_at: string
-  updated_at: string
-}
-
-export interface DeployMcpInput {
-  name: string
-  image: string
-  command?: string[]
-  env?: Record<string, string>
-  secret_refs?: Record<string, string>
-  inject_vault_token?: boolean
-  transport: string
-  port: number
-  path?: string
-}
-
 export interface LlmTestResult {
   passed: boolean
   completion_ok: boolean
@@ -312,32 +278,46 @@ export function createProject(input: CreateProjectInput): Promise<{ project_name
   return post(`${adminBase}/projects`, input)
 }
 
-export function listMcpServers(): Promise<McpServer[]> {
-  return fetch(`${adminBase}/mcp-servers`, { credentials: 'include' })
-    .then(asJSON)
-    .then((d) => (d.servers as McpServer[]) || [])
+// ProjectDetail is the platform-admin's full view of a project: the flattened
+// descriptor plus the store row's lifecycle metadata.
+export interface ProjectDetail {
+  project_name: string
+  namespace: string
+  project_scope_id?: string
+  credential_library_id?: string
+  developers_group_name: string
+  boundary_oidc_auth_method_id?: string
+  instance_private_ip?: string
+  workspace_user?: string
+  github_configured?: boolean
+  flavors?: Flavor[]
+  status: string
+  created_by?: string
+  created_at: string
+  updated_at: string
 }
 
-export function deployMcpServer(input: DeployMcpInput): Promise<McpServer> {
-  return post(`${adminBase}/mcp-servers`, input)
+export function getAdminProject(name: string): Promise<ProjectDetail> {
+  return fetch(`${adminBase}/projects/${encodeURIComponent(name)}`, { credentials: 'include' }).then(asJSON)
 }
 
-export function testMcpServer(name: string): Promise<McpServer> {
-  return post(`${adminBase}/mcp-servers/${encodeURIComponent(name)}/test`)
+// updateAdminProject edits the project's developers group (the only safe edit —
+// name/namespace key platform resources and the workspace user is baked into the
+// provisioned engines). Applies to future requests; running workspaces untouched.
+export function updateAdminProject(name: string, developers_group_name: string): Promise<ProjectDetail> {
+  return fetch(`${adminBase}/projects/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ developers_group_name }),
+  }).then(asJSON)
 }
 
-export function publishMcpServer(
-  name: string,
-  blueprintRef?: { id: string; version: number; content_hash: string },
-): Promise<McpServer> {
-  return post(
-    `${adminBase}/mcp-servers/${encodeURIComponent(name)}/publish`,
-    blueprintRef ? { blueprint_ref: blueprintRef } : undefined,
-  )
-}
-
-export function deleteMcpServer(name: string): Promise<void> {
-  return fetch(`${adminBase}/mcp-servers/${encodeURIComponent(name)}`, {
+// deleteAdminProject tears the project down across every plane (Vault namespace,
+// Nomad namespace/jobs, Boundary scope, gateway artifacts, LLM key, store rows).
+// Partial failures keep the project visible with status=error; retry converges.
+export function deleteAdminProject(name: string): Promise<void> {
+  return fetch(`${adminBase}/projects/${encodeURIComponent(name)}`, {
     method: 'DELETE',
     credentials: 'include',
   }).then(expectOK)
@@ -413,71 +393,12 @@ export function revokeProjectRole(project: string, subject: string, role = 'proj
 
 // ---- Project Admin: MCP servers ----
 
-export interface DeployableType {
-  name: string
-  image: string
-  transport: string
-  params: { name: string; type: string; required: boolean; prompt?: string }[]
-  allow_extra_grants?: boolean
-}
-
 // PathGrant is a project-admin-supplied additional Vault path grant applied at deploy
 // time. Confined to the project's own Vault namespace; sudo/root are rejected server-side.
 export interface PathGrant {
   path: string
   capabilities: string[]
 }
-
-export interface ProjectMcpServer {
-  project: string
-  name: string
-  status: string
-  blueprint_ref: { id: string; version: number; content_hash: string }
-  job_id?: string
-  peer_id?: string
-  gateway_url?: string
-  test_result?: McpTestResult
-  running?: boolean
-  created_by?: string
-  created_at: string
-  updated_at: string
-}
-
-export interface ProjectMcpCatalog {
-  deployable: DeployableType[]
-  deployed: ProjectMcpServer[]
-}
-
-export function listProjectMcp(project: string): Promise<ProjectMcpCatalog> {
-  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, { credentials: 'include' }).then(asJSON)
-}
-
-export function deployProjectMcp(
-  project: string,
-  serverType: string,
-  params: Record<string, string>,
-  extraGrants?: PathGrant[],
-): Promise<ProjectMcpServer> {
-  const body: { server_type: string; params: Record<string, string>; extra_grants?: PathGrant[] } = {
-    server_type: serverType,
-    params,
-  }
-  if (extraGrants && extraGrants.length > 0) body.extra_grants = extraGrants
-  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, body)
-}
-
-export function testProjectMcp(project: string, name: string): Promise<ProjectMcpServer> {
-  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}/test`)
-}
-
-export function deleteProjectMcp(project: string, name: string): Promise<void> {
-  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}`, {
-    method: 'DELETE',
-    credentials: 'include',
-  }).then(expectOK)
-}
-
-// ---- Platform Admin: credential blueprints ----
 
 export interface ParamSpec {
   name: string
@@ -486,91 +407,130 @@ export interface ParamSpec {
   prompt?: string
 }
 
-export interface EngineSpec {
-  type: string // "database" | "kv-v2"
-  plugin?: string
-  mount_path_tpl: string
+// The credential types below mirror backend internal/blueprint.CredentialSpec.
+
+export interface LogicalWrite {
+  path: string
+  data?: Record<string, unknown>
 }
 
-export interface RoleSpec {
-  name_tpl: string
-  creation_statements: string[]
-  default_ttl_seconds: number
-  max_ttl_seconds: number
+export interface DynamicSpec {
+  engine: string // "database" | "aws" | ...
+  mount: string // e.g. "database/postgres-mcp"
+  configs?: LogicalWrite[]
+  rotate_root_path?: string
+  role?: LogicalWrite
+  creds_path: string // relative to mount
+  creds_caps?: string[] // default ["read"]
+  lease_based?: boolean // default true
 }
 
-export interface WifRoleSpec {
-  name_tpl: string
-  token_ttl: string
+export interface StaticSpec {
+  data: Record<string, string> // values may carry ${param}
 }
 
-export interface JobCredentialSpec {
-  env_templates?: Record<string, string>
-}
-
-// BlueprintManifest mirrors backend internal/blueprint.BlueprintManifest. A
-// manifest is immutable + content-hashed; a change is a new version.
-export interface BlueprintManifest {
-  id: string
-  version: number
-  class: 'A' | 'B' | 'C'
-  description: string
-  engines?: EngineSpec[]
-  role?: RoleSpec
-  policy_tpl: string
-  wif_role: WifRoleSpec
+export interface CredentialSpec {
+  source: 'none' | 'wif-token' | 'static' | 'dynamic'
+  token_ttl?: string
   params?: ParamSpec[]
-  job_credential?: JobCredentialSpec
-  allow_extra_grants?: boolean
+  static?: StaticSpec
+  dynamic?: DynamicSpec
+  env_templates?: Record<string, string> // ${cred_path}/${param} render tokens + literal {{ }} consul-template
 }
 
-export interface BlueprintCheck {
+// McpInstanceInfo is the non-secret slice of the persisted blueprint instance
+// record — what the deploy actually provisioned in the project's Vault namespace.
+export interface McpInstanceInfo {
+  namespace?: string
+  wif_role_name?: string
+  cred_path?: string
+  extra_grants?: PathGrant[]
+  mounts?: string[]
+  policy_names?: string[]
+}
+
+export interface ProjectMcpServer {
+  project: string
   name: string
-  passed: boolean
-  detail?: string
-}
-
-export interface ValidationResult {
-  passed: boolean
-  checks: BlueprintCheck[]
-  message?: string
-  at: string
-}
-
-// Blueprint is the control-plane row (refs/metadata only — the manifest body
-// lives in Vault KV, never returned by the list).
-export interface Blueprint {
-  id: string
-  version: number
-  class: string
-  content_hash: string
-  status: string // "draft" | "validated" | "published"
-  validation?: ValidationResult
+  status: string
+  image?: string
+  command?: string[]
+  env?: Record<string, string>
+  transport?: string
+  port?: number
+  path?: string
+  credential?: CredentialSpec
+  params?: Record<string, string>
+  blueprint_ref?: { id: string; version: number; content_hash: string } // legacy
+  instance?: McpInstanceInfo
+  job_id?: string
+  peer_id?: string
+  gateway_url?: string
+  test_result?: McpTestResult
   created_by?: string
   created_at: string
   updated_at: string
 }
 
-export function listBlueprints(): Promise<Blueprint[]> {
-  return fetch(`${adminBase}/blueprints`, { credentials: 'include' })
-    .then(asJSON)
-    .then((d) => (d.blueprints as Blueprint[]) || [])
+export type ProjectMcpDeployed = ProjectMcpServer & { running: boolean }
+
+// DeployMcpServerInput mirrors the backend's DeployInput: full server definition
+// + credential config authored by the project-admin in one shot.
+export interface DeployMcpServerInput {
+  name: string
+  image: string
+  command?: string[]
+  env?: Record<string, string>
+  transport: string // "sse" | "streamable-http"
+  port: number // container port; host side is dynamic
+  path?: string // defaults /sse or /mcp by transport
+  credential: CredentialSpec
+  params?: Record<string, string>
+  extra_grants?: PathGrant[]
 }
 
-export function createBlueprint(manifest: BlueprintManifest): Promise<Blueprint> {
-  return post(`${adminBase}/blueprints`, manifest)
+export function listProjectMcp(project: string): Promise<{ deployed: ProjectMcpDeployed[] }> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, { credentials: 'include' }).then(asJSON)
 }
 
-export function validateBlueprint(id: string, version: number): Promise<Blueprint> {
-  return post(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}/validate`)
+export function deployProjectMcp(project: string, input: DeployMcpServerInput): Promise<ProjectMcpServer> {
+  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers`, input)
 }
 
-export function publishBlueprint(id: string, version: number): Promise<Blueprint> {
-  return post(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}/publish`)
+export function testProjectMcp(project: string, name: string): Promise<ProjectMcpServer> {
+  return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}/test`)
 }
 
-export function deleteBlueprint(id: string, version: number): Promise<void> {
-  return fetch(`${adminBase}/blueprints/${encodeURIComponent(id)}/${version}`, {
+// Edits a deployed server in place: the full container definition (sent whole,
+// replacing what's stored) + the additional Vault path grants (the derived
+// credential policy is re-applied server-side). Grant changes take effect
+// immediately; a definition change resubmits the Nomad job (new address) and
+// heals the gateway peer in place — workspaces keep working. Only if the heal
+// fails is the wiring rebuilt (workspaces must then be recreated). The
+// credential source cannot change: delete + redeploy.
+export function updateProjectMcpServer(
+  project: string,
+  name: string,
+  input: {
+    image: string
+    command?: string[]
+    transport: string
+    port: number
+    path?: string
+    env: Record<string, string>
+    extra_grants: PathGrant[]
+  },
+): Promise<ProjectMcpServer> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  }).then(asJSON)
+}
+
+export function deleteProjectMcp(project: string, name: string): Promise<void> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}`, {
     method: 'DELETE',
     credentials: 'include',
   }).then(expectOK)
@@ -668,6 +628,7 @@ export interface TemplateAddons {
 export interface ProjectTemplate {
   project: string
   flavor: string
+  base?: string
   base_version: number
   status: string
   rendered_source: string
@@ -711,6 +672,29 @@ export function createProjectTemplate(project: string, in_: CreateProjectTemplat
   return post(`/api/projects/${encodeURIComponent(project)}/templates`, in_)
 }
 
+// UpdateProjectTemplateInput edits an existing flavor. Empty fields keep their
+// current value; a repo change re-bakes from the current published base. Editing
+// never affects running workspaces (templates are read at launch time only).
+export interface UpdateProjectTemplateInput {
+  git_repo_url?: string
+  label?: string
+  description?: string
+  node_pool?: string
+}
+
+export function updateProjectTemplate(
+  project: string,
+  flavor: string,
+  in_: UpdateProjectTemplateInput,
+): Promise<ProjectTemplate> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/templates/${encodeURIComponent(flavor)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(in_),
+  }).then(asJSON)
+}
+
 export function deleteProjectTemplate(project: string, flavor: string): Promise<void> {
   return fetch(`/api/projects/${encodeURIComponent(project)}/templates/${encodeURIComponent(flavor)}`, {
     method: 'DELETE',
@@ -750,10 +734,14 @@ export function provisionProjectEngines(project: string, in_: ProvisionEnginesIn
   return post(`/api/projects/${encodeURIComponent(project)}/provision`, in_)
 }
 
-// EngineStatus is the non-secret provisioning state the Engines page reads.
+// EngineStatus is the non-secret provisioning state the Engines page reads. The
+// GitHub App coordinates are echoed back for form prefill; never the private key.
 export interface EngineStatus {
   provisioned: boolean
   github_configured: boolean
+  github_app_id?: number
+  github_app_installation_id?: number
+  github_repositories?: string[]
   credential_library_id?: string
   status: string
 }

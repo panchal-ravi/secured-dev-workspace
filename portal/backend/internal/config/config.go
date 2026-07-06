@@ -72,12 +72,10 @@ type Config struct {
 	// Platform Admin onboarding plane (all optional). The plane is enabled only
 	// when both gateway addresses are set; the admin JWT secret / admin email /
 	// LiteLLM portal-admin key are read from Vault at startup, not from env.
-	MCPGatewayAddr  string // PORTAL_MCP_GATEWAY_ADDR (ContextForge admin URL, e.g. http://<node>:4444)
-	LLMGatewayAddr  string // PORTAL_LLM_GATEWAY_ADDR (LiteLLM admin URL, e.g. http://<node>:4000)
-	MCPNamespace    string // PORTAL_MCP_NAMESPACE (default "infra-mcp")
-	AgentNodePool   string // PORTAL_AGENT_NODE_POOL (default "agents")
-	MCPJobVaultRole string // PORTAL_MCP_JOB_VAULT_ROLE (WIF role for MCP jobs that reference Vault secrets)
-	DBDSN           string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
+	MCPGatewayAddr string // PORTAL_MCP_GATEWAY_ADDR (ContextForge admin URL, e.g. http://<node>:4444)
+	LLMGatewayAddr string // PORTAL_LLM_GATEWAY_ADDR (LiteLLM admin URL, e.g. http://<node>:4000)
+	AgentNodePool  string // PORTAL_AGENT_NODE_POOL (default "agents")
+	DBDSN          string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
 
 	// Blueprint provisioner (project-deploy plane). The portal brokers a token
 	// native to each project namespace via a second Nomad workload identity, then
@@ -168,9 +166,7 @@ func Load() (Config, error) {
 		RateLimitBurst:       envInt("PORTAL_RATE_LIMIT_BURST", 10),
 		MCPGatewayAddr:       os.Getenv("PORTAL_MCP_GATEWAY_ADDR"),
 		LLMGatewayAddr:       os.Getenv("PORTAL_LLM_GATEWAY_ADDR"),
-		MCPNamespace:         env("PORTAL_MCP_NAMESPACE", "infra-mcp"),
 		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
-		MCPJobVaultRole:      os.Getenv("PORTAL_MCP_JOB_VAULT_ROLE"),
 		DBDSN:                os.Getenv("PORTAL_DB_DSN"),
 		ProvisionerJWTPath:   os.Getenv("PORTAL_PROVISIONER_JWT_PATH"),
 		ProvisionerRole:      env("PORTAL_PROVISIONER_ROLE", "portal-provisioner"),

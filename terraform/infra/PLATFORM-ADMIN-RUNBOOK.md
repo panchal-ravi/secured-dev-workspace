@@ -120,96 +120,25 @@ What this changes (all additive):
 
 ---
 
-## 3. MCP live verification (consumption-mirror)
+## 3. MCP servers — now project-owned (Phase F)
 
-Worked example: the HashiCorp Vault MCP server. Drive it from the **MCP servers** entry
-in the left nav (shown only to platform-admins → `/admin/mcp-servers`).
+The platform-admin MCP plane (reference deploys in `infra-mcp`, consumption-mirror
+test, publish-to-catalog, Vault blueprints) was **removed**. A **project-admin**
+authors and deploys MCP servers directly from *project switcher → mcp servers →
+Deploy MCP server*: one wizard holds the server definition (image, transport,
+container port, args, env) and the credential config (none / Vault WIF token /
+static secret / dynamic engine — PostgreSQL and AWS presets prefill the form).
+Jobs run in the **project's own Nomad namespace** with **dynamic host ports** (no
+8080–8099 static band, no cross-project collisions); credentials are brokered into
+the **project's Vault namespace** over the provisioner workload identity; the
+per-row **Test** button still runs the consumption-mirror (tools discovered,
+own-token 200, admin 403, decoy 403).
 
-1. **Deploy** — click **Deploy MCP server** (top-right) and fill the modal from the
-   server's container run docs:
-   - **Name** — lowercase letters/digits/dashes, e.g. `vault-mcp`.
-   - **Container image** — e.g. `hashicorp/vault-mcp-server:latest`.
-   - **Transport** — `SSE` or `Streamable HTTP`.
-   - **Listen port** — the port the server listens on in the container. **Must be in
-     `8080`–`8099`**: MCP jobs run on the `agents` node pool and the ContextForge gateway
-     (main node) dials them cross-node at `nodeIP:<port>`; only that band is opened
-     intra-SG on the agent nodes (`self=true`, `network.tf`). A port outside it deploys
-     but Test/Publish fail with `ConnectTimeout` (the gateway's dial is dropped), so the
-     portal rejects out-of-band ports with 400.
-   - **MCP path** (optional) — defaults to `/sse` or `/mcp` by transport.
-   - **Arguments** (optional, one per line) and **Environment** (optional, `KEY=VALUE`
-     per line — **non-secret values only**; secrets are injected from Vault).
-   - **Inject a Vault (WIF) token as `VAULT_TOKEN`** (checkbox) — tick it for servers
-     that authenticate to Vault to open a session (e.g. the Vault MCP server). The
-     portal renders a bare `vault { role }` block on the job and **Nomad injects a
-     powerless self-test `VAULT_TOKEN`** over WIF (`infra-mcp-selftest`, grants only
-     token self-lookup — see `platform-admin.tf`). This exists solely so the
-     consumption-mirror Test can open a session and list tools; **real Vault access
-     comes only from the project-plane Class C blueprint token**, never this one.
-     Requires the infra tier applied (sets `PORTAL_MCP_JOB_VAULT_ROLE`); if unset the
-     deploy is rejected with 400.
-
-   For `hashicorp/vault-mcp-server` specifically: the image has **no `ENTRYPOINT`** and
-   its default `CMD` hardcodes the `stdio` subcommand (`/bin/vault-mcp-server stdio`), so
-   `TRANSPORT_MODE` env alone cannot flip it and passing just `http` as an argument fails
-   with `exec: "http": executable file not found`. You must replace the whole command.
-   Use: Transport **Streamable HTTP**, Listen port `8080`, **Arguments** (one per line)
-   `/bin/vault-mcp-server` then `http`, Environment `TRANSPORT_HOST=0.0.0.0` /
-   `TRANSPORT_PORT=8080`, and **tick Inject a Vault token**. `TRANSPORT_HOST=0.0.0.0` and
-   `TRANSPORT_PORT` = Listen port are both required, or the health check never passes.
-
-   Click **Deploy**. The portal renders a Docker Nomad job in `infra-mcp`, waits
-   healthy, and the row appears with status **deployed**.
-2. **Test** — click **Test** on the row. The portal registers a ContextForge peer →
-   creates a **virtual server** + **scoped token** → `tools/list` through it returns
-   **200**; the **same token on a decoy server returns 403** (scope isolation). The temp
-   virtual-server + token are torn down; the deployed server keeps running. The **Test**
-   column turns green: **passed (N tools)**.
-3. **Publish** — click **Publish** (enabled only once the test passes; disabled once
-   published). Writes the descriptor to `secret/infra/mcp-servers/<name>`; the server
-   becomes discoverable by projects. **Delete** (danger) tears the Nomad job down.
-
-   **Edit** (on the row) reopens the form prefilled with the current run config — use
-   it to fix a bad image/args/env/port without re-typing everything (e.g. the
-   `vault-mcp` arguments above). The name is the identity key and is locked. Saving
-   re-registers the Nomad job **in place** (a version bump), and resets the server to
-   **deployed** — re-run **Test** (and **Publish**) afterwards, since the run config changed.
-
-**Pass:** status **deployed** → **Test** green `passed (N tools)` (200 own-server, 403
-decoy isolation under the hood) → **Publish** flips status to **published** and writes
-the descriptor.
-
-### 3a. Verify the deployed server directly in ContextForge
-
-The portal **Test** mirrors how a *project* consumes the server; you can also confirm the
-deploy landed at the gateway itself. ContextForge runs as the `mcp-gateway` Nomad job in the
-`infra` namespace, **plaintext HTTP on :4444**, reachable via the NLB locked to the operator
-`/32` — get its base URL from `terraform output -raw mcp_gateway_addr` (`http://<nlb>:4444`).
-`AUTH_REQUIRED=true` and Basic auth is disabled, so admin access is the Admin UI login or an
-HS256 JWT signed with the gateway's `jwt_secret_key`. This is the same surface as the deeper
-[Verify the MCP Gateway](./README.md#verify-the-mcp-gateway) walk in the infra README.
-
-**UI.** Open `$(terraform output -raw mcp_gateway_addr)/admin` and sign in as **`admin@example.com`**
-with the per-deploy bootstrap password from Vault:
-```bash
-vault kv get -field=admin_password secret/infra/mcp-gateway
-```
-Under **Gateways** (federated peers) the portal-registered peer named `<server>` appears;
-**Tools** lists the tools it federated; **Virtual Servers** shows any composed during a test.
-A reachable peer + non-empty tool list = the deploy reached the gateway.
-
-**API.** Admin calls carry the HS256 JWT the gateway accepts (issuer `mcpgateway`, audience
-`mcpgateway-api`, signed with `jwt_secret_key`). The simplest way to get one: log into the Admin
-UI and copy the `Authorization: Bearer …` value from a request in browser devtools (the gateway
-image's `mcpgateway.utils.create_jwt_token` utility mints the same token). Then:
-```bash
-MCP="$(terraform output -raw mcp_gateway_addr)"; JWT="<bearer-from-ui-or-utility>"   # http://<nlb>:4444 (operator /32)
-curl -s "$MCP/gateways" -H "Authorization: Bearer $JWT" | jq '.[] | {name, reachable, url}'  # peer present + reachable
-curl -s "$MCP/tools"    -H "Authorization: Bearer $JWT" | jq 'length'                         # tools federated (>0)
-curl -s "$MCP/servers"  -H "Authorization: Bearer $JWT" | jq '.[].name'                       # virtual servers (if any)
-```
-
-**Pass:** the peer is listed and `reachable`, and `/tools` returns the server's tools (>0).
+Residuals from the retired plane are harmless: the `mcp_servers` + `blueprints`
+Postgres tables are kept-but-unrouted (ops may `DROP` them), the
+`secret/data/infra/mcp-servers/*` grant in `platform-admin.tf` is orphaned, and
+any reference jobs still running in `infra-mcp` can be purged
+(`nomad job stop -namespace infra-mcp -purge <job>`).
 
 ---
 
@@ -302,95 +231,21 @@ with zero flavors until then.
 > project-create-plane note). If a partial create fails mid-way, re-run the same call — every step is
 > idempotent and converges.
 
-## 5. Enable project-admin self-service MCP deploy (R3 / B2)
+## 5. Project-admin MCP deploy — prerequisites
 
-The platform-admin **deploy** in §3 places a server in the shared `infra-mcp` namespace. R3/B2 adds a
-*different* capability: a **project-admin** deploys a published, **blueprint-backed** MCP server into
-**their own project's** Vault + Nomad namespace, with credentials brokered by a platform-authored
-credential blueprint (never pasted). The §1 apply already gave the portal its `vault-provisioner`
-workload identity (the row above); the per-namespace `portal-provisioner` role/policy it brokers against
-is created by each project's `terraform/project` apply. These are the platform-admin steps that must happen **before** a project-admin
-can deploy — do them in order, then hand off to
-[`../project/PROJECT-ADMIN-RUNBOOK.md`](../project/PROJECT-ADMIN-RUNBOOK.md).
+No platform-admin publish/blueprint steps exist anymore (§3). For a project-admin
+to deploy MCP servers, the platform needs only:
 
-> The portal `/api/*` is OIDC-session-authed. Steps 1–4 are **control-plane operations with
-> no dedicated admin screen** — the only platform-admin UI pages are *MCP servers* and *LLM
-> models* (§3–§4) — so run them via the API, carrying your logged-in browser's session cookie
-> (`-H "Cookie: portal_session=<value>"`). `$PORTAL` = `https://<nlb-dns>:8443`. Once they're
-> done you **verify and manage** everything in the Portal UI — see §5a.
+1. **This plane applied** (§1) — the portal's `vault-provisioner` workload identity.
+2. **A project created from the Portal** (§4b) — project-create seeds the
+   per-namespace `portal-provisioner` role/policy the broker logs into.
+3. *(Class A demo only)* the demo Postgres: `enable_demo_db = true` →
+   `terraform output demo_db_connection_url` / `-raw demo_db_admin_password`.
 
-1. **Author + publish a credential blueprint.** Three seeds ship in the portal image (Class A
-   `postgres-mcp`, B `generic-api-key`, C `vault-mcp`). To register one:
-   ```bash
-   # create-draft (body = the BlueprintManifest JSON, e.g. internal/blueprint/seeds/classA-postgres-mcp.json)
-   curl -sk -X POST "$PORTAL/api/admin/blueprints"            -H 'Content-Type: application/json' -d @classA-postgres-mcp.json
-   curl -sk -X POST "$PORTAL/api/admin/blueprints/postgres-mcp/1/validate"   # shape + policy-lint (static, no Vault)
-   curl -sk -X POST "$PORTAL/api/admin/blueprints/postgres-mcp/1/publish"
-   curl -sk "$PORTAL/api/admin/blueprints" | jq '.[] | {id,version,status,content_hash}'
-   ```
-   Note the published blueprint's `content_hash` — you bind it in the next step. Validate is now
-   **static** — manifest shape + a render/lint of the generated policy against the allowed prefixes;
-   it makes no Vault calls. Runtime correctness is proven by actually deploying the blueprint into a
-   real project (step 2 onward). A `failed` result reports the offending `shape` or `policy-lint`
-   check in the row detail. The manifest is read back from the Portal DB row (no Vault call), so the
-   old `secret/data/infra/blueprints/*` 502 failure mode no longer applies.
-
-2. **Bind the blueprint onto a published MCP server type.** This is what makes the type appear in a
-   project-admin's deployable catalog (a server type with `status=published` **and** a non-nil
-   `blueprint_ref`). The *MCP servers* screen's **Publish** button (§3) publishes a server *without*
-   a blueprint, so binding a `blueprint_ref` is API-only:
-   ```bash
-   curl -sk -X POST "$PORTAL/api/admin/mcp-servers/postgres-mcp/publish" -H 'Content-Type: application/json' \
-     -d '{"blueprint_ref":{"id":"postgres-mcp","version":1,"content_hash":"<hash-from-step-1>"}}'
-   ```
-
-3. **Bootstrap the first project-admin** for the project (RBAC Plan A). The grant is by **email** and
-   stays **inert** until that user is actually in the project's `<project>-developers` Verify group
-   (membership is re-checked at request time, so this is also how offboarding wins):
-   ```bash
-   curl -sk -X POST "$PORTAL/api/admin/projects/project-acme/roles" -H 'Content-Type: application/json' \
-     -d '{"subject":"acme-admin@your.org","role":"project-admin"}'
-   ```
-   Project-admins then grant/revoke project-admin to other members of their own project (self-service,
-   covered in the project-admin runbook).
-
-4. **Confirm the provisioner brokering is live** (the portal's second workload identity comes from §1;
-   the `portal-provisioner` role/policy it trades against are created per-namespace by each project's
-   `terraform/project` apply). Verify them **in the target project namespace**:
-   ```bash
-   export VAULT_ADDR="$(terraform output -raw vault_addr)" VAULT_SKIP_VERIFY=true
-   export VAULT_TOKEN="$(terraform output -raw vault_root_token)"
-   vault policy read -namespace=project-acme portal-provisioner >/dev/null && echo "policy present"
-   vault read -namespace=project-acme auth/jwt-nomad/role/portal-provisioner -format=json \
-     | jq '{token_policies:.data.token_policies, token_ttl:.data.token_ttl, bound_claims:.data.bound_claims}'
-   #   expect token_policies=["portal-provisioner"], token_ttl=300, and bound_claims pinning
-   #   nomad_namespace=infra / nomad_job_id=developer-portal
-   ```
-   If the role/policy are missing, the project hasn't been applied yet — run its `terraform/project`
-   apply first. If the portal itself was just restarted, it re-mints the `vault-provisioner` JWT over WIF
-   on start: `nomad job restart -namespace infra -reschedule -on-error=fail developer-portal`.
-
-### 5a. Verify & manage in the Portal UI
-
-Sign in as the bootstrapped project-admin (a member of `<project>-developers`). The left nav now
-shows two per-project entries — **`<project> · mcp servers`** and **`<project> · members`**:
-
-- **Confirm the bind + grant worked** — open **`<project> · mcp servers`** → click **Deploy**. The
-  **Server type** dropdown lists the blueprint-backed type (e.g. `postgres-mcp (…)`). If the dropdown
-  is empty or **Deploy** is disabled, the type isn't published-with-blueprint (recheck steps 1–2) or
-  the grant isn't live (steps 3–4). Each param the blueprint declares renders as a field; secret
-  params render as masked password inputs.
-- **Manage project-admins** — open **`<project> · members`** → **Grant project-admin to (email)** +
-  **Grant**; **Revoke** per row. Grants stay inert until that user is in `<project>-developers`. The
-  *first* admin is the API bootstrap in step 3; every subsequent grant/revoke is self-service here.
-
-The project-admin's own deploy → test → delete walk lives in
-[`../project/PROJECT-ADMIN-RUNBOOK.md`](../project/PROJECT-ADMIN-RUNBOOK.md).
-
-**Pass:** a project-admin's catalog (UI **`<project> · mcp servers`** → **Deploy**, or
-`GET /api/projects/project-acme/mcp-servers`) lists the blueprint-backed type under `deployable`, and
-the deploy walk in [`../project/PROJECT-ADMIN-RUNBOOK.md`](../project/PROJECT-ADMIN-RUNBOOK.md)
-succeeds end-to-end.
+Everything else — authoring the credential spec, deploying, testing, attaching the
+server to a workspace template via Add-ons — happens in the project-admin UI. See
+the walkthrough (`docs/e2e-clean-slate-walkthrough-2026-07-02.md` Part 2) for the
+end-to-end script.
 
 ---
 

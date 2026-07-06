@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Modal, TextInput } from '@carbon/react'
+import { Modal, Stack, TextInput } from '@carbon/react'
 import { createProject } from '../api/client'
 
 // NewProjectModal drives POST /api/admin/projects: it bootstraps the project's
@@ -58,37 +58,36 @@ export default function NewProjectModal({
         Creates the project&apos;s Vault namespace, Nomad namespace, and Boundary scope, then grants
         the first project-admin. That admin must already belong to the developers group in IBM Verify.
       </p>
-      <TextInput
-        id="np-name"
-        labelText="Project name"
-        helperText="lowercase letters, digits, hyphens (1–63 chars)"
-        placeholder="project-acme"
-        value={projectName}
-        onChange={(e) => setProjectName(e.target.value)}
-      />
-      <TextInput
-        id="np-group"
-        style={{ marginTop: '1rem' }}
-        labelText="Developers group (IBM Verify)"
-        placeholder="project-acme-developers"
-        value={group}
-        onChange={(e) => setGroup(e.target.value)}
-      />
-      <TextInput
-        id="np-user"
-        style={{ marginTop: '1rem' }}
-        labelText="Workspace user"
-        value={workspaceUser}
-        onChange={(e) => setWorkspaceUser(e.target.value)}
-      />
-      <TextInput
-        id="np-admin"
-        style={{ marginTop: '1rem' }}
-        labelText="First project-admin (email)"
-        placeholder="admin@example.com"
-        value={firstAdmin}
-        onChange={(e) => setFirstAdmin(e.target.value)}
-      />
+      <Stack gap={5}>
+        <TextInput
+          id="np-name"
+          labelText="Project name"
+          helperText="lowercase letters, digits, hyphens (1–63 chars)"
+          placeholder="project-acme"
+          value={projectName}
+          onChange={(e) => setProjectName(e.target.value)}
+        />
+        <TextInput
+          id="np-group"
+          labelText="Developers group (IBM Verify)"
+          placeholder="project-acme-developers"
+          value={group}
+          onChange={(e) => setGroup(e.target.value)}
+        />
+        <TextInput
+          id="np-user"
+          labelText="Workspace user"
+          value={workspaceUser}
+          onChange={(e) => setWorkspaceUser(e.target.value)}
+        />
+        <TextInput
+          id="np-admin"
+          labelText="First project-admin (email)"
+          placeholder="admin@example.com"
+          value={firstAdmin}
+          onChange={(e) => setFirstAdmin(e.target.value)}
+        />
+      </Stack>
     </Modal>
   )
 }

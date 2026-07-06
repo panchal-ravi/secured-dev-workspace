@@ -58,9 +58,7 @@ export default function AppHeader({
   if (isPlatformAdmin(me)) {
     items.push(
       { label: 'Projects (admin)', path: '/admin/projects', icon: Folders, current: pathname.startsWith('/admin/projects') },
-      { label: 'MCP servers', path: '/admin/mcp-servers', icon: Catalog, current: pathname.startsWith('/admin/mcp-servers') },
       { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
-      { label: 'Vault blueprints', path: '/admin/blueprints', icon: DataStructured, current: pathname.startsWith('/admin/blueprints') },
       { label: 'Base templates', path: '/admin/base-templates', icon: Catalog, current: pathname.startsWith('/admin/base-templates') },
     )
   }
@@ -74,9 +72,9 @@ export default function AppHeader({
     { key: 'members', label: 'members', icon: UserMultiple },
     { key: 'mcp-servers', label: 'mcp servers', icon: Catalog },
     { key: 'templates', label: 'templates', icon: Catalog },
-    { key: 'engines', label: 'engines', icon: DataStructured },
+    { key: 'github', label: 'github access', icon: DataStructured },
   ]
-  const routeMatch = pathname.match(/^\/projects\/([^/]+)\/(members|mcp-servers|templates|engines)/)
+  const routeMatch = pathname.match(/^\/projects\/([^/]+)\/(members|mcp-servers|templates|github)/)
   const activeProject = routeMatch ? decodeURIComponent(routeMatch[1]) : admin[0]
 
   return (

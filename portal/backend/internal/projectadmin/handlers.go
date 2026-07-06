@@ -23,12 +23,13 @@ func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.Handle
 	mux.Handle("GET /api/projects/{name}/mcp-servers", protect(h.List))
 	mux.Handle("POST /api/projects/{name}/mcp-servers", mutate(h.Deploy))
 	mux.Handle("POST /api/projects/{name}/mcp-servers/{server}/test", mutate(h.Test))
+	mux.Handle("PUT /api/projects/{name}/mcp-servers/{server}", mutate(h.Update))
 	mux.Handle("DELETE /api/projects/{name}/mcp-servers/{server}", mutate(h.Delete))
 }
 
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
-	cat, err := h.svc.ListDeployable(r.Context(), u.Groups, r.PathValue("name"))
+	cat, err := h.svc.List(r.Context(), u.Groups, r.PathValue("name"))
 	if err != nil {
 		fail(w, r, err)
 		return
@@ -54,6 +55,25 @@ func (h *Handlers) Deploy(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Test(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	srv, err := h.svc.TestServer(r.Context(), u.Email, u.Groups, r.PathValue("name"), r.PathValue("server"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, srv)
+}
+
+// Update carries the editable slice of a deployed server (UpdateInput: full
+// container definition + replacement path grants) — the derived credential
+// policy is re-applied server-side and cannot be altered here; the credential
+// source cannot change (delete + redeploy).
+func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
+	var in UpdateInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
+		return
+	}
+	u, _ := auth.UserFrom(r.Context())
+	srv, err := h.svc.UpdateServer(r.Context(), u.Email, u.Groups, r.PathValue("name"), r.PathValue("server"), in)
 	if err != nil {
 		fail(w, r, err)
 		return

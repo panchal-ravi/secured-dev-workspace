@@ -134,6 +134,21 @@ func (v *VaultCreator) CreateNamespace(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteNamespace deletes the Vault Enterprise child namespace and (async, queued
+// by Vault) everything inside it — mounts, auth methods, policies, leases. The
+// creator policy carries "delete" on sys/namespaces/* for this. Idempotent: an
+// already-absent namespace is a no-op.
+func (v *VaultCreator) DeleteNamespace(ctx context.Context, name string) error {
+	cl, err := v.root(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := cl.Logical().DeleteWithContext(ctx, "sys/namespaces/"+name); err != nil {
+		return wrap("delete namespace", err)
+	}
+	return nil
+}
+
 // EnableJWTNomad enables + configures the jwt-nomad auth backend inside the child
 // namespace against the Nomad JWKS trust. Idempotent on the enable step.
 func (v *VaultCreator) EnableJWTNomad(ctx context.Context, ns string) error {

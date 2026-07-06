@@ -9,7 +9,7 @@ import (
 )
 
 // ExecutorConfig holds platform-wide values an instantiation needs that are not in
-// the manifest: the per-namespace WIF auth backend path and its bound audience.
+// the credential spec: the per-namespace WIF auth backend path and its bound audience.
 type ExecutorConfig struct {
 	AuthPath      string // e.g. "jwt-nomad"
 	BoundAudience string // e.g. "vault"
@@ -30,7 +30,8 @@ func (c ExecutorConfig) withDefaults() ExecutorConfig {
 	return c
 }
 
-// Executor instantiates and deprovisions a manifest in a project namespace.
+// Executor instantiates and deprovisions an MCP server's credential spec in a
+// project namespace.
 type Executor struct {
 	v   VaultAdmin
 	cfg ExecutorConfig
@@ -41,119 +42,165 @@ func NewExecutor(v VaultAdmin, cfg ExecutorConfig) *Executor {
 	return &Executor{v: v, cfg: cfg.withDefaults()}
 }
 
-// render renders a manifest template string (mount paths, role/policy names) for a
-// namespace. Only {{.Namespace}} is available at this stage.
-func render(tpl, namespace string) string {
-	return strings.ReplaceAll(tpl, "{{.Namespace}}", namespace)
-}
-
-// Instantiate runs the class-specific recipe into namespace. It is idempotent: a
-// re-instantiate re-applies mounts/config/policy (Vault writes are upserts; a mount
-// that already exists is tolerated). It returns the exact teardown record.
-func (e *Executor) Instantiate(ctx context.Context, m BlueprintManifest, namespace string, params map[string]string, grants []PathGrant) (InstanceRecord, error) {
-	if err := m.Validate(); err != nil {
+// Instantiate runs the credential recipe for serverName into namespace. It is
+// idempotent: a re-instantiate re-applies mounts/config/policy (Vault writes are
+// upserts; an existing mount is tolerated). It returns the exact teardown record.
+func (e *Executor) Instantiate(ctx context.Context, serverName string, spec CredentialSpec, namespace string, params map[string]string, grants []PathGrant) (InstanceRecord, error) {
+	if err := spec.Validate(); err != nil {
 		return InstanceRecord{}, err
 	}
-	if err := requireParams(m, params); err != nil {
+	if err := requireParams(spec.Params, params); err != nil {
 		return InstanceRecord{}, err
 	}
-	// Validate + render any project-admin path grants up front, before the class recipe
-	// touches Vault — so a malformed/forbidden grant fails the deploy with no side effects
-	// (Class A mounts an engine mid-flow). Grants require the blueprint's opt-in.
+	// Validate + render path grants up front, before the recipe touches Vault — a
+	// malformed/forbidden grant fails the deploy with no side effects (the dynamic
+	// source mounts an engine mid-flow).
 	var grantsHCL string
 	if len(grants) > 0 {
-		if !m.AllowExtraGrants {
-			return InstanceRecord{}, fmt.Errorf("blueprint %q does not allow project path grants: %w", m.ID, apperr.ErrForbidden)
+		if spec.Source == SourceNone {
+			return InstanceRecord{}, fmt.Errorf("credential: path grants need a credential source (no WIF token exists to carry them): %w", apperr.ErrBadRequest)
 		}
 		var err error
 		if grantsHCL, err = RenderGrants(grants); err != nil {
 			return InstanceRecord{}, err
 		}
 	}
-	policyName := render(m.WIFRole.NameTpl, namespace)
-	wifRoleName := render(m.WIFRole.NameTpl, namespace)
-	rec := InstanceRecord{Ref: m.Ref(), Namespace: namespace, WIFRoleName: wifRoleName}
 
-	var mount, roleName string
-	switch m.Class {
-	case ClassA:
-		eng := m.Engines[0]
-		mount = render(eng.MountPathTpl, namespace)
-		roleName = render(m.Role.NameTpl, namespace)
-		if err := e.v.MountEngine(ctx, namespace, mount, "database", ""); err != nil && !isAlreadyMounted(err) {
-			return InstanceRecord{}, err
-		}
-		if err := e.v.ConfigureDBConnection(ctx, namespace, mount, "conn", DBConnectionConfig{
-			Plugin:        eng.Plugin,
-			ConnectionURL: params["connection_url"],
-			Username:      params["bootstrap_username"],
-			Password:      secretParam(m, params),
-			AllowedRoles:  []string{roleName},
-		}); err != nil {
-			return InstanceRecord{}, err
-		}
-		// Immediately rotate the bootstrap admin cred out of human knowledge (D5).
-		if err := e.v.RotateRoot(ctx, namespace, mount, "conn"); err != nil {
-			return InstanceRecord{}, err
-		}
-		if err := e.v.WriteDBRole(ctx, namespace, mount, roleName, DBRole{
-			DBName:             "conn",
-			CreationStatements: m.Role.CreationStatements,
-			DefaultTTLSeconds:  m.Role.DefaultTTLSeconds,
-			MaxTTLSeconds:      m.Role.MaxTTLSeconds,
-		}); err != nil {
-			return InstanceRecord{}, err
-		}
-		rec.Mounts = []string{mount}
-		rec.LeasePrefixes = []string{mount + "/creds/" + roleName}
-
-	case ClassB:
-		// Seed the write-only upstream secret into the project KV; never logged.
-		relPath := "projects/" + m.ID
-		if err := e.v.WriteKVv2(ctx, namespace, e.cfg.KVMount, relPath, map[string]any{
-			"api_key": secretParam(m, params),
-		}); err != nil {
-			return InstanceRecord{}, err
-		}
-		mount = e.cfg.KVMount
-		roleName = relPath // policy targets this KV path
-
-	case ClassC:
-		// No engine, no secret; only a policy + WIF binding over the namespace mounts.
-		mount = e.cfg.KVMount
-		roleName = ""
+	rec := InstanceRecord{Namespace: namespace}
+	if spec.Source == SourceNone {
+		return rec, nil // no policy, no WIF role, nothing to tear down
 	}
 
-	// Generate + lint + apply the least-privilege policy.
-	policyHCL, err := RenderPolicy(m.PolicyTpl, PolicyVars{Namespace: namespace, Mount: mount, Role: roleName})
+	name := "mcp-" + serverName // policy name == WIF role name
+	rec.WIFRoleName = name
+	mount := e.cfg.KVMount // policy-lint anchor for static/wif-token
+
+	switch spec.Source {
+	case SourceDynamic:
+		d := spec.Dynamic
+		mount = strings.TrimSuffix(d.Mount, "/")
+		if err := e.v.MountEngine(ctx, namespace, mount, d.Engine, ""); err != nil && !isAlreadyMounted(err) {
+			return InstanceRecord{}, err
+		}
+		for _, w := range d.Configs {
+			data, err := interpolateMap(w.Data, params)
+			if err != nil {
+				return InstanceRecord{}, err
+			}
+			if err := e.v.WriteLogical(ctx, namespace, mount+"/"+w.Path, data); err != nil {
+				return InstanceRecord{}, err
+			}
+		}
+		// Rotate the bootstrap credential out of human knowledge as soon as the
+		// engine holds it (e.g. database rotate-root/<conn>, aws config/rotate-root).
+		if d.RotateRootPath != "" {
+			if err := e.v.WriteLogical(ctx, namespace, mount+"/"+d.RotateRootPath, nil); err != nil {
+				return InstanceRecord{}, err
+			}
+		}
+		if d.Role != nil {
+			data, err := interpolateMap(d.Role.Data, params)
+			if err != nil {
+				return InstanceRecord{}, err
+			}
+			if err := e.v.WriteLogical(ctx, namespace, mount+"/"+d.Role.Path, data); err != nil {
+				return InstanceRecord{}, err
+			}
+		}
+		rec.Mounts = []string{mount}
+		rec.CredPath = mount + "/" + d.CredsPath
+		if d.leaseBased() {
+			rec.LeasePrefixes = []string{rec.CredPath}
+		}
+
+	case SourceStatic:
+		// Seed the write-only secret into the project KV; never logged.
+		data, err := interpolateMap(toAnyMap(spec.Static.Data), params)
+		if err != nil {
+			return InstanceRecord{}, err
+		}
+		relPath := "projects/mcp-secrets/" + serverName
+		if err := e.v.WriteKVv2(ctx, namespace, e.cfg.KVMount, relPath, data); err != nil {
+			return InstanceRecord{}, err
+		}
+		// The job template reads the KV v2 DATA path (the .Data.data.* shape).
+		rec.CredPath = e.cfg.KVMount + "/data/" + relPath
+		rec.KVPaths = []string{relPath}
+
+	case SourceWIFToken:
+		// No engine, no secret; only a policy + WIF binding over the namespace KV.
+	}
+
+	// Derive + lint + apply the least-privilege policy (never user-authored).
+	policyHCL, err := e.renderPolicy(spec, serverName, mount, grantsHCL)
 	if err != nil {
 		return InstanceRecord{}, err
 	}
-	if err := LintPolicy(policyHCL, allowedPrefixes(e.cfg.KVMount, mount)); err != nil {
-		return InstanceRecord{}, err
-	}
-	// Append the (already-validated) project-admin grants. They are confined to the
-	// project's Vault namespace and were linted against the deny-list in RenderGrants —
-	// deliberately outside the base allowlist above, which stays tight for the
-	// blueprint's own paths.
 	if grantsHCL != "" {
-		policyHCL += "\n" + grantsHCL
 		rec.ExtraGrants = grants
 	}
-	if err := e.v.WritePolicy(ctx, namespace, policyName, policyHCL); err != nil {
+	if err := e.v.WritePolicy(ctx, namespace, name, policyHCL); err != nil {
 		return InstanceRecord{}, err
 	}
-	rec.PolicyNames = []string{policyName}
+	rec.PolicyNames = []string{name}
 
 	// Bind the Nomad-WIF role to the generated policy.
-	if err := e.v.WriteWIFRole(ctx, namespace, e.cfg.AuthPath, wifRoleName, WIFRole{
+	if err := e.v.WriteWIFRole(ctx, namespace, e.cfg.AuthPath, name, WIFRole{
 		BoundAudiences: []string{e.cfg.BoundAudience},
 		UserClaim:      e.cfg.UserClaim,
-		TokenPolicies:  []string{policyName},
-		TokenTTL:       m.WIFRole.TokenTTL,
+		TokenPolicies:  []string{name},
+		TokenTTL:       spec.tokenTTL(),
 	}); err != nil {
 		return InstanceRecord{}, err
 	}
+	return rec, nil
+}
+
+// renderPolicy derives + lints the credential's least-privilege policy and appends
+// the (already-validated) project-admin grants HCL. The grants are confined to the
+// project's Vault namespace and were linted against the deny-list in RenderGrants —
+// deliberately outside the base allowlist, which stays tight for the credential's
+// own paths. Shared by Instantiate and UpdateGrants so the two write paths never
+// diverge.
+func (e *Executor) renderPolicy(spec CredentialSpec, serverName, mount, grantsHCL string) (string, error) {
+	policyHCL := DeriveCredentialPolicy(spec, e.cfg.KVMount, serverName)
+	if err := LintPolicy(policyHCL, allowedPrefixes(e.cfg.KVMount, mount)); err != nil {
+		return "", err
+	}
+	if grantsHCL != "" {
+		policyHCL += "\n" + grantsHCL
+	}
+	return policyHCL, nil
+}
+
+// UpdateGrants rewrites a live instance's policy in place with a new set of path
+// grants (an empty set reverts to the derived policy alone). Vault evaluates
+// policies at request time, so the change applies immediately to outstanding
+// tokens — no job restart, no gateway re-wire, no workspace churn. It returns the
+// record with ExtraGrants updated; everything else is untouched.
+func (e *Executor) UpdateGrants(ctx context.Context, rec InstanceRecord, spec CredentialSpec, serverName string, grants []PathGrant) (InstanceRecord, error) {
+	if len(rec.PolicyNames) == 0 {
+		return rec, fmt.Errorf("credential: server has no Vault policy to update (source %q): %w", spec.Source, apperr.ErrBadRequest)
+	}
+	var grantsHCL string
+	if len(grants) > 0 {
+		var err error
+		if grantsHCL, err = RenderGrants(grants); err != nil {
+			return rec, err
+		}
+	}
+	mount := e.cfg.KVMount
+	if spec.Source == SourceDynamic && spec.Dynamic != nil {
+		mount = strings.TrimSuffix(spec.Dynamic.Mount, "/")
+	}
+	policyHCL, err := e.renderPolicy(spec, serverName, mount, grantsHCL)
+	if err != nil {
+		return rec, err
+	}
+	if err := e.v.WritePolicy(ctx, rec.Namespace, rec.PolicyNames[0], policyHCL); err != nil {
+		return rec, err
+	}
+	rec.ExtraGrants = grants
 	return rec, nil
 }
 
@@ -177,6 +224,11 @@ func (e *Executor) Deprovision(ctx context.Context, rec InstanceRecord) error {
 			errs = append(errs, err.Error())
 		}
 	}
+	for _, p := range rec.KVPaths {
+		if err := e.v.DeleteKVv2Metadata(ctx, rec.Namespace, e.cfg.KVMount, p); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
 	for _, mt := range rec.Mounts {
 		if err := e.v.UnmountEngine(ctx, rec.Namespace, mt); err != nil {
 			errs = append(errs, err.Error())
@@ -190,32 +242,31 @@ func (e *Executor) Deprovision(ctx context.Context, rec InstanceRecord) error {
 
 // ---- helpers ----
 
-func requireParams(m BlueprintManifest, params map[string]string) error {
-	for _, p := range m.Params {
+func requireParams(specs []ParamSpec, params map[string]string) error {
+	for _, p := range specs {
 		if p.Required {
 			if v, ok := params[p.Name]; !ok || v == "" {
-				return fmt.Errorf("blueprint: missing required param %q: %w", p.Name, apperr.ErrBadRequest)
+				return fmt.Errorf("credential: missing required param %q: %w", p.Name, apperr.ErrBadRequest)
 			}
 		}
 	}
 	return nil
 }
 
-func secretParam(m BlueprintManifest, params map[string]string) string {
-	for _, p := range m.Params {
-		if p.Type == "secret" {
-			return params[p.Name]
-		}
+func toAnyMap(in map[string]string) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
-	return ""
+	return out
 }
 
-// allowedPrefixes is the lint allowlist: a dedicated engine mount (Class A's
-// database engine) may be referenced at its own subtree, plus the project KV
+// allowedPrefixes is the lint allowlist: a dedicated engine mount (the dynamic
+// source's engine) may be referenced at its own subtree, plus the project KV
 // `projects/` subtree. The shared KV mount is NEVER added as a bare prefix, so a
-// Class B/C policy is confined to projects/ rather than the whole KV mount (least
-// privilege). The Vault namespace already isolates the project, so the KV path
-// carries no per-project segment.
+// static/wif-token policy is confined to projects/ rather than the whole KV mount
+// (least privilege). The Vault namespace already isolates the project, so the KV
+// path carries no per-project segment.
 func allowedPrefixes(kvMount, mount string) []string {
 	var out []string
 	if mount != kvMount {

@@ -125,6 +125,8 @@ func run() error {
 	// engineProvisioner (nil unless the admin plane is on) auto-provisions the standard
 	// engines when a project is created via the project-create plane below.
 	var engineProvisioner projectbootstrap.EngineProvisioner
+	var gatewayCleaner projectbootstrap.GatewayCleaner
+	var llmKeyDeleter projectbootstrap.LLMKeyDeleter
 	if cfg.AdminEnabled() {
 		planes, perr := buildAdminPlane(startCtx, cfg, st, svc, vault, nomad, bndry)
 		if perr != nil {
@@ -134,6 +136,12 @@ func run() error {
 		projectTmpl, projectEng = planes.projectTmpl, planes.projectEng
 		if planes.engineSvc != nil {
 			engineProvisioner = planes.engineSvc
+		}
+		if planes.gateway != nil {
+			gatewayCleaner = planes.gateway
+		}
+		if planes.llm != nil {
+			llmKeyDeleter = planes.llm
 		}
 		logger.Info("platform-admin onboarding plane enabled", "mcp_gateway", cfg.MCPGatewayAddr, "llm_gateway", cfg.LLMGatewayAddr)
 	} else {
@@ -151,7 +159,7 @@ func run() error {
 			projectbootstrap.JWKSConfig{URL: cfg.NomadJWKSURL, CAPEM: cfg.NomadCAPEM})
 		// The descriptor is persisted to the Postgres control-plane store (st), not
 		// Vault KV — portal control-plane state lives in Postgres.
-		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, st, projectRoles, engineProvisioner, st, projectbootstrap.Config{
+		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, st, projectRoles, engineProvisioner, gatewayCleaner, llmKeyDeleter, st, projectbootstrap.Config{
 			NomadOIDCAuthMethod:      cfg.NomadOIDCAuthMethodName,
 			BoundaryOrgScopeID:       cfg.BoundaryOrgScopeID,
 			BoundaryOIDCAuthMethodID: cfg.BoundaryOIDCAuthMethodID,
@@ -258,6 +266,10 @@ type onboardingPlanes struct {
 	// engineSvc is the engine-provision Service (not just its handlers) so the
 	// project-create plane can auto-provision engines at create via ProvisionAtCreate.
 	engineSvc *projectengines.Service
+	// gateway/llm are handed to the project-create plane for delete-time cleanup
+	// (ContextForge peers/tokens, LiteLLM virtual key).
+	gateway mcpgw.Client
+	llm     llmgw.Client
 }
 
 // buildAdminPlane wires the Platform Admin onboarding service: it reads the MCP
@@ -289,26 +301,24 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 		AuthMount: cfg.ProvisionerAuthMount,
 	})
 	executor := blueprint.NewExecutor(vadmin, blueprint.ExecutorConfig{
-		AuthPath:      "jwt-nomad",
-		BoundAudience: "vault",
+		AuthPath: "jwt-nomad",
+		// Must match the Nomad agents' vault default_identity aud (config/nomad.hcl),
+		// or the task's jwt-nomad login fails with "invalid audience (aud)".
+		BoundAudience: "vault.io",
 		KVMount:       cfg.VaultKVMount,
 	})
-	validator := blueprint.NewValidator(executor)
-
-	adminSvc := admin.New(st, nomad, gateway, llm, vault, validator, admin.Config{
-		MCPNamespace:    cfg.MCPNamespace,
-		NodePool:        cfg.AgentNodePool,
-		MCPJobVaultRole: cfg.MCPJobVaultRole,
-	})
-	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, projectadmin.Config{
-		NodePool: cfg.AgentNodePool,
-	})
+	adminSvc := admin.New(st, llm, vault, admin.Config{})
 	peSvc := projectengines.New(vadmin, bndry, llm, gateway, st, wsvc, st, projectengines.Config{
 		VaultCredStoreAddress:     cfg.VaultCredStoreAddress,
 		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
 		MCPGatewayEndpoint:        cfg.MCPGatewayAddr,
 		GithubPluginVersion:       cfg.GithubPluginVersion,
 		LLMModels:                 cfg.LLMModels,
+	})
+	// The engine service doubles as the deploy plane's wirer: a redeploy of a
+	// template-referenced server re-runs its workspace wiring automatically.
+	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, peSvc, projectadmin.Config{
+		NodePool: cfg.AgentNodePool,
 	})
 	// The template plane reuses the engine service to (a) mount extra add-on engines
 	// and (b) wire MCP servers from the catalog into a flavor's rendered source.
@@ -323,6 +333,8 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 		projectTmpl: projecttemplate.NewHandlers(ptSvc),
 		projectEng:  projectengines.NewHandlers(peSvc),
 		engineSvc:   peSvc,
+		gateway:     gateway,
+		llm:         llm,
 	}, nil
 }
 

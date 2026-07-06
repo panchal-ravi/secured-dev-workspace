@@ -14,13 +14,11 @@ import (
 	"time"
 )
 
-// Lifecycle statuses. An MCP server goes draft → deployed → published; an LLM
-// model goes draft → published. Only published capabilities are visible to
-// Project Admins.
+// Lifecycle statuses. A project MCP server is deployed on creation; an LLM
+// model goes draft → published. Only published models are visible to projects.
 const (
 	StatusDraft     = "draft"
 	StatusDeployed  = "deployed"
-	StatusValidated = "validated"
 	StatusPublished = "published"
 )
 
@@ -33,35 +31,9 @@ const (
 	StatusError        = "error"
 )
 
-// MCPServer is a platform-deployed MCP server: the deploy definition (image + run
-// config a Platform Admin transcribed from the server's Docker/K8s instructions)
-// plus its lifecycle state on the platform.
-type MCPServer struct {
-	Name             string            `json:"name"`
-	Image            string            `json:"image"`
-	Command          []string          `json:"command,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`                // non-secret env values
-	SecretRefs       map[string]string `json:"secret_refs,omitempty"`        // env key -> Vault KV "path#field" reference
-	InjectVaultToken bool              `json:"inject_vault_token,omitempty"` // emit a bare vault{role} so Nomad injects a WIF VAULT_TOKEN (Vault-auth servers)
-	BlueprintRef     *BlueprintRef     `json:"blueprint_ref,omitempty"`      // bound at publish for blueprint-backed server types
-	Transport        string            `json:"transport"`                    // stdio | sse | streamable-http
-	Port             int               `json:"port,omitempty"`
-	Path             string            `json:"path,omitempty"`
-	Namespace        string            `json:"namespace"`
-	JobID            string            `json:"job_id,omitempty"`
-	PeerID           string            `json:"peer_id,omitempty"`
-	GatewayURL       string            `json:"gateway_url,omitempty"`
-	Status           string            `json:"status"`
-	Version          int               `json:"version"`
-	TestResult       *MCPTestResult    `json:"test_result,omitempty"`
-	CreatedBy        string            `json:"created_by,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
-}
-
-// BlueprintRef is the immutable pin (id, version, content-hash) of the credential
-// blueprint a server type is bound to. Mirrors blueprint.BlueprintRef without the
-// package dependency.
+// BlueprintRef is the immutable pin (id, version, content-hash) of the retired
+// platform-catalog blueprint a LEGACY project MCP row was deployed from. Mirrors
+// blueprint.BlueprintRef without the package dependency; new rows never set it.
 type BlueprintRef struct {
 	ID          string `json:"id"`
 	Version     int    `json:"version"`
@@ -73,10 +45,25 @@ type BlueprintRef struct {
 // blueprint.InstanceRecord JSON, persisted so deprovision can revoke exactly what
 // was created. No secret material is stored.
 type ProjectMCPServer struct {
-	Project      string          `json:"project"`
-	Name         string          `json:"name"`
-	Status       string          `json:"status"`
-	BlueprintRef BlueprintRef    `json:"blueprint_ref"`
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+
+	// Server definition, authored by the project-admin in the deploy wizard.
+	Image   string            `json:"image,omitempty"`
+	Command []string          `json:"command,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Port    int               `json:"port,omitempty"` // container port; host side is dynamic
+	Path    string            `json:"path,omitempty"`
+	// Credential is the blueprint.CredentialSpec JSON with its ${param}
+	// placeholders intact; Params holds ONLY non-secret deploy values. Secret
+	// param values are used once at deploy and never persisted.
+	Credential json.RawMessage   `json:"credential,omitempty"`
+	Params     map[string]string `json:"params,omitempty"`
+
+	// BlueprintRef is legacy: rows deployed from the retired platform catalog
+	// (pre-Phase-F) carry it; wizard rows leave it nil.
+	BlueprintRef *BlueprintRef   `json:"blueprint_ref,omitempty"`
 	Instance     json.RawMessage `json:"instance,omitempty"`
 	JobID        string          `json:"job_id,omitempty"`
 	PeerID       string          `json:"peer_id,omitempty"`
@@ -122,23 +109,6 @@ type LLMTestResult struct {
 	RevokeEnforced    bool      `json:"revoke_enforced"`     // 401 after revoke
 	Message           string    `json:"message,omitempty"`
 	At                time.Time `json:"at"`
-}
-
-// Blueprint is a platform-authored credential blueprint's control-plane record.
-// The canonical manifest JSON now lives on this row (the Manifest field), not in
-// Vault KV; the row carries identity, lifecycle, the content-hash pin, the manifest,
-// and the validation result. No secret material is stored here.
-type Blueprint struct {
-	ID          string          `json:"id"`
-	Version     int             `json:"version"`
-	Class       string          `json:"class"`
-	ContentHash string          `json:"content_hash"`
-	Status      string          `json:"status"`
-	Validation  json.RawMessage `json:"validation,omitempty"` // a blueprint.ValidationResult, opaque to the store
-	Manifest    json.RawMessage `json:"manifest,omitempty"`   // canonical blueprint.BlueprintManifest JSON; immutable per (id,version)
-	CreatedBy   string          `json:"created_by,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // ProjectRole is a project-scoped role elevation: a project member (in the
@@ -205,8 +175,9 @@ type Feature struct {
 // project-admin (Phase C) or backfilled from Vault KV. No secret material.
 type ProjectTemplate struct {
 	Project        string    `json:"project"`
-	Flavor         string    `json:"flavor"`       // base template name it derives from
-	BaseVersion    int       `json:"base_version"` // BaseJobTemplate.Version snapshotted
+	Flavor         string    `json:"flavor"`         // template key (defaults to the base name; may be custom)
+	Base           string    `json:"base,omitempty"` // BaseJobTemplate.Name it derives from (needed for re-bake on edit)
+	BaseVersion    int       `json:"base_version"`   // BaseJobTemplate.Version snapshotted
 	Status         string    `json:"status"`
 	RenderedSource string    `json:"rendered_source"`      // pass-1 baked + add-ons injected (what launch renders pass-2)
 	BakedBase      string    `json:"baked_base,omitempty"` // pass-1 baked with @project-addons markers intact (snapshot; re-injected on add-on change)
@@ -263,10 +234,6 @@ type AuditEvent struct {
 // Store is the control-plane persistence the admin plane depends on.
 type Store interface {
 	// MCP server deploy definitions.
-	UpsertMCPServer(ctx context.Context, s MCPServer) (MCPServer, error)
-	GetMCPServer(ctx context.Context, name string) (MCPServer, error)
-	ListMCPServers(ctx context.Context) ([]MCPServer, error)
-	DeleteMCPServer(ctx context.Context, name string) error
 
 	// LLM model registry.
 	UpsertLLMModel(ctx context.Context, m LLMModel) (LLMModel, error)
@@ -275,10 +242,6 @@ type Store interface {
 	DeleteLLMModel(ctx context.Context, name string) error
 
 	// Credential blueprints (platform-authored).
-	UpsertBlueprint(ctx context.Context, b Blueprint) (Blueprint, error)
-	GetBlueprint(ctx context.Context, id string, version int) (Blueprint, error)
-	ListBlueprints(ctx context.Context) ([]Blueprint, error)
-	DeleteBlueprint(ctx context.Context, id string, version int) error
 
 	// Project role elevations (group membership stays in IBM Verify).
 	GrantProjectRole(ctx context.Context, pr ProjectRole) (ProjectRole, error)

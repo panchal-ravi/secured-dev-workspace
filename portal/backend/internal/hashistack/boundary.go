@@ -85,6 +85,19 @@ func (b *Boundary) CreateProjectScope(ctx context.Context, orgScopeID, name, des
 	return res.Item.Id, nil
 }
 
+// DeleteScope removes a project scope and everything under it (Boundary scope
+// deletion is recursive: targets, credential stores/libraries, roles, aliases).
+// Idempotent: an already-deleted scope is a no-op.
+func (b *Boundary) DeleteScope(ctx context.Context, scopeID string) error {
+	if _, err := scopes.NewClient(b.c).Delete(ctx, scopeID); err != nil {
+		if apiErr := bapi.AsServerError(err); apiErr != nil && apiErr.Response().StatusCode() == 404 {
+			return nil
+		}
+		return fmt.Errorf("boundary: delete scope %q: %w", scopeID, err)
+	}
+	return nil
+}
+
 // CreateVaultCredentialStore creates (idempotently) a Vault credential store in the
 // project scope. Boundary authenticates to Vault with the project's dedicated
 // least-privilege periodic token. Ports terraform/project/boundary.tf's

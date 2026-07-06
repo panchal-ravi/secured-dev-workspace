@@ -143,9 +143,11 @@ resource "vault_policy" "project_creator" {
   name  = "project-creator"
 
   policy = <<-HCL
-    # Create + inspect child namespaces (root namespace op).
+    # Create + inspect + delete child namespaces (root namespace op). Delete backs
+    # the portal's platform-admin "delete project" — Vault queues removal of the
+    # namespace's full contents.
     path "sys/namespaces/*" {
-      capabilities = ["create", "read", "update"]
+      capabilities = ["create", "read", "update", "delete"]
     }
     # Bootstrap a freshly-created child namespace (namespace-prefixed globs). Enabling
     # an auth method requires sudo on the child's sys/auth path.
@@ -233,11 +235,7 @@ resource "nomad_job" "developer_portal" {
     enable_platform_admin = var.enable_platform_admin
     # Gateway addresses are resolved at runtime via Nomad service discovery in the
     # jobspec (nomadService "mcp-gateway"/"llm-gateway"), not injected here.
-    mcp_namespace   = var.enable_platform_admin ? nomad_namespace.infra_mcp[0].name : ""
     agent_node_pool = var.platform_admin_mcp_node_pool
-    # WIF role stamped on a reference MCP job when the operator ticks "Inject a Vault
-    # token" — Nomad then injects a powerless self-test VAULT_TOKEN (see platform-admin.tf).
-    mcp_job_vault_role = var.enable_platform_admin ? vault_jwt_auth_backend_role.infra_mcp_selftest[0].role_name : ""
     # Postgres reachable on the all-in-one node (host-network); the portal builds
     # PORTAL_DB_DSN from this + the pg_password it reads over WIF. Unused when the
     # admin plane is off (the jobspec omits the DSN line entirely).

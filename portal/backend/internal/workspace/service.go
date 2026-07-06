@@ -158,6 +158,10 @@ func (s *Service) ListAllWorkspaces(ctx context.Context, groups []string, handle
 // Create provisions a new workspace end to end (Nomad volume + job, Boundary
 // access graph), mirroring terraform/workspace.
 func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in CreateInput) (Workspace, error) {
+	if err := requireProvisioned(d); err != nil {
+		return Workspace{}, err
+	}
+
 	// Flavor is optional when the project publishes exactly one.
 	if in.Flavor == "" && len(d.Flavors) == 1 {
 		in.Flavor = d.Flavors[0].Name
@@ -332,6 +336,24 @@ func (s *Service) findWorkspace(ctx context.Context, d descriptor.Descriptor, ha
 		}
 	}
 	return Workspace{}, fmt.Errorf("workspace %q not found: %w", jobName, apperr.ErrNotFound)
+}
+
+// requireProvisioned blocks workspace creation until the project's secret
+// engines are fully set up. The workspace job template reads Vault secrets the
+// engines mint (GitHub PAT, LLM key, SSH cert), so launching earlier just
+// leaves the alloc blocked in "pending" on vault.read with no visible error —
+// fail fast here with a message naming the missing setup instead. Both flags
+// come from the project descriptor: CredentialLibraryID is written only after
+// engine provisioning completes, GithubConfigured only after the project-admin
+// submits the GitHub App credentials (the one manual step).
+func requireProvisioned(d descriptor.Descriptor) error {
+	if d.CredentialLibraryID == "" {
+		return fmt.Errorf("project %q is not fully provisioned — its secret engines and Boundary access are not set up yet; ask a project admin to complete project setup: %w", d.ProjectName, apperr.ErrConflict)
+	}
+	if !d.GithubConfigured {
+		return fmt.Errorf("project %q has no GitHub access configured — a project admin must submit the GitHub App credentials on the project's \"github access\" page before workspaces can start: %w", d.ProjectName, apperr.ErrConflict)
+	}
+	return nil
 }
 
 // requireOwned guards that jobName belongs to handle (named ws-<handle>-...), so

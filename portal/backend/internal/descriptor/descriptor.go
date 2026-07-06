@@ -50,6 +50,11 @@ type Descriptor struct {
 	// set (the github mount always exists after provision; the App config is supplied
 	// later by a project-admin). Non-secret status flag — never the key material.
 	GithubConfigured bool `json:"github_configured,omitempty"`
+	// Non-secret GitHub App coordinates, persisted so the Engines page can prefill
+	// its form on revisit. The private key is write-only and never stored here.
+	GithubAppID             int      `json:"github_app_id,omitempty"`
+	GithubAppInstallationID int      `json:"github_app_installation_id,omitempty"`
+	GithubRepositories      []string `json:"github_repositories,omitempty"`
 }
 
 // Parse decodes the descriptor JSON string stored under the "descriptor" KV key.

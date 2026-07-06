@@ -1,4 +1,7 @@
-# Demo Postgres jobspec (Vault use case B1). Synthetic seed data — no real PII.
+# Demo Postgres jobspec — the upstream database for the Class A postgres-mcp
+# blueprint E2E (rendered by demo-db.tf, infra tier; replaces the retired
+# terraform/project demo-db). Synthetic seed data — no real PII. No host volume
+# ON PURPOSE: the DB re-inits + re-seeds on every restart (demo-only).
 job "demo-db" {
   namespace   = "${namespace}"
   datacenters = ["dc1"]
@@ -52,8 +55,8 @@ INSERT INTO employees (name, role, salary) VALUES
 EOSQL
       }
 
-      # Readiness: the alloc is "healthy" only once Postgres accepts TCP — so the
-      # Vault connection resource (depends_on this job) does not race the DB.
+      # Readiness: the alloc is "healthy" only once Postgres accepts TCP — so a
+      # Vault DB connection configured against it does not race the DB.
       # provider = "nomad": this cluster runs Consul dormant, so the default
       # Consul service provider would add a `consul.version` constraint that
       # excludes the only node. Nomad-native services run the tcp check client-side.

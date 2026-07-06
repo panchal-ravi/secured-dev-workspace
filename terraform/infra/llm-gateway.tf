@@ -19,7 +19,7 @@
 
 locals {
   litellm_port    = 4000  # gateway HTTP (Anthropic /v1/messages, admin /key/*, /v1/models)
-  litellm_pg_port = 15433 # node-static Postgres port (15432 is the project demo-db)
+  litellm_pg_port = 15433 # node-static Postgres port (15432 is the infra demo-db)
 
   # Governed LLM models — the SINGLE source of the model names. Shared by the LiteLLM
   # model_list (rendered below), the portal env (developer-portal.tf), and thus the

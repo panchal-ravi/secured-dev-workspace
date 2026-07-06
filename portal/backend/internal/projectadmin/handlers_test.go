@@ -1,6 +1,7 @@
 package projectadmin
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,14 +17,12 @@ func req(method, path, body string, user auth.User) *http.Request {
 }
 
 func TestHandlersDeploy(t *testing.T) {
-	manifestJSON, hash := classAManifestJSON(t)
-	ex := &fakeExecutor{rec: blueprintInstance()}
-	svc, st := newService(t, ex, &fakeNomad{}, &fakeGateway{})
-	seedDeployable(t, st, manifestJSON, hash)
+	ex := &fakeExecutor{rec: instanceRecord()}
+	svc, _ := newService(t, ex, &fakeNomad{}, &fakeGateway{})
 	h := NewHandlers(svc)
 
-	r := req(http.MethodPost, "/api/projects/project-acme/mcp-servers",
-		`{"server_type":"postgres-mcp","params":{"connection_url":"x","bootstrap_password":"b","db_host":"demo-db","db_port":"5432","db_name":"app"}}`,
+	body, _ := json.Marshal(pgInput())
+	r := req(http.MethodPost, "/api/projects/project-acme/mcp-servers", string(body),
 		auth.User{Email: "acme-admin@x", Groups: []string{"project-acme-developers"}})
 	r.SetPathValue("name", "project-acme")
 	w := httptest.NewRecorder()
@@ -31,12 +30,15 @@ func TestHandlersDeploy(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("deploy status %d: %s", w.Code, w.Body.String())
 	}
+	// The secret param value must not appear in the response body (the row
+	// serialization is what the UI sees).
+	if strings.Contains(w.Body.String(), `"boot"`) {
+		t.Fatalf("secret param leaked into deploy response: %s", w.Body.String())
+	}
 }
 
 func TestHandlersList(t *testing.T) {
-	manifestJSON, hash := classAManifestJSON(t)
-	svc, st := newService(t, &fakeExecutor{}, &fakeNomad{}, &fakeGateway{})
-	seedDeployable(t, st, manifestJSON, hash)
+	svc, _ := newService(t, &fakeExecutor{}, &fakeNomad{}, &fakeGateway{})
 	h := NewHandlers(svc)
 
 	r := req(http.MethodGet, "/api/projects/project-acme/mcp-servers", "", auth.User{Email: "acme-admin@x", Groups: []string{"project-acme-developers"}})
@@ -45,5 +47,9 @@ func TestHandlersList(t *testing.T) {
 	h.List(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list status %d: %s", w.Code, w.Body.String())
+	}
+	// The historical "deployed" key must survive (Templates.tsx consumes it).
+	if !strings.Contains(w.Body.String(), `"deployed"`) {
+		t.Fatalf("list response must keep the deployed key: %s", w.Body.String())
 	}
 }

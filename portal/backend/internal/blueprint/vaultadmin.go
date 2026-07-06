@@ -12,23 +12,6 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 )
 
-// DBConnectionConfig configures a database secret engine connection.
-type DBConnectionConfig struct {
-	Plugin        string // e.g. "postgresql-database-plugin"
-	ConnectionURL string // with {{username}}/{{password}} templating
-	Username      string // bootstrap admin user (rotated immediately after)
-	Password      string // bootstrap admin password (write-only param)
-	AllowedRoles  []string
-}
-
-// DBRole is a dynamic database role.
-type DBRole struct {
-	DBName             string
-	CreationStatements []string
-	DefaultTTLSeconds  int
-	MaxTTLSeconds      int
-}
-
 // SSHRole is a Vault SSH signing role (key_type=ca). Ports
 // terraform/project/vault.tf's vault_ssh_secret_backend_role.dev_workspace: locks
 // the cert to the workspace user, permits a pty + TCP port forwarding (required
@@ -55,10 +38,6 @@ type VaultAdmin interface {
 	MountEngine(ctx context.Context, ns, path, engineType, pluginVersion string) error
 	UnmountEngine(ctx context.Context, ns, path string) error
 
-	ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error
-	RotateRoot(ctx context.Context, ns, mount, name string) error
-	WriteDBRole(ctx context.Context, ns, mount, name string, role DBRole) error
-
 	// SSH CA engine (ssh secrets engine in signing/CA mode).
 	WriteSSHCA(ctx context.Context, ns, mount string) error
 	WriteSSHRole(ctx context.Context, ns, mount, name string, role SSHRole) error
@@ -73,6 +52,16 @@ type VaultAdmin interface {
 	CreatePeriodicToken(ctx context.Context, ns string, policies []string, period string) (token string, err error)
 
 	WriteKVv2(ctx context.Context, ns, mount, relPath string, data map[string]any) error
+
+	// DeleteKVv2Metadata permanently removes a KV v2 secret (metadata + all
+	// versions) — teardown of the static credential seed.
+	DeleteKVv2Metadata(ctx context.Context, ns, mount, relPath string) error
+
+	// WriteLogical performs one Vault logical write within ns — the generic
+	// primitive the dynamic credential recipes are built from (engine config,
+	// rotate-root, role definitions). Callers always prefix the path with the
+	// recipe's own engine mount; lintWritePath rejects shapes that could escape it.
+	WriteLogical(ctx context.Context, ns, path string, data map[string]any) error
 
 	WritePolicy(ctx context.Context, ns, name, policyHCL string) error
 	DeletePolicy(ctx context.Context, ns, name string) error
@@ -183,46 +172,6 @@ func (a *vaultAdmin) UnmountEngine(ctx context.Context, ns, path string) error {
 		return err
 	}
 	return wrap("unmount engine", cl.Sys().UnmountWithContext(ctx, path))
-}
-
-func (a *vaultAdmin) ConfigureDBConnection(ctx context.Context, ns, mount, name string, cfg DBConnectionConfig) error {
-	cl, err := a.ns(ctx, ns)
-	if err != nil {
-		return err
-	}
-	_, err = cl.Logical().WriteWithContext(ctx, mount+"/config/"+name, map[string]any{
-		"plugin_name":    cfg.Plugin,
-		"connection_url": cfg.ConnectionURL,
-		"username":       cfg.Username,
-		"password":       cfg.Password,
-		"allowed_roles":  cfg.AllowedRoles,
-		// Vault verifies on first credential request; demo-db accepts TCP before ready.
-		"verify_connection": false,
-	})
-	return wrap("configure db connection", err)
-}
-
-func (a *vaultAdmin) RotateRoot(ctx context.Context, ns, mount, name string) error {
-	cl, err := a.ns(ctx, ns)
-	if err != nil {
-		return err
-	}
-	_, err = cl.Logical().WriteWithContext(ctx, mount+"/rotate-root/"+name, nil)
-	return wrap("rotate-root", err)
-}
-
-func (a *vaultAdmin) WriteDBRole(ctx context.Context, ns, mount, name string, role DBRole) error {
-	cl, err := a.ns(ctx, ns)
-	if err != nil {
-		return err
-	}
-	_, err = cl.Logical().WriteWithContext(ctx, mount+"/roles/"+name, map[string]any{
-		"db_name":             role.DBName,
-		"creation_statements": role.CreationStatements,
-		"default_ttl":         role.DefaultTTLSeconds,
-		"max_ttl":             role.MaxTTLSeconds,
-	})
-	return wrap("write db role", err)
 }
 
 // WriteSSHCA generates + holds the CA signing key inside Vault (ed25519 so OpenSSH
@@ -351,6 +300,23 @@ func (a *vaultAdmin) WriteKVv2(ctx context.Context, ns, mount, relPath string, d
 	}
 	_, err = cl.KVv2(mount).Put(ctx, relPath, data)
 	return wrap("write kv", err)
+}
+
+func (a *vaultAdmin) DeleteKVv2Metadata(ctx context.Context, ns, mount, relPath string) error {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return err
+	}
+	return wrap("delete kv metadata", cl.KVv2(mount).DeleteMetadata(ctx, relPath))
+}
+
+func (a *vaultAdmin) WriteLogical(ctx context.Context, ns, path string, data map[string]any) error {
+	cl, err := a.ns(ctx, ns)
+	if err != nil {
+		return err
+	}
+	_, err = cl.Logical().WriteWithContext(ctx, path, data)
+	return wrap("logical write", err)
 }
 
 func (a *vaultAdmin) WritePolicy(ctx context.Context, ns, name, policyHCL string) error {

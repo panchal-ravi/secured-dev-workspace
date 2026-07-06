@@ -163,9 +163,7 @@ EOH
         # Platform Admin onboarding plane. Gateway base URLs (PORTAL_MCP_GATEWAY_ADDR /
         # PORTAL_LLM_GATEWAY_ADDR) come from the Nomad service-discovery template block
         # above — not co-location — so they are not set here.
-        PORTAL_MCP_NAMESPACE      = "${mcp_namespace}"
         PORTAL_AGENT_NODE_POOL    = "${agent_node_pool}"
-        PORTAL_MCP_JOB_VAULT_ROLE = "${mcp_job_vault_role}"
         # Project-deploy plane: broker a namespace-native provisioner token via the
         # second workload identity above. Role/mount match terraform/project/portal-provisioner.tf.
         PORTAL_PROVISIONER_JWT_PATH   = "$${NOMAD_SECRETS_DIR}/nomad_vault_provisioner.jwt"

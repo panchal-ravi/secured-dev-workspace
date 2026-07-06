@@ -31,6 +31,11 @@ type Postgres struct {
 var _ Store = (*Postgres)(nil)
 
 const schema = `
+-- LEGACY, UNROUTED (Phase F): the platform MCP catalog + blueprint planes were
+-- retired — project-admins deploy MCP servers directly (project_mcp_servers).
+-- The two tables below are kept only because the schema is append-only; live
+-- rows are orphaned-but-harmless. Ops MAY drop them manually:
+--   DROP TABLE mcp_servers; DROP TABLE blueprints;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name       TEXT PRIMARY KEY,
     status     TEXT        NOT NULL,
@@ -153,95 +158,6 @@ func (p *Postgres) Close() error { return p.db.Close() }
 
 // ---- MCP servers ----
 
-func (p *Postgres) UpsertMCPServer(ctx context.Context, s MCPServer) (MCPServer, error) {
-	if s.Name == "" {
-		return MCPServer{}, fmt.Errorf("store: mcp server name required: %w", apperr.ErrBadRequest)
-	}
-	now := p.now()
-	s.CreatedAt, s.UpdatedAt = now, now
-	blob, err := json.Marshal(s)
-	if err != nil {
-		return MCPServer{}, fmt.Errorf("store: marshal mcp server: %w", err)
-	}
-	// created_by / created_at are absent from the UPDATE set, so a conflict
-	// preserves the original; RETURNING hands back the authoritative values.
-	const q = `
-INSERT INTO mcp_servers (name, status, version, created_by, created_at, updated_at, data)
-VALUES ($1, $2, $3, $4, $5, $5, $6)
-ON CONFLICT (name) DO UPDATE SET
-    status     = EXCLUDED.status,
-    version    = EXCLUDED.version,
-    updated_at = EXCLUDED.updated_at,
-    data       = EXCLUDED.data
-RETURNING created_by, created_at, updated_at`
-	row := p.db.QueryRowContext(ctx, q, s.Name, s.Status, s.Version, s.CreatedBy, now, blob)
-	if err := row.Scan(&s.CreatedBy, &s.CreatedAt, &s.UpdatedAt); err != nil {
-		return MCPServer{}, fmt.Errorf("store: upsert mcp server: %w", err)
-	}
-	return s, nil
-}
-
-func (p *Postgres) GetMCPServer(ctx context.Context, name string) (MCPServer, error) {
-	const q = `SELECT data, status, version, created_by, created_at, updated_at FROM mcp_servers WHERE name = $1`
-	var (
-		s         MCPServer
-		blob      []byte
-		status    string
-		version   int
-		createdBy string
-		createdAt time.Time
-		updatedAt time.Time
-	)
-	err := p.db.QueryRowContext(ctx, q, name).Scan(&blob, &status, &version, &createdBy, &createdAt, &updatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return MCPServer{}, fmt.Errorf("store: mcp server %q: %w", name, apperr.ErrNotFound)
-	}
-	if err != nil {
-		return MCPServer{}, fmt.Errorf("store: get mcp server: %w", err)
-	}
-	if err := json.Unmarshal(blob, &s); err != nil {
-		return MCPServer{}, fmt.Errorf("store: unmarshal mcp server: %w", err)
-	}
-	s.Status, s.Version, s.CreatedBy, s.CreatedAt, s.UpdatedAt = status, version, createdBy, createdAt, updatedAt
-	return s, nil
-}
-
-func (p *Postgres) ListMCPServers(ctx context.Context) ([]MCPServer, error) {
-	const q = `SELECT data, status, version, created_by, created_at, updated_at FROM mcp_servers ORDER BY name`
-	rows, err := p.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("store: list mcp servers: %w", err)
-	}
-	defer rows.Close()
-	out := []MCPServer{}
-	for rows.Next() {
-		var (
-			s         MCPServer
-			blob      []byte
-			status    string
-			version   int
-			createdBy string
-			createdAt time.Time
-			updatedAt time.Time
-		)
-		if err := rows.Scan(&blob, &status, &version, &createdBy, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("store: scan mcp server: %w", err)
-		}
-		if err := json.Unmarshal(blob, &s); err != nil {
-			return nil, fmt.Errorf("store: unmarshal mcp server: %w", err)
-		}
-		s.Status, s.Version, s.CreatedBy, s.CreatedAt, s.UpdatedAt = status, version, createdBy, createdAt, updatedAt
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
-func (p *Postgres) DeleteMCPServer(ctx context.Context, name string) error {
-	return p.deleteByName(ctx, "mcp_servers", "mcp server", name)
-}
-
-// ---- LLM models ----
-
 func (p *Postgres) UpsertLLMModel(ctx context.Context, m LLMModel) (LLMModel, error) {
 	if m.Name == "" {
 		return LLMModel{}, fmt.Errorf("store: llm model name required: %w", apperr.ErrBadRequest)
@@ -322,88 +238,6 @@ func (p *Postgres) ListLLMModels(ctx context.Context) ([]LLMModel, error) {
 
 func (p *Postgres) DeleteLLMModel(ctx context.Context, name string) error {
 	return p.deleteByName(ctx, "llm_models", "llm model", name)
-}
-
-// ---- blueprints ----
-
-func (p *Postgres) UpsertBlueprint(ctx context.Context, b Blueprint) (Blueprint, error) {
-	if b.ID == "" || b.Version < 1 {
-		return Blueprint{}, fmt.Errorf("store: blueprint id and version required: %w", apperr.ErrBadRequest)
-	}
-	now := p.now()
-	b.CreatedAt, b.UpdatedAt = now, now
-	blob, err := json.Marshal(b)
-	if err != nil {
-		return Blueprint{}, fmt.Errorf("store: marshal blueprint: %w", err)
-	}
-	const q = `
-INSERT INTO blueprints (id, version, class, content_hash, status, created_by, created_at, updated_at, data)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
-ON CONFLICT (id, version) DO UPDATE SET
-    class        = EXCLUDED.class,
-    content_hash = EXCLUDED.content_hash,
-    status       = EXCLUDED.status,
-    updated_at   = EXCLUDED.updated_at,
-    data         = EXCLUDED.data
-RETURNING created_by, created_at, updated_at`
-	row := p.db.QueryRowContext(ctx, q, b.ID, b.Version, b.Class, b.ContentHash, b.Status, b.CreatedBy, now, blob)
-	if err := row.Scan(&b.CreatedBy, &b.CreatedAt, &b.UpdatedAt); err != nil {
-		return Blueprint{}, fmt.Errorf("store: upsert blueprint: %w", err)
-	}
-	return b, nil
-}
-
-func (p *Postgres) GetBlueprint(ctx context.Context, id string, version int) (Blueprint, error) {
-	const q = `SELECT data FROM blueprints WHERE id = $1 AND version = $2`
-	var blob []byte
-	switch err := p.db.QueryRowContext(ctx, q, id, version).Scan(&blob); {
-	case errors.Is(err, sql.ErrNoRows):
-		return Blueprint{}, fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
-	case err != nil:
-		return Blueprint{}, fmt.Errorf("store: get blueprint: %w", err)
-	}
-	var b Blueprint
-	if err := json.Unmarshal(blob, &b); err != nil {
-		return Blueprint{}, fmt.Errorf("store: unmarshal blueprint: %w", err)
-	}
-	return b, nil
-}
-
-func (p *Postgres) ListBlueprints(ctx context.Context) ([]Blueprint, error) {
-	const q = `SELECT data FROM blueprints ORDER BY id, version`
-	rows, err := p.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("store: list blueprints: %w", err)
-	}
-	defer rows.Close()
-	var out []Blueprint
-	for rows.Next() {
-		var blob []byte
-		if err := rows.Scan(&blob); err != nil {
-			return nil, fmt.Errorf("store: scan blueprint: %w", err)
-		}
-		var b Blueprint
-		if err := json.Unmarshal(blob, &b); err != nil {
-			return nil, fmt.Errorf("store: unmarshal blueprint: %w", err)
-		}
-		out = append(out, b)
-	}
-	return out, rows.Err()
-}
-
-func (p *Postgres) DeleteBlueprint(ctx context.Context, id string, version int) error {
-	res, err := p.db.ExecContext(ctx, `DELETE FROM blueprints WHERE id = $1 AND version = $2`, id, version)
-	if err != nil {
-		return fmt.Errorf("store: delete blueprint %s@%d: %w", id, version, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: delete blueprint rows: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
-	}
-	return nil
 }
 
 // ---- project roles ----

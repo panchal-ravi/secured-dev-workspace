@@ -190,3 +190,28 @@ output "developer_portal_addr" {
   description = "Developer Portal URL (NLB :8443), or null when enable_developer_portal = false. Register this host's /auth/callback as the Verify app redirect URI."
   value       = var.enable_developer_portal ? "https://${module.secured_codespace.nlb_dns_name}:${local.developer_portal_port}" : null
 }
+
+# --- Demo Postgres (see demo-db.tf) ---
+
+output "demo_db_endpoint" {
+  description = "Private endpoint of the demo Postgres (all-in-one node, node-static port), or null when enable_demo_db = false."
+  value       = var.enable_demo_db ? "${module.secured_codespace.instance_private_ip}:${local.demo_db_port}" : null
+}
+
+# The exact connection_url deploy-param the Class A postgres-mcp blueprint asks
+# for ({{username}}/{{password}} are Vault templating, filled per credential).
+output "demo_db_connection_url" {
+  description = "Vault database-engine connection_url for the Class A blueprint deploy form."
+  value       = var.enable_demo_db ? "postgresql://{{username}}:{{password}}@${module.secured_codespace.instance_private_ip}:${local.demo_db_port}/${local.demo_db_name}?sslmode=disable" : null
+}
+
+output "demo_db_admin_user" {
+  description = "Bootstrap admin username for the Class A blueprint deploy form (rotated away by the blueprint on first deploy)."
+  value       = var.enable_demo_db ? local.demo_db_user : null
+}
+
+output "demo_db_admin_password" {
+  description = "Bootstrap admin password (single-use: the Class A blueprint rotates it on deploy)."
+  value       = var.enable_demo_db ? random_password.demo_db_admin[0].result : null
+  sensitive   = true
+}

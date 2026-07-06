@@ -9,8 +9,6 @@ package projectadmin_test
 //	go test -tags live ./internal/projectadmin/ -run TestLiveDeployPostgresMCP -v
 //
 // Preconditions (operator):
-//   - a platform-admin has published the Class A `postgres-mcp` blueprint and bound
-//     its blueprint_ref onto a published `postgres-mcp` server type (B1 admin plane);
 //   - the `portal-blueprint-provisioning` policy (terraform Task 8) is attached to
 //     the portal's WIF role and the onboarding plane is enabled;
 //   - `demo-db` (Postgres) is reachable from the agents node pool;
@@ -18,7 +16,8 @@ package projectadmin_test
 //     `project-admin` role for `project-acme` (RBAC Plan A bootstrap).
 //
 // Steps (spec §6 marquee):
-//  1. acme-admin POST /api/projects/project-acme/mcp-servers {server_type:postgres-mcp}
+//  1. acme-admin POST /api/projects/project-acme/mcp-servers with the full wizard
+//     payload (image/transport/port + the PostgreSQL-preset credential spec + params)
 //     → 201; assert the database engine is mounted in the project namespace and
 //     dynamic creds mint against demo-db.
 //  2. POST …/postgres-mcp/test → consumption-mirror passes (own server 200, decoy +

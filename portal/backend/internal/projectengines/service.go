@@ -11,6 +11,8 @@ package projectengines
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -245,8 +247,13 @@ func (s *Service) provision(ctx context.Context, actor, project string, d descri
 		return s.failf(ctx, actor, project, "boundary.ssh-cert-library", err)
 	}
 
-	// 6. Persist credential_library_id (+ github-configured flag) into the descriptor
-	// + mark ready.
+	// 6. Persist credential_library_id (+ github-configured flag and the non-secret
+	// App coordinates) into the descriptor + mark ready.
+	if githubConfigured {
+		if err := s.setGithubDescriptor(ctx, project, in); err != nil {
+			return s.failf(ctx, actor, project, "descriptor.github", err)
+		}
+	}
 	out, err := s.writeCredentialLibrary(ctx, project, libID, githubConfigured)
 	if err != nil {
 		return s.failf(ctx, actor, project, "descriptor.write", err)
@@ -277,19 +284,24 @@ func (s *Service) SetGitHubCredentials(ctx context.Context, actor string, groups
 		s.record(ctx, actor, project, "error", map[string]any{"step": "github.config"})
 		return err
 	}
-	if err := s.setGithubConfiguredFlag(ctx, project); err != nil {
+	if err := s.setGithubDescriptor(ctx, project, in); err != nil {
 		return err
 	}
 	s.record(ctx, actor, project, "ok", map[string]any{"action": "github-credentials"})
 	return nil
 }
 
-// EngineStatus is the non-secret provisioning state a project-admin sees.
+// EngineStatus is the non-secret provisioning state a project-admin sees. The
+// GitHub App coordinates are echoed back so the Engines form can prefill; the
+// private key is write-only and never part of this.
 type EngineStatus struct {
-	Provisioned         bool   `json:"provisioned"`           // engines stood up + descriptor ready
-	GithubConfigured    bool   `json:"github_configured"`     // GitHub App creds set
-	CredentialLibraryID string `json:"credential_library_id"` // Boundary ssh-cert library
-	Status              string `json:"status"`                // descriptor status (ready|error|provisioning)
+	Provisioned             bool     `json:"provisioned"`       // engines stood up + descriptor ready
+	GithubConfigured        bool     `json:"github_configured"` // GitHub App creds set
+	GithubAppID             int      `json:"github_app_id,omitempty"`
+	GithubAppInstallationID int      `json:"github_app_installation_id,omitempty"`
+	GithubRepositories      []string `json:"github_repositories,omitempty"`
+	CredentialLibraryID     string   `json:"credential_library_id"` // Boundary ssh-cert library
+	Status                  string   `json:"status"`                // descriptor status (ready|error|provisioning)
 }
 
 // Status reports the project's engine-provisioning state from the descriptor.
@@ -306,10 +318,13 @@ func (s *Service) Status(ctx context.Context, groups []string, project string) (
 		return EngineStatus{}, err
 	}
 	return EngineStatus{
-		Provisioned:         d.CredentialLibraryID != "" && pd.Status == store.StatusReady,
-		GithubConfigured:    d.GithubConfigured,
-		CredentialLibraryID: d.CredentialLibraryID,
-		Status:              pd.Status,
+		Provisioned:             d.CredentialLibraryID != "" && pd.Status == store.StatusReady,
+		GithubConfigured:        d.GithubConfigured,
+		GithubAppID:             d.GithubAppID,
+		GithubAppInstallationID: d.GithubAppInstallationID,
+		GithubRepositories:      d.GithubRepositories,
+		CredentialLibraryID:     d.CredentialLibraryID,
+		Status:                  pd.Status,
 	}, nil
 }
 
@@ -359,7 +374,10 @@ func (s *Service) WireMCPServer(ctx context.Context, project, serverName string)
 	if err != nil {
 		return err
 	}
-	peerName := project + "-" + serverName
+	// Same canonical name the deploy plane (projectadmin Test) registers the peer
+	// under: ContextForge dedupes gateways by URL, so a different name here misses
+	// RegisterPeer's by-name reuse and the POST 409s ("Gateway already exists").
+	peerName := "mcp-" + project + "-" + serverName
 	peerID, err := s.gateway.RegisterPeer(ctx, peerName, row.GatewayURL, row.Transport)
 	if err != nil {
 		return fmt.Errorf("register gateway peer: %w", err)
@@ -372,7 +390,18 @@ func (s *Service) WireMCPServer(ctx context.Context, project, serverName string)
 	if err != nil {
 		return fmt.Errorf("create virtual server: %w", err)
 	}
-	token, err := s.gateway.CreateScopedToken(ctx, peerName+"-client", s.cfg.MCPTokenDays, vsID)
+	// ContextForge reserves token names FOREVER (even after revoke — verified
+	// live), so a fixed "<peer>-client" name 400s on any re-wire (e.g. after a
+	// server delete+redeploy). Revoke prior client tokens, then mint under a fresh
+	// random suffix; consumers read the token VALUE from KV, never the name.
+	if err := s.gateway.RevokeTokensByPrefix(ctx, peerName+"-client"); err != nil {
+		return fmt.Errorf("revoke stale client tokens: %w", err)
+	}
+	suffix, err := randHex(4)
+	if err != nil {
+		return err
+	}
+	token, err := s.gateway.CreateScopedToken(ctx, peerName+"-client-"+suffix, s.cfg.MCPTokenDays, vsID)
 	if err != nil {
 		return fmt.Errorf("create scoped token: %w", err)
 	}
@@ -383,6 +412,16 @@ func (s *Service) WireMCPServer(ctx context.Context, project, serverName string)
 		return fmt.Errorf("write mcp kv: %w", err)
 	}
 	return nil
+}
+
+// randHex returns n random bytes hex-encoded (2n chars) — the per-wire token-name
+// suffix that sidesteps ContextForge's forever-reserved token names.
+func randHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // hasGithubCreds reports whether a full GitHub App credential set was supplied.
@@ -397,11 +436,38 @@ func (s *Service) writeGitHubConfig(ctx context.Context, ns string, appID, insta
 		return err
 	}
 	return s.vault.WriteGitHubPermissionSet(ctx, ns, githubMount, githubPermSet, installID,
-		map[string]string{"contents": "write"}, repos)
+		map[string]string{"contents": "write"}, normalizeRepos(repos))
 }
 
-// setGithubConfiguredFlag flips the descriptor's non-secret GithubConfigured flag.
-func (s *Service) setGithubConfiguredFlag(ctx context.Context, project string) error {
+// normalizeRepos reduces each repository entry to the bare repo NAME the GitHub
+// App API expects (the owner is implied by the installation). Accepts what admins
+// naturally paste: full URLs ("https://github.com/owner/repo.git"), "owner/repo",
+// SSH remotes ("git@github.com:owner/repo.git"), or already-bare names. A
+// URL-shaped entry passed through verbatim makes every token mint 422 and blocks
+// workspace startup at the git-token template.
+func normalizeRepos(repos []string) []string {
+	out := make([]string, 0, len(repos))
+	for _, r := range repos {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		r = strings.TrimSuffix(r, "/")
+		r = strings.TrimSuffix(r, ".git")
+		if i := strings.LastIndexAny(r, "/:"); i >= 0 {
+			r = r[i+1:]
+		}
+		if r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// setGithubDescriptor flips the descriptor's non-secret GithubConfigured flag and
+// persists the non-secret App coordinates (app id, installation id, repos) so the
+// Engines page can prefill its form. Never the private key.
+func (s *Service) setGithubDescriptor(ctx context.Context, project string, in ProvisionInput) error {
 	pd, err := s.desc.GetProjectDescriptor(ctx, project)
 	if err != nil {
 		return err
@@ -410,10 +476,12 @@ func (s *Service) setGithubConfiguredFlag(ctx context.Context, project string) e
 	if err != nil {
 		return err
 	}
-	if d.GithubConfigured {
-		return nil
-	}
 	d.GithubConfigured = true
+	d.GithubAppID = in.GithubAppID
+	d.GithubAppInstallationID = in.GithubAppInstallationID
+	// Persist the NORMALIZED names so the Engines form prefill shows what the
+	// permission set actually contains.
+	d.GithubRepositories = normalizeRepos(in.GithubRepositories)
 	js, err := json.Marshal(d)
 	if err != nil {
 		return err
@@ -478,7 +546,9 @@ func workspaceReadPolicies(project string) map[string]string {
 		"nomad-" + project + "-github-token": read("github/token/" + githubPermSet),
 		"nomad-" + project + "-db-creds":     read("database/creds/dev-workspace-ro"),
 		"nomad-" + project + "-llm-read":     read("secret/data/projects/llm"),
-		"nomad-" + project + "-mcp-read":     read("secret/data/projects/mcp"),
+		// MCP wiring is per-server (secret/projects/mcp/<name>, written by
+		// WireMCPServer) — grant the subtree, not just the legacy single blob.
+		"nomad-" + project + "-mcp-read": read("secret/data/projects/mcp") + read("secret/data/projects/mcp/*"),
 	}
 }
 

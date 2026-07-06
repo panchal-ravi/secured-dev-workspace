@@ -18,10 +18,13 @@ type Handlers struct {
 // NewHandlers wraps a Service in its HTTP adapter.
 func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
 
-// Register mounts the project-create route. mutate must apply auth +
-// platform-admin gate + rate limiting (wired in api.NewMux).
-func (h *Handlers) Register(mux *http.ServeMux, mutate func(http.HandlerFunc) http.Handler) {
+// Register mounts the project-create/detail/edit routes. protect applies auth +
+// the platform-admin gate; mutate additionally rate-limits (wired in api.NewMux).
+func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.HandlerFunc) http.Handler) {
 	mux.Handle("POST /api/admin/projects", mutate(h.createProject))
+	mux.Handle("GET /api/admin/projects/{name}", protect(h.getProject))
+	mux.Handle("PUT /api/admin/projects/{name}", mutate(h.updateProject))
+	mux.Handle("DELETE /api/admin/projects/{name}", mutate(h.deleteProject))
 }
 
 func (h *Handlers) createProject(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +39,37 @@ func (h *Handlers) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, d)
+}
+
+func (h *Handlers) getProject(w http.ResponseWriter, r *http.Request) {
+	d, err := h.svc.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+func (h *Handlers) updateProject(w http.ResponseWriter, r *http.Request) {
+	var in UpdateProjectInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
+		return
+	}
+	d, err := h.svc.UpdateProject(r.Context(), actor(r), r.PathValue("name"), in)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+func (h *Handlers) deleteProject(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.DeleteProject(r.Context(), actor(r), r.PathValue("name")); err != nil {
+		fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func actor(r *http.Request) string {

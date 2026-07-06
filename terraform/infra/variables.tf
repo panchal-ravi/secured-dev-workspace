@@ -262,3 +262,9 @@ variable "github_plugin_sha256" {
   type        = string
   default     = "72cb1f2775ee2abf12ffb725e469d0377fe7bbb93cd7aaa6921c141eddecab87"
 }
+
+variable "enable_demo_db" {
+  description = "Deploy the throwaway demo Postgres (Nomad job, infra namespace, node-static :15432) used as the upstream DB for the Class A postgres-mcp blueprint E2E. No persistent volume — data re-seeds on every restart."
+  type        = bool
+  default     = false
+}

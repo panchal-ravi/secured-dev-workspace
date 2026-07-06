@@ -29,18 +29,9 @@ type RenderSpec struct {
 	DynamicPort bool
 }
 
-// Credential is the secret-delivery variant: KV (platform secret_refs) or WIF
-// (blueprint instance in a project namespace).
+// Credential is the secret-delivery variant. Only the project-plane WIF shape
+// remains (the platform KV/token variants retired with the admin MCP plane).
 type Credential interface{ isCredential() }
-
-// KVCredential renders the existing `vault { role } + template { with secret }`
-// path: each env var is read from a Vault KV "path#field" reference.
-type KVCredential struct {
-	VaultRole  string
-	SecretRefs map[string]string // env var -> "path#field"
-}
-
-func (KVCredential) isCredential() {}
 
 // WIFCredential renders a project-namespace WIF binding plus a template of
 // already-rendered env lines (values carry intact {{ }} consul-template directives).
@@ -52,20 +43,7 @@ type WIFCredential struct {
 
 func (WIFCredential) isCredential() {}
 
-// WIFTokenCredential renders a bare `vault { role }` block and no template. Nomad
-// mints a WIF token for the task and auto-injects it as VAULT_TOKEN. Used by the
-// platform reference instance of a Vault-authenticating server (e.g. the Vault MCP
-// server) so its MCP session can open with a powerless self-test token; real
-// capability comes from the project-plane Class C token.
-type WIFTokenCredential struct {
-	VaultRole string
-}
-
-func (WIFTokenCredential) isCredential() {}
-
-// Render builds the Docker-driver Nomad job HCL. The output for a KVCredential is
-// byte-identical to the platform admin's prior renderMCPJobHCL (regression-guarded
-// by the admin golden test).
+// Render builds the Docker-driver Nomad job HCL.
 func Render(s RenderSpec) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
@@ -141,28 +119,6 @@ func Render(s RenderSpec) string {
 
 func renderCredential(w func(string, ...any), c Credential) {
 	switch cred := c.(type) {
-	case WIFTokenCredential:
-		w("\n      vault {\n")
-		w("        role = %q\n", cred.VaultRole)
-		w("      }\n")
-	case KVCredential:
-		if len(cred.SecretRefs) == 0 {
-			return
-		}
-		w("\n      vault {\n")
-		w("        role = %q\n", cred.VaultRole)
-		w("      }\n\n")
-		w("      template {\n")
-		w("        destination = \"secrets/secrets.env\"\n")
-		w("        env         = true\n")
-		w("        change_mode = \"restart\"\n")
-		w("        data        = <<EOH\n")
-		for _, k := range sortedKeys(cred.SecretRefs) {
-			path, field := splitRef(cred.SecretRefs[k])
-			w("{{ with secret %q }}%s={{ .Data.data.%s }}{{ end }}\n", path, k, field)
-		}
-		w("EOH\n")
-		w("      }\n")
 	case WIFCredential:
 		w("\n      vault {\n")
 		w("        namespace = %q\n", cred.VaultNamespace)
@@ -191,13 +147,4 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// splitRef parses a "path#field" Vault KV reference; a missing field defaults to
-// "value".
-func splitRef(ref string) (path, field string) {
-	if i := strings.LastIndex(ref, "#"); i >= 0 {
-		return ref[:i], ref[i+1:]
-	}
-	return ref, "value"
 }

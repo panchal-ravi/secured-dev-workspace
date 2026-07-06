@@ -100,7 +100,7 @@ func NewMux(opts Options) http.Handler {
 		opts.BaseTmpl.Register(mux, adminProtect, adminMutate)
 	}
 	if opts.ProjectCreate != nil {
-		opts.ProjectCreate.Register(mux, adminMutate)
+		opts.ProjectCreate.Register(mux, adminProtect, adminMutate)
 	}
 
 	// Project-role plane (optional): self-service grant/revoke gated on project-admin

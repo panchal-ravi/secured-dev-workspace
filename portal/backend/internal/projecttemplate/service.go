@@ -172,6 +172,7 @@ func (s *Service) Create(ctx context.Context, actor string, groups []string, pro
 	pt := store.ProjectTemplate{
 		Project:        project,
 		Flavor:         flavor,
+		Base:           base,
 		BaseVersion:    bt.Version,
 		Status:         store.StatusReady,
 		RenderedSource: rendered,
@@ -192,6 +193,77 @@ func (s *Service) Create(ctx context.Context, actor string, groups []string, pro
 		return store.ProjectTemplate{}, err
 	}
 	s.record(ctx, actor, project, "project-template.create", flavor, "ok", map[string]any{"base": base, "base_version": bt.Version})
+	return saved, nil
+}
+
+// UpdateInput is a project-admin's edit of an existing template. Empty fields keep
+// their current value. Editing never touches running workspaces — the template row
+// is read at launch time only.
+type UpdateInput struct {
+	GitRepoURL  string `json:"git_repo_url,omitempty"`
+	Label       string `json:"label,omitempty"`
+	Description string `json:"description,omitempty"`
+	NodePool    string `json:"node_pool,omitempty"`
+}
+
+// Update edits a template's metadata and, when the git repo changes, re-bakes the
+// source from the CURRENT published base (picking up its latest version/image) and
+// re-injects the existing add-ons. Label/description/node_pool changes are
+// metadata-only and never disturb the baked source.
+func (s *Service) Update(ctx context.Context, actor string, groups []string, project, flavor string, in UpdateInput) (store.ProjectTemplate, error) {
+	if _, err := s.projects.GetProject(ctx, project, groups); err != nil {
+		return store.ProjectTemplate{}, err
+	}
+	pt, err := s.store.GetProjectTemplate(ctx, project, flavor)
+	if err != nil {
+		return store.ProjectTemplate{}, err
+	}
+
+	newRepo := strings.TrimSpace(in.GitRepoURL)
+	rebaked := newRepo != "" && newRepo != pt.GitRepoURL
+	if rebaked {
+		// Repo is baked into the source (pass-1), so a change means a re-bake from
+		// the base the template derives from — at its current published version.
+		// Rows created before Base was recorded fall back to the flavor key (which
+		// defaulted to the base name).
+		baseName := pt.Base
+		if baseName == "" {
+			baseName = pt.Flavor
+		}
+		bt, err := s.store.GetBaseJobTemplate(ctx, baseName)
+		if err != nil || bt.Status != store.StatusPublished || bt.PublishedSource == "" {
+			return store.ProjectTemplate{}, fmt.Errorf("base template %q is not published — cannot re-bake a repo change: %w", baseName, apperr.ErrBadRequest)
+		}
+		bakedBase := jobrender.RenderPartial(bt.PublishedSource, projectStatic(project, s.cfg, newRepo, bt.Image))
+		rendered := jobtemplate.Inject(bakedBase, pt.Addons)
+		if err := onlyPerWorkspaceLeft(rendered); err != nil {
+			return store.ProjectTemplate{}, err
+		}
+		pt.BakedBase = bakedBase
+		pt.RenderedSource = rendered
+		pt.BaseVersion = bt.Version
+		pt.Image = bt.Image
+		pt.Features = bt.Features
+		pt.GitRepoURL = newRepo
+	}
+	if strings.TrimSpace(in.Label) != "" {
+		pt.Label = in.Label
+	}
+	if strings.TrimSpace(in.Description) != "" {
+		pt.Description = in.Description
+	}
+	if strings.TrimSpace(in.NodePool) != "" {
+		pt.NodePool = in.NodePool
+	}
+
+	saved, err := s.store.UpsertProjectTemplate(ctx, pt)
+	if err != nil {
+		return store.ProjectTemplate{}, err
+	}
+	if err := s.syncDescriptorFlavors(ctx, project); err != nil {
+		return store.ProjectTemplate{}, err
+	}
+	s.record(ctx, actor, project, "project-template.update", flavor, "ok", map[string]any{"repo_rebaked": rebaked})
 	return saved, nil
 }
 

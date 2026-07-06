@@ -37,11 +37,25 @@ type Client interface {
 	// "streamable-http"); the gateway federates using it, so it must match the
 	// server or the registration handshake hangs.
 	RegisterPeer(ctx context.Context, name, url, transport string) (peerID string, err error)
+	// UpdatePeer rewrites an existing peer's upstream URL IN PLACE (PUT — not
+	// delete+create), so the peer keeps its identity: its tool records, any
+	// virtual server bound to them, and the VS's scoped tokens all stay valid.
+	// This is how a moved upstream (new Nomad allocation → new dynamic host
+	// port) is healed without churning workspace-facing URLs or tokens.
+	UpdatePeer(ctx context.Context, peerID, name, url, transport string) error
+	// ActivatePeer re-activates a peer ContextForge deactivated (its health
+	// checker disables a gateway after 3 failed probes — e.g. the window between
+	// an MCP job restart and the peer heal). Activation re-runs the federation
+	// handshake at the stored URL and re-syncs the tool catalog, so the peer's
+	// tools come back under their existing ids. No-op if already active.
+	ActivatePeer(ctx context.Context, peerID string) error
 	// DiscoverTools polls until the gateway has discovered the peer's tools,
 	// returning their ids. Errors if none appear within the discovery window.
 	DiscoverTools(ctx context.Context, peerID string) (toolIDs []string, err error)
-	// CreateVirtualServer composes (or reuses, by name) a virtual server bound to
-	// the given tool ids and returns its id.
+	// CreateVirtualServer composes a virtual server bound to the given tool ids
+	// and returns its id, REPLACING any existing virtual server of the same name:
+	// after a peer delete+redeploy the old one references dead tool ids, so a
+	// reused VS would serve an empty/broken tool set.
 	CreateVirtualServer(ctx context.Context, name, description string, toolIDs []string) (serverID string, err error)
 	// CreateScopedToken mints a DB-backed client token scoped to serverID.
 	CreateScopedToken(ctx context.Context, name string, expiresInDays int, serverID string) (token string, err error)
@@ -53,6 +67,11 @@ type Client interface {
 	ProbeScopedToken(ctx context.Context, token, serverID, otherServerID string) (ScopeProbe, error)
 	// DeleteVirtualServer removes a virtual server (best-effort teardown).
 	DeleteVirtualServer(ctx context.Context, serverID string) error
+	// DeleteVirtualServerByName removes the virtual server of the given name if
+	// one exists (no-op otherwise). Deleting a peer strips its tools from any VS
+	// that referenced them, so a VS left behind still authenticates but serves an
+	// empty tool set — remove it with the server it belonged to.
+	DeleteVirtualServerByName(ctx context.Context, name string) error
 	// DeletePeer removes a peer registration (best-effort teardown).
 	DeletePeer(ctx context.Context, peerID string) error
 }
@@ -86,6 +105,15 @@ const (
 	discoveryAttempts = 30
 	discoveryInterval = 2 * time.Second
 	adminTokenTTL     = 60 * time.Minute
+)
+
+// registerAttempts/registerInterval bound how long RegisterPeer keeps retrying
+// a peer whose container is not listening yet (ContextForge validates the peer
+// synchronously at POST /gateways, and the deploy plane registers right after
+// Nomad places the alloc). Vars, not consts, so tests can shrink the wait.
+var (
+	registerAttempts = 20
+	registerInterval = 3 * time.Second
 )
 
 // httpClient is the concrete ContextForge admin client.
@@ -126,13 +154,70 @@ func (c *httpClient) RegisterPeer(ctx context.Context, name, url, transport stri
 	var created struct {
 		ID string `json:"id"`
 	}
-	if err := c.call(ctx, jwt, http.MethodPost, "/gateways", body, &created); err != nil {
-		return "", err
+	// A just-deployed container is often not yet listening when registration
+	// runs (observed live: "Failed to initialize gateway … All connection
+	// attempts failed" ~1s after placement) — retry that failure for the boot
+	// window; any other error fails fast.
+	var lastErr error
+	for range registerAttempts {
+		lastErr = c.call(ctx, jwt, http.MethodPost, "/gateways", body, &created)
+		if lastErr == nil {
+			if created.ID == "" {
+				return "", fmt.Errorf("mcpgw: gateway returned no peer id for %q", name)
+			}
+			return created.ID, nil
+		}
+		if !strings.Contains(lastErr.Error(), "Failed to initialize gateway") {
+			return "", lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(registerInterval):
+		}
 	}
-	if created.ID == "" {
-		return "", fmt.Errorf("mcpgw: gateway returned no peer id for %q", name)
+	return "", lastErr
+}
+
+func (c *httpClient) UpdatePeer(ctx context.Context, peerID, name, url, transport string) error {
+	jwt, err := c.mintAdminJWT()
+	if err != nil {
+		return err
 	}
-	return created.ID, nil
+	body, _ := json.Marshal(map[string]string{"name": name, "url": url, "transport": cfTransport(transport)})
+	// The gateway re-initializes the federation handshake against the new URL,
+	// and the replacement allocation is often still booting when the update runs
+	// — same boot-window retry as RegisterPeer.
+	var lastErr error
+	for range registerAttempts {
+		lastErr = c.call(ctx, jwt, http.MethodPut, "/gateways/"+peerID, body, nil)
+		if lastErr == nil {
+			return nil
+		}
+		if !strings.Contains(lastErr.Error(), "Failed to initialize gateway") {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(registerInterval):
+		}
+	}
+	return lastErr
+}
+
+func (c *httpClient) ActivatePeer(ctx context.Context, peerID string) error {
+	jwt, err := c.mintAdminJWT()
+	if err != nil {
+		return err
+	}
+	// POST /gateways/{id}/state?activate=true; /toggle is its deprecated alias —
+	// fall back for gateway builds that predate /state.
+	err = c.call(ctx, jwt, http.MethodPost, "/gateways/"+peerID+"/state?activate=true", nil, nil)
+	if err != nil && strings.Contains(err.Error(), "status 404") {
+		err = c.call(ctx, jwt, http.MethodPost, "/gateways/"+peerID+"/toggle?activate=true", nil, nil)
+	}
+	return err
 }
 
 // cfTransport maps the portal transport onto ContextForge's GatewayCreate.transport
@@ -182,10 +267,16 @@ func (c *httpClient) CreateVirtualServer(ctx context.Context, name, description 
 	if err != nil {
 		return "", err
 	}
+	// Replace, don't reuse: an existing VS of this name is a previous wiring whose
+	// tool associations go stale when its peer is deleted (ContextForge strips them
+	// — verified live: a redeployed server's old VS held 0/dead tools). VS names,
+	// unlike token names, are NOT reserved after delete, so recreate converges.
 	if id, err := c.findByName(ctx, jwt, "/servers", name); err != nil {
 		return "", err
 	} else if id != "" {
-		return id, nil
+		if err := c.call(ctx, jwt, http.MethodDelete, "/servers/"+id, nil, nil); err != nil {
+			return "", err
+		}
 	}
 	body, _ := json.Marshal(map[string]any{
 		"server": map[string]any{
@@ -291,6 +382,18 @@ func (c *httpClient) DeleteVirtualServer(ctx context.Context, serverID string) e
 		return err
 	}
 	return c.call(ctx, jwt, http.MethodDelete, "/servers/"+serverID, nil, nil)
+}
+
+func (c *httpClient) DeleteVirtualServerByName(ctx context.Context, name string) error {
+	jwt, err := c.mintAdminJWT()
+	if err != nil {
+		return err
+	}
+	id, err := c.findByName(ctx, jwt, "/servers", name)
+	if err != nil || id == "" {
+		return err
+	}
+	return c.call(ctx, jwt, http.MethodDelete, "/servers/"+id, nil, nil)
 }
 
 func (c *httpClient) DeletePeer(ctx context.Context, peerID string) error {

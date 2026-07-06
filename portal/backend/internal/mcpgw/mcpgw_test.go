@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeGateway is a minimal in-memory ContextForge stand-in covering exactly the
@@ -212,6 +213,136 @@ func TestOnboardingFlow(t *testing.T) {
 	}
 	if err := c.DeletePeer(ctx, peerID); err != nil {
 		t.Fatalf("DeletePeer: %v", err)
+	}
+}
+
+// TestRegisterPeer_RetriesWhileContainerBoots pins the deploy-time race: the
+// portal registers the peer right after Nomad places the alloc, and ContextForge
+// validates the peer synchronously — a container not yet listening returns 502
+// "Failed to initialize gateway" (observed live). RegisterPeer must retry that
+// failure through the boot window, and fail fast on anything else.
+func TestRegisterPeer_RetriesWhileContainerBoots(t *testing.T) {
+	oldInterval := registerInterval
+	registerInterval = 5 * time.Millisecond
+	defer func() { registerInterval = oldInterval }()
+
+	gw := newFakeGateway()
+	failures := 3
+	posts := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /gateways", func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		if posts <= failures {
+			writeJSON(w, 502, map[string]string{"message": "Failed to initialize gateway at http://node:9000/mcp: All connection attempts failed"})
+			return
+		}
+		gw.handler().ServeHTTP(w, r)
+	})
+	mux.Handle("/", gw.handler())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin@acme.example", "test-secret", srv.Client())
+	id, err := c.RegisterPeer(context.Background(), "boot-mcp", "http://node:9000/mcp", "sse")
+	if err != nil || id == "" {
+		t.Fatalf("RegisterPeer must survive the boot window: id=%q err=%v", id, err)
+	}
+	if posts != failures+1 {
+		t.Fatalf("attempts = %d, want %d", posts, failures+1)
+	}
+
+	// A non-init failure (e.g. a 400) must not retry.
+	posts = 0
+	mux2 := http.NewServeMux()
+	mux2.HandleFunc("POST /gateways", func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		writeJSON(w, 400, map[string]string{"message": "Invalid request"})
+	})
+	mux2.Handle("/", newFakeGateway().handler())
+	srv2 := httptest.NewServer(mux2)
+	defer srv2.Close()
+	c2 := New(srv2.URL, "admin@acme.example", "test-secret", srv2.Client())
+	if _, err := c2.RegisterPeer(context.Background(), "bad-mcp", "http://node:9000/mcp", "sse"); err == nil {
+		t.Fatal("400 must fail")
+	}
+	if posts != 1 {
+		t.Fatalf("400 must not retry: attempts = %d", posts)
+	}
+}
+
+// TestActivatePeer_StateWithToggleFallback pins the reactivation contract:
+// ContextForge deactivates a peer after 3 failed health checks (observed live in
+// the window between an MCP job restart and the peer heal), and reactivation is
+// POST /gateways/{id}/state?activate=true — with the deprecated /toggle alias as
+// the fallback for gateway builds that predate /state (404 there, nowhere else).
+func TestActivatePeer_StateWithToggleFallback(t *testing.T) {
+	var statePath, togglePath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /gateways/peer-1/state", func(w http.ResponseWriter, r *http.Request) {
+		statePath = r.URL.RawQuery
+		writeJSON(w, 200, map[string]string{"status": "success"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := New(srv.URL, "admin@acme.example", "test-secret", srv.Client())
+	if err := c.ActivatePeer(context.Background(), "peer-1"); err != nil {
+		t.Fatalf("ActivatePeer: %v", err)
+	}
+	if statePath != "activate=true" {
+		t.Errorf("state query = %q, want activate=true", statePath)
+	}
+
+	// Older gateway: /state is 404 — must fall back to the deprecated /toggle.
+	mux2 := http.NewServeMux()
+	mux2.HandleFunc("POST /gateways/peer-1/toggle", func(w http.ResponseWriter, r *http.Request) {
+		togglePath = r.URL.RawQuery
+		writeJSON(w, 200, map[string]string{"status": "success"})
+	})
+	srv2 := httptest.NewServer(mux2)
+	defer srv2.Close()
+	c2 := New(srv2.URL, "admin@acme.example", "test-secret", srv2.Client())
+	if err := c2.ActivatePeer(context.Background(), "peer-1"); err != nil {
+		t.Fatalf("ActivatePeer via /toggle fallback: %v", err)
+	}
+	if togglePath != "activate=true" {
+		t.Errorf("toggle query = %q, want activate=true", togglePath)
+	}
+}
+
+// TestCreateVirtualServer_ReplacesExistingByName pins the re-wire contract: after
+// a peer delete+redeploy the old virtual server of the same name references dead
+// tool ids (verified live), so CreateVirtualServer must REPLACE it — delete the
+// stale one and compose a fresh VS from the new tool set — not reuse it.
+func TestCreateVirtualServer_ReplacesExistingByName(t *testing.T) {
+	gw := newFakeGateway()
+	srv := httptest.NewServer(gw.handler())
+	defer srv.Close()
+
+	c := New(srv.URL, "admin@acme.example", "test-secret", srv.Client())
+	ctx := context.Background()
+
+	id1, err := c.CreateVirtualServer(ctx, "mcp-acme-vault", "old wiring", []string{"tool-old"})
+	if err != nil {
+		t.Fatalf("CreateVirtualServer (first): %v", err)
+	}
+	id2, err := c.CreateVirtualServer(ctx, "mcp-acme-vault", "re-wire", []string{"tool-new"})
+	if err != nil {
+		t.Fatalf("CreateVirtualServer (re-wire): %v", err)
+	}
+	if id2 == id1 {
+		t.Fatalf("re-wire reused stale virtual server %s; want a fresh one", id1)
+	}
+	if _, stale := gw.servers[id1]; stale {
+		t.Fatalf("stale virtual server %s not deleted", id1)
+	}
+	count := 0
+	for _, n := range gw.servers {
+		if n == "mcp-acme-vault" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%d virtual servers named mcp-acme-vault, want exactly 1", count)
 	}
 }
 

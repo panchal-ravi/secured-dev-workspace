@@ -90,6 +90,52 @@ func TestCreate_MembershipEnforced(t *testing.T) {
 	}
 }
 
+// Update: metadata-only edits keep the baked source; a repo change re-bakes from
+// the current published base preserving add-ons; running workspaces are untouched
+// (launch reads the template row at launch time).
+func TestUpdate_MetadataAndRepoRebake(t *testing.T) {
+	st, svc := seed(t)
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, "admin@x", nil, "project-beta", CreateInput{Base: "dev-workspace", GitRepoURL: "https://github.com/x/old"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Metadata-only: label/node_pool change, source untouched.
+	before, _ := st.GetProjectTemplate(ctx, "project-beta", "dev-workspace")
+	pt, err := svc.Update(ctx, "admin@x", nil, "project-beta", "dev-workspace", UpdateInput{Label: "Renamed", NodePool: "gpu"})
+	if err != nil {
+		t.Fatalf("Update (metadata): %v", err)
+	}
+	if pt.Label != "Renamed" || pt.NodePool != "gpu" {
+		t.Fatalf("metadata not updated: %+v", pt)
+	}
+	if pt.RenderedSource != before.RenderedSource {
+		t.Fatalf("metadata-only update must not re-bake the source")
+	}
+
+	// Repo change: re-baked with the new URL, descriptor flavors resynced.
+	pt, err = svc.Update(ctx, "admin@x", nil, "project-beta", "dev-workspace", UpdateInput{GitRepoURL: "https://github.com/x/new"})
+	if err != nil {
+		t.Fatalf("Update (repo): %v", err)
+	}
+	if !strings.Contains(pt.RenderedSource, `repo="https://github.com/x/new"`) {
+		t.Fatalf("repo not re-baked into source: %s", pt.RenderedSource)
+	}
+	if pt.Label != "Renamed" {
+		t.Fatalf("earlier metadata lost on re-bake: %+v", pt)
+	}
+	pd, _ := st.GetProjectDescriptor(ctx, "project-beta")
+	d, _ := descriptor.Parse(string(pd.Descriptor))
+	if len(d.Flavors) != 1 || d.Flavors[0].GitRepoURL != "https://github.com/x/new" || d.Flavors[0].NodePool != "gpu" {
+		t.Fatalf("descriptor flavors not resynced: %+v", d.Flavors)
+	}
+
+	// Unknown flavor → not found.
+	if _, err := svc.Update(ctx, "admin@x", nil, "project-beta", "nope", UpdateInput{Label: "x"}); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("unknown flavor: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestDelete_ResyncsFlavors(t *testing.T) {
 	st, svc := seed(t)
 	ctx := context.Background()

@@ -1,9 +1,0 @@
-{
-  "id": "vault-mcp",
-  "version": 1,
-  "class": "C",
-  "description": "HashiCorp Vault MCP server — VAULT_TOKEN is itself the WIF-minted credential.",
-  "policy_tpl": "path \"{{.Mount}}/data/projects/*\" {\n  capabilities = [\"read\"]\n}\n",
-  "wif_role": { "name_tpl": "mcp-vault-mcp", "token_ttl": "1h" },
-  "params": []
-}

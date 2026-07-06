@@ -16,29 +16,6 @@ func baseSpec() RenderSpec {
 	}
 }
 
-func TestRenderKVCredential(t *testing.T) {
-	s := baseSpec()
-	s.Credential = KVCredential{VaultRole: "mcp-job", SecretRefs: map[string]string{"API_KEY": "infra/mcp-servers/demo#key"}}
-	hcl := Render(s)
-	for _, want := range []string{
-		`job "mcp-demo" {`,
-		`namespace   = "infra-mcp"`,
-		`static = 9100`,
-		`image      = "img:1"`,
-		`vault {`,
-		`role = "mcp-job"`,
-		`{{ with secret "infra/mcp-servers/demo" }}API_KEY={{ .Data.data.key }}{{ end }}`,
-		`"mcp.server=demo",`,
-	} {
-		if !strings.Contains(hcl, want) {
-			t.Fatalf("KV render missing %q in:\n%s", want, hcl)
-		}
-	}
-	if strings.Contains(hcl, "namespace =") && strings.Contains(hcl, "vault {\n        namespace") {
-		t.Fatalf("KV render must not emit a vault namespace")
-	}
-}
-
 func TestRenderWIFCredential(t *testing.T) {
 	s := baseSpec()
 	s.Credential = WIFCredential{

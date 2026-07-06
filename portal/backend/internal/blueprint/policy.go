@@ -55,6 +55,14 @@ func LintPolicy(rendered string, allowedMountPrefixes []string) error {
 	// 2. Security lint.
 	for _, pr := range paths {
 		p := strings.TrimPrefix(pr.path, "/")
+		if p == sysMountsPath {
+			for _, c := range pr.caps {
+				if c != "read" {
+					return fmt.Errorf("blueprint: policy path %q permits only the read capability: %w", p, apperr.ErrForbidden)
+				}
+			}
+			continue
+		}
 		if err := lintPathPrefix(p); err != nil {
 			return err
 		}
@@ -100,6 +108,15 @@ var safeGrantCaps = map[string]bool{
 	"read": true, "list": true, "create": true, "update": true, "delete": true,
 }
 
+// sysMountsPath is the single carve-out from the sys/ deny — in both LintPolicy
+// and RenderGrants: the EXACT sys/mounts path, read-only. Inside a project's Vault
+// namespace the endpoint is namespace-relative — it lists only the project's own
+// mounts — and the official vault-mcp-server requires it to detect KV versions
+// before any kv read, so DeriveCredentialPolicy bakes it into every wif-token
+// baseline. Subpaths (sys/mounts/<mount> is where mount create/delete/tune live)
+// and every other capability stay denied.
+const sysMountsPath = "sys/mounts"
+
 // RenderGrants validates project-admin-supplied path grants and returns the HCL path
 // blocks to append to a generated policy. Each grant is checked with lintPathPrefix
 // (no traversal/control-plane/root-glob) and every capability must be in
@@ -112,7 +129,13 @@ func RenderGrants(grants []PathGrant) (string, error) {
 		if p == "" {
 			return "", fmt.Errorf("blueprint: grant path is empty: %w", apperr.ErrBadRequest)
 		}
-		if err := lintPathPrefix(p); err != nil {
+		if p == sysMountsPath {
+			for _, c := range g.Capabilities {
+				if c != "read" {
+					return "", fmt.Errorf("blueprint: grant %q permits only the read capability: %w", p, apperr.ErrForbidden)
+				}
+			}
+		} else if err := lintPathPrefix(p); err != nil {
 			return "", err
 		}
 		if len(g.Capabilities) == 0 {

@@ -24,6 +24,7 @@ func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.Handle
 	mux.Handle("GET /api/projects/{name}/base-templates", protect(h.ListBase))
 	mux.Handle("GET /api/projects/{name}/templates", protect(h.List))
 	mux.Handle("POST /api/projects/{name}/templates", mutate(h.Create))
+	mux.Handle("PUT /api/projects/{name}/templates/{flavor}", mutate(h.Update))
 	mux.Handle("PUT /api/projects/{name}/templates/{flavor}/addons", mutate(h.SetAddons))
 	mux.Handle("DELETE /api/projects/{name}/templates/{flavor}", mutate(h.Delete))
 }
@@ -61,6 +62,21 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, pt)
+}
+
+func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
+	var in UpdateInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
+		return
+	}
+	u, _ := auth.UserFrom(r.Context())
+	pt, err := h.svc.Update(r.Context(), u.Email, u.Groups, r.PathValue("name"), r.PathValue("flavor"), in)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pt)
 }
 
 func (h *Handlers) SetAddons(w http.ResponseWriter, r *http.Request) {

@@ -9,15 +9,13 @@ import Home from './pages/Home'
 import Projects from './pages/Projects'
 import ProjectPage from './pages/Project'
 import Workspaces from './pages/Workspaces'
-import McpServers from './pages/platformadmin/McpServers'
 import LlmModels from './pages/platformadmin/LlmModels'
-import Blueprints from './pages/platformadmin/Blueprints'
 import BaseTemplates from './pages/platformadmin/BaseTemplates'
 import AdminProjects from './pages/platformadmin/Projects'
 import Members from './pages/projectadmin/Members'
 import ProjectMcpServers from './pages/projectadmin/McpServers'
 import ProjectTemplates from './pages/projectadmin/Templates'
-import ProjectEngines from './pages/projectadmin/Engines'
+import GithubAccess from './pages/projectadmin/GithubAccess'
 
 type ThemeName = 'white' | 'g100'
 
@@ -78,14 +76,12 @@ export default function App() {
           <Route path="/projects/:name" element={<ProjectPage />} />
           <Route path="/workspaces" element={<Workspaces />} />
           {isPlatformAdmin(me) && <Route path="/admin/projects" element={<AdminProjects />} />}
-          {isPlatformAdmin(me) && <Route path="/admin/mcp-servers" element={<McpServers />} />}
           {isPlatformAdmin(me) && <Route path="/admin/llm-models" element={<LlmModels />} />}
-          {isPlatformAdmin(me) && <Route path="/admin/blueprints" element={<Blueprints />} />}
           {isPlatformAdmin(me) && <Route path="/admin/base-templates" element={<BaseTemplates />} />}
           <Route path="/projects/:name/members" element={<Members />} />
           <Route path="/projects/:name/mcp-servers" element={<ProjectMcpServers />} />
           <Route path="/projects/:name/templates" element={<ProjectTemplates />} />
-          <Route path="/projects/:name/engines" element={<ProjectEngines />} />
+          <Route path="/projects/:name/github" element={<GithubAccess />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </main>

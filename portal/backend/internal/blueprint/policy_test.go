@@ -25,7 +25,9 @@ func TestLintPolicy_AcceptsNamespaceLocalRead(t *testing.T) {
 
 func TestLintPolicy_RejectsEscapes(t *testing.T) {
 	cases := map[string]string{
-		"sys":              `path "sys/mounts" { capabilities = ["read"] }`,
+		"sys":              `path "sys/policies/acl/x" { capabilities = ["read"] }`,
+		"sys-mounts-write": `path "sys/mounts" { capabilities = ["read","update"] }`,
+		"sys-mounts-sub":   `path "sys/mounts/secret" { capabilities = ["read"] }`,
 		"auth":             `path "auth/token/create" { capabilities = ["create","update"] }`,
 		"identity":         `path "identity/entity" { capabilities = ["read"] }`,
 		"cubbyhole":        `path "cubbyhole/x" { capabilities = ["read"] }`,
@@ -39,6 +41,17 @@ func TestLintPolicy_RejectsEscapes(t *testing.T) {
 		if err := LintPolicy(p, []string{"database/acme/"}); err == nil {
 			t.Errorf("%s: expected rejection, got nil", name)
 		}
+	}
+}
+
+// LintPolicy shares the sys/mounts carve-out with RenderGrants: the derived
+// wif-token baseline carries "sys/mounts read" and must pass the lint even though
+// sys/ is otherwise denied and the path is outside the mount allowlist.
+func TestLintPolicy_SysMountsReadOnlyCarveOut(t *testing.T) {
+	p := `path "secret/data/projects/x" { capabilities = ["read"] }
+path "sys/mounts" { capabilities = ["read"] }`
+	if err := LintPolicy(p, []string{"secret/data/projects/"}); err != nil {
+		t.Fatalf("sys/mounts read must pass the lint: %v", err)
 	}
 }
 
@@ -84,18 +97,36 @@ func TestRenderGrants_AcceptsNamespaceLocalWrite(t *testing.T) {
 	}
 }
 
+// The one sys/ carve-out: exact sys/mounts, read only. Namespace-relative (a
+// project token sees only its own mounts) and required by vault-mcp-server's KV
+// version detection. Anything beyond exact-path + read stays denied.
+func TestRenderGrants_SysMountsReadOnlyCarveOut(t *testing.T) {
+	out, err := RenderGrants([]PathGrant{{Path: "sys/mounts", Capabilities: []string{"read"}}})
+	if err != nil {
+		t.Fatalf("sys/mounts read must be grantable: %v", err)
+	}
+	if !strings.Contains(out, `path "sys/mounts"`) || !strings.Contains(out, `"read"`) {
+		t.Fatalf("carve-out not rendered: %s", out)
+	}
+}
+
 func TestRenderGrants_Rejects(t *testing.T) {
 	cases := map[string]PathGrant{
-		"sys":        {Path: "sys/mounts", Capabilities: []string{"read"}},
-		"auth":       {Path: "auth/token/create", Capabilities: []string{"create"}},
-		"identity":   {Path: "identity/entity", Capabilities: []string{"read"}},
-		"cubbyhole":  {Path: "cubbyhole/x", Capabilities: []string{"read"}},
-		"traversal":  {Path: "secret/../sys/mounts", Capabilities: []string{"read"}},
-		"root-glob":  {Path: "*", Capabilities: []string{"read"}},
-		"sudo-cap":   {Path: "pki/acme/issue/web", Capabilities: []string{"read", "sudo"}},
-		"bogus-cap":  {Path: "pki/acme/issue/web", Capabilities: []string{"frobnicate"}},
-		"empty-path": {Path: "  ", Capabilities: []string{"read"}},
-		"no-caps":    {Path: "pki/acme/issue/web", Capabilities: nil},
+		"sys":                {Path: "sys/policies/acl/x", Capabilities: []string{"read"}},
+		"sys-mounts-list":    {Path: "sys/mounts", Capabilities: []string{"read", "list"}},
+		"sys-mounts-write":   {Path: "sys/mounts", Capabilities: []string{"update"}},
+		"sys-mounts-subpath": {Path: "sys/mounts/secret", Capabilities: []string{"read"}},
+		"sys-mounts-glob":    {Path: "sys/mounts*", Capabilities: []string{"read"}},
+		"sys-mounts-no-caps": {Path: "sys/mounts", Capabilities: nil},
+		"auth":               {Path: "auth/token/create", Capabilities: []string{"create"}},
+		"identity":           {Path: "identity/entity", Capabilities: []string{"read"}},
+		"cubbyhole":          {Path: "cubbyhole/x", Capabilities: []string{"read"}},
+		"traversal":          {Path: "secret/../sys/mounts", Capabilities: []string{"read"}},
+		"root-glob":          {Path: "*", Capabilities: []string{"read"}},
+		"sudo-cap":           {Path: "pki/acme/issue/web", Capabilities: []string{"read", "sudo"}},
+		"bogus-cap":          {Path: "pki/acme/issue/web", Capabilities: []string{"frobnicate"}},
+		"empty-path":         {Path: "  ", Capabilities: []string{"read"}},
+		"no-caps":            {Path: "pki/acme/issue/web", Capabilities: nil},
 	}
 	for name, g := range cases {
 		if _, err := RenderGrants([]PathGrant{g}); err == nil {

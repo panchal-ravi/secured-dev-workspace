@@ -42,6 +42,9 @@ resource "vault_policy" "infra_platform_admin" {
     path "${vault_mount.kv.path}/data/infra/llm-providers/*" {
       capabilities = ["create", "update", "read"]
     }
+    # ORPHANED (Phase F): the platform MCP publish plane that wrote
+    # infra/mcp-servers/* descriptors was retired (MCP is project-owned now).
+    # Kept to avoid a needless policy churn; safe to remove on next cleanup.
     path "${vault_mount.kv.path}/data/infra/mcp-servers/*" {
       capabilities = ["create", "update", "read"]
     }

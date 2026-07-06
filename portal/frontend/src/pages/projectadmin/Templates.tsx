@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
-  Button, InlineNotification, Loading, Modal, Select, SelectItem, TextInput, Tag, Checkbox,
+  Button, InlineNotification, Loading, Modal, Select, SelectItem, TextInput, Tag, Checkbox, Stack,
   Table, TableBody, TableCell, TableContainer, TableHead, TableHeader, TableRow,
 } from '@carbon/react'
 import { Add, TrashCan } from '@carbon/icons-react'
 import {
   listProjectTemplates, listProjectBaseTemplates, createProjectTemplate, deleteProjectTemplate,
-  updateTemplateAddons, listProjectMcp,
-  BaseOption, ProjectTemplate, CreateProjectTemplateInput, AddonEngine, ProjectMcpServer,
+  updateProjectTemplate, updateTemplateAddons, listProjectMcp,
+  BaseOption, ProjectTemplate, CreateProjectTemplateInput, UpdateProjectTemplateInput,
+  AddonEngine, ProjectMcpServer,
 } from '../../api/client'
 
 // engineRow is the flattened editor shape (one secret file per engine row keeps the
@@ -35,6 +36,10 @@ export default function Templates() {
   const [addonsFor, setAddonsFor] = useState<ProjectTemplate | null>(null)
   const [mcpSel, setMcpSel] = useState<string[]>([])
   const [engineRows, setEngineRows] = useState<engineRow[]>([])
+  // Detail + edit state (per flavor).
+  const [detailFor, setDetailFor] = useState<ProjectTemplate | null>(null)
+  const [editFor, setEditFor] = useState<ProjectTemplate | null>(null)
+  const [editForm, setEditForm] = useState<UpdateProjectTemplateInput>({})
 
   const selectedBase = bases.find((b) => b.name === form.base)
 
@@ -81,6 +86,22 @@ export default function Templates() {
         git_repo_url: form.git_repo_url.trim(),
       }).then(() => setModalOpen(false)),
     )
+
+  const openEdit = (t: ProjectTemplate) => {
+    setEditFor(t)
+    setEditForm({
+      git_repo_url: t.git_repo_url || '',
+      label: t.label || '',
+      description: t.description || '',
+      node_pool: t.node_pool || '',
+    })
+    setErr('')
+  }
+
+  const saveEdit = () => {
+    if (!editFor) return
+    run('edit', () => updateProjectTemplate(name, editFor.flavor, editForm).then(() => setEditFor(null)))
+  }
 
   const openAddons = (t: ProjectTemplate) => {
     setAddonsFor(t)
@@ -170,6 +191,12 @@ export default function Templates() {
                     </Button>
                   </TableCell>
                   <TableCell>
+                    <Button size="sm" kind="ghost" onClick={() => setDetailFor(t)}>
+                      Details
+                    </Button>
+                    <Button size="sm" kind="ghost" onClick={() => openEdit(t)}>
+                      Edit
+                    </Button>
                     <Button
                       size="sm"
                       kind="danger--ghost"
@@ -196,48 +223,46 @@ export default function Templates() {
         onRequestClose={() => setModalOpen(false)}
         onRequestSubmit={submit}
       >
-        <Select
-          id="base"
-          labelText="Base template"
-          value={form.base}
-          onChange={(e) => {
-            const b = bases.find((x) => x.name === e.target.value)
-            setForm((f) => ({ ...f, base: e.target.value, node_pool: b?.default_node_pool }))
-          }}
-        >
-          {bases.map((b) => (
-            <SelectItem key={b.name} value={b.name} text={`${b.label || b.name} (v${b.version})`} />
-          ))}
-        </Select>
-        <TextInput
-          id="flavor"
-          labelText="Flavor name (optional; defaults to the base name)"
-          style={{ marginTop: '1rem' }}
-          value={form.flavor || ''}
-          onChange={(e) => setForm((f) => ({ ...f, flavor: e.target.value }))}
-        />
-        <TextInput
-          id="image"
-          labelText="Workspace image (fixed by the base template)"
-          readOnly
-          value={selectedBase?.image || ''}
-          style={{ marginTop: '1rem' }}
-        />
-        <TextInput
-          id="git_repo_url"
-          labelText="Git repo URL"
-          placeholder="https://github.com/org/repo.git"
-          style={{ marginTop: '1rem' }}
-          value={form.git_repo_url}
-          onChange={(e) => setForm((f) => ({ ...f, git_repo_url: e.target.value }))}
-        />
-        <TextInput
-          id="node_pool"
-          labelText="Node pool (optional)"
-          style={{ marginTop: '1rem' }}
-          value={form.node_pool || ''}
-          onChange={(e) => setForm((f) => ({ ...f, node_pool: e.target.value }))}
-        />
+        <Stack gap={5}>
+          <Select
+            id="base"
+            labelText="Base template"
+            value={form.base}
+            onChange={(e) => {
+              const b = bases.find((x) => x.name === e.target.value)
+              setForm((f) => ({ ...f, base: e.target.value, node_pool: b?.default_node_pool }))
+            }}
+          >
+            {bases.map((b) => (
+              <SelectItem key={b.name} value={b.name} text={`${b.label || b.name} (v${b.version})`} />
+            ))}
+          </Select>
+          <TextInput
+            id="flavor"
+            labelText="Flavor name (optional; defaults to the base name)"
+            value={form.flavor || ''}
+            onChange={(e) => setForm((f) => ({ ...f, flavor: e.target.value }))}
+          />
+          <TextInput
+            id="image"
+            labelText="Workspace image (fixed by the base template)"
+            readOnly
+            value={selectedBase?.image || ''}
+          />
+          <TextInput
+            id="git_repo_url"
+            labelText="Git repo URL"
+            placeholder="https://github.com/org/repo.git"
+            value={form.git_repo_url}
+            onChange={(e) => setForm((f) => ({ ...f, git_repo_url: e.target.value }))}
+          />
+          <TextInput
+            id="node_pool"
+            labelText="Node pool (optional)"
+            value={form.node_pool || ''}
+            onChange={(e) => setForm((f) => ({ ...f, node_pool: e.target.value }))}
+          />
+        </Stack>
       </Modal>
 
       <Modal
@@ -327,6 +352,86 @@ export default function Templates() {
         >
           Add engine
         </Button>
+      </Modal>
+
+      <Modal
+        open={detailFor !== null}
+        passiveModal
+        size="lg"
+        modalHeading={`Template — ${detailFor?.flavor || ''}`}
+        modalLabel={name}
+        onRequestClose={() => setDetailFor(null)}
+      >
+        {detailFor && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.375rem 1.5rem', marginBottom: '1rem' }}>
+              <strong>Label</strong> <span>{detailFor.label || '—'}</span>
+              <strong>Description</strong> <span>{detailFor.description || '—'}</span>
+              <strong>Base</strong> <span>{detailFor.base || detailFor.flavor} <Tag type="blue">v{detailFor.base_version}</Tag></span>
+              <strong>Image</strong> <span>{detailFor.image}</span>
+              <strong>Git repo</strong> <span>{detailFor.git_repo_url}</span>
+              <strong>Node pool</strong> <span>{detailFor.node_pool || 'default'}</span>
+              <strong>Add-ons</strong>{' '}
+              <span>
+                {detailFor.addons?.mcp_servers?.join(', ') || 'none'}
+                {(detailFor.addons?.engines?.length || 0) > 0 && ` + ${detailFor.addons?.engines?.length} engine(s)`}
+              </span>
+              <strong>Created</strong> <span>{detailFor.created_by} · {new Date(detailFor.created_at).toLocaleString()}</span>
+            </div>
+            <h4 style={{ marginBottom: '0.5rem' }}>Rendered job source (pass-1 baked; per-workspace tokens fill at launch)</h4>
+            <pre
+              style={{
+                maxHeight: '20rem', overflow: 'auto', padding: '0.75rem',
+                background: 'var(--cds-layer-01)', fontSize: '0.75rem', lineHeight: 1.4,
+              }}
+            >
+              {detailFor.rendered_source}
+            </pre>
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        open={editFor !== null}
+        modalHeading={`Edit template — ${editFor?.flavor || ''}`}
+        modalLabel={name}
+        primaryButtonText={busy === 'edit' ? 'Saving…' : 'Save'}
+        secondaryButtonText="Cancel"
+        primaryButtonDisabled={busy === 'edit'}
+        onRequestClose={() => setEditFor(null)}
+        onRequestSubmit={saveEdit}
+      >
+        <p style={{ color: 'var(--cds-text-secondary)', marginBottom: '1rem' }}>
+          Changes apply to future workspace launches only — running workspaces are never
+          touched. Changing the git repo re-bakes the template from the current published
+          base (picking up its latest version and image).
+        </p>
+        <Stack gap={5}>
+          <TextInput
+            id="edit-repo"
+            labelText="Git repo URL"
+            value={editForm.git_repo_url || ''}
+            onChange={(e) => setEditForm((f) => ({ ...f, git_repo_url: e.target.value }))}
+          />
+          <TextInput
+            id="edit-label"
+            labelText="Label"
+            value={editForm.label || ''}
+            onChange={(e) => setEditForm((f) => ({ ...f, label: e.target.value }))}
+          />
+          <TextInput
+            id="edit-desc"
+            labelText="Description"
+            value={editForm.description || ''}
+            onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+          />
+          <TextInput
+            id="edit-pool"
+            labelText="Node pool"
+            value={editForm.node_pool || ''}
+            onChange={(e) => setEditForm((f) => ({ ...f, node_pool: e.target.value }))}
+          />
+        </Stack>
       </Modal>
     </div>
   )

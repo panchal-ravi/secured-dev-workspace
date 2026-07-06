@@ -47,6 +47,73 @@ func (n *Nomad) CreateNamespace(name, description string) error {
 	return nil
 }
 
+// DeleteNamespace removes a Nomad namespace. Every job in it must already be
+// purged (Nomad refuses to delete a namespace with non-terminal jobs).
+func (n *Nomad) DeleteNamespace(name string) error {
+	if _, err := n.c.Namespaces().Delete(name, nil); err != nil {
+		return fmt.Errorf("nomad: delete namespace %q: %w", name, err)
+	}
+	return nil
+}
+
+// ListJobIDs returns the IDs of every job registered in namespace.
+func (n *Nomad) ListJobIDs(namespace string) ([]string, error) {
+	stubs, _, err := n.c.Jobs().List(&napi.QueryOptions{Namespace: namespace})
+	if err != nil {
+		return nil, fmt.Errorf("nomad: list jobs in %q: %w", namespace, err)
+	}
+	ids := make([]string, 0, len(stubs))
+	for _, s := range stubs {
+		ids = append(ids, s.ID)
+	}
+	return ids, nil
+}
+
+// ListHostVolumeNames returns the names of every dynamic host volume in
+// namespace. Used by project delete to sweep workspace home volumes BEFORE the
+// namespace is removed — Nomad happily deletes a namespace that still holds
+// volumes, which then become undeletable orphans ("namespace does not exist").
+func (n *Nomad) ListHostVolumeNames(namespace string) ([]string, error) {
+	vols, _, err := n.c.HostVolumes().List(&napi.HostVolumeListRequest{}, &napi.QueryOptions{Namespace: namespace})
+	if err != nil {
+		return nil, fmt.Errorf("nomad: list host volumes in %q: %w", namespace, err)
+	}
+	names := make([]string, 0, len(vols))
+	for _, v := range vols {
+		names = append(names, v.Name)
+	}
+	return names, nil
+}
+
+// DeleteACLPolicy removes an ACL policy by name.
+func (n *Nomad) DeleteACLPolicy(name string) error {
+	if _, err := n.c.ACLPolicies().Delete(name, nil); err != nil {
+		return fmt.Errorf("nomad: delete acl policy %q: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteBindingRulesForPolicy removes every OIDC binding rule that binds the
+// given policy name (the inverse of CreateBindingRule). No-op when none match.
+func (n *Nomad) DeleteBindingRulesForPolicy(bindName string) error {
+	stubs, _, err := n.c.ACLBindingRules().List(nil)
+	if err != nil {
+		return fmt.Errorf("nomad: list binding rules: %w", err)
+	}
+	for _, s := range stubs {
+		r, _, err := n.c.ACLBindingRules().Get(s.ID, nil)
+		if err != nil {
+			return fmt.Errorf("nomad: get binding rule %q: %w", s.ID, err)
+		}
+		if r.BindName == bindName {
+			if _, err := n.c.ACLBindingRules().Delete(s.ID, nil); err != nil {
+				return fmt.Errorf("nomad: delete binding rule %q: %w", s.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
 // UpsertACLPolicy creates or replaces an ACL policy (upsert semantics).
 func (n *Nomad) UpsertACLPolicy(name, description, rulesHCL string) error {
 	_, err := n.c.ACLPolicies().Upsert(&napi.ACLPolicy{Name: name, Description: description, Rules: rulesHCL}, nil)
@@ -189,11 +256,18 @@ func (n *Nomad) ResolvePlacementIP(namespace, jobID string) (string, error) {
 	return ip, err
 }
 
-// ResolvePlacement waits for the job's first allocation to be placed and returns the
-// node's private IP plus the host port assigned to the "http" label. For a static
-// port the assigned value equals the declared port; for a Nomad-assigned dynamic
-// port (project-plane MCP jobs) it is the only way to learn the reachable host port
-// for the ContextForge peer URL. port is 0 if the allocation exposes no "http" port.
+// ResolvePlacement waits for the job's current allocation to be placed and returns
+// the node's private IP plus the host port assigned to the "http" label. For a
+// static port the assigned value equals the declared port; for a Nomad-assigned
+// dynamic port (project-plane MCP jobs) it is the only way to learn the reachable
+// host port for the ContextForge peer URL. port is 0 if the allocation exposes no
+// "http" port.
+//
+// On a job UPDATE the list briefly contains both the stopping allocation and its
+// replacement (in no useful order — the API returns them by ID), so the placement
+// must be the newest run-desired allocation; picking the list head healed the
+// gateway peer to the dying alloc's port (observed live: peer pinned to the old
+// host port, deactivated by ContextForge after 3 failed health checks).
 func (n *Nomad) ResolvePlacement(namespace, jobID string) (ip string, port int, err error) {
 	qo := &napi.QueryOptions{Namespace: namespace}
 	var alloc *napi.AllocationListStub
@@ -203,8 +277,15 @@ func (n *Nomad) ResolvePlacement(namespace, jobID string) (ip string, port int, 
 		if err != nil {
 			return "", 0, fmt.Errorf("nomad: list allocations for %q: %w", jobID, err)
 		}
-		if len(allocs) > 0 && allocs[0].NodeID != "" {
-			alloc = allocs[0]
+		for _, a := range allocs {
+			if a.DesiredStatus != "run" || a.NodeID == "" {
+				continue
+			}
+			if alloc == nil || a.CreateIndex > alloc.CreateIndex {
+				alloc = a
+			}
+		}
+		if alloc != nil {
 			break
 		}
 		time.Sleep(time.Second)
@@ -212,8 +293,14 @@ func (n *Nomad) ResolvePlacement(namespace, jobID string) (ip string, port int, 
 	if alloc == nil {
 		return "", 0, fmt.Errorf("nomad: job %q has no placement after 30s (node pool or GPU device unavailable?)", jobID)
 	}
-	if alloc.AllocatedResources != nil {
-		for _, p := range alloc.AllocatedResources.Shared.Ports {
+	// The list stub never carries AllocatedResources on this endpoint (Nomad only
+	// honors resources=true on /v1/allocations), so read ports from the full alloc.
+	full, _, err := n.c.Allocations().Info(alloc.ID, qo)
+	if err != nil {
+		return "", 0, fmt.Errorf("nomad: allocation info %q: %w", alloc.ID, err)
+	}
+	if full.AllocatedResources != nil {
+		for _, p := range full.AllocatedResources.Shared.Ports {
 			if p.Label == "http" {
 				port = p.Value
 				break

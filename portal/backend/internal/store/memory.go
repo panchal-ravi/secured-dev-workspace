@@ -15,9 +15,7 @@ import (
 // Nomad jobs, gateway peers, and LiteLLM models survive independently).
 type Memory struct {
 	mu           sync.Mutex
-	servers      map[string]MCPServer
 	models       map[string]LLMModel
-	blueprints   map[string]Blueprint         // key: id + "@" + version
 	projectRoles map[string]ProjectRole       // key: project\x00subject\x00role
 	projectMCP   map[string]ProjectMCPServer  // key: project\x00name
 	projectDesc  map[string]ProjectDescriptor // key: project
@@ -31,9 +29,7 @@ type Memory struct {
 // NewMemory builds an empty in-memory store.
 func NewMemory() *Memory {
 	return &Memory{
-		servers:      map[string]MCPServer{},
 		models:       map[string]LLMModel{},
-		blueprints:   map[string]Blueprint{},
 		projectRoles: map[string]ProjectRole{},
 		projectMCP:   map[string]ProjectMCPServer{},
 		projectDesc:  map[string]ProjectDescriptor{},
@@ -41,55 +37,6 @@ func NewMemory() *Memory {
 		projectTmpl:  map[string]ProjectTemplate{},
 		now:          time.Now,
 	}
-}
-
-func (m *Memory) UpsertMCPServer(_ context.Context, s MCPServer) (MCPServer, error) {
-	if s.Name == "" {
-		return MCPServer{}, fmt.Errorf("store: mcp server name required: %w", apperr.ErrBadRequest)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	if existing, ok := m.servers[s.Name]; ok {
-		s.CreatedAt = existing.CreatedAt
-		s.CreatedBy = existing.CreatedBy
-	} else {
-		s.CreatedAt = now
-	}
-	s.UpdatedAt = now
-	m.servers[s.Name] = s
-	return s, nil
-}
-
-func (m *Memory) GetMCPServer(_ context.Context, name string) (MCPServer, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.servers[name]
-	if !ok {
-		return MCPServer{}, fmt.Errorf("store: mcp server %q: %w", name, apperr.ErrNotFound)
-	}
-	return s, nil
-}
-
-func (m *Memory) ListMCPServers(_ context.Context) ([]MCPServer, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]MCPServer, 0, len(m.servers))
-	for _, s := range m.servers {
-		out = append(out, s)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
-}
-
-func (m *Memory) DeleteMCPServer(_ context.Context, name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.servers[name]; !ok {
-		return fmt.Errorf("store: mcp server %q: %w", name, apperr.ErrNotFound)
-	}
-	delete(m.servers, name)
-	return nil
 }
 
 func (m *Memory) UpsertLLMModel(_ context.Context, model LLMModel) (LLMModel, error) {
@@ -138,64 +85,6 @@ func (m *Memory) DeleteLLMModel(_ context.Context, name string) error {
 		return fmt.Errorf("store: llm model %q: %w", name, apperr.ErrNotFound)
 	}
 	delete(m.models, name)
-	return nil
-}
-
-func bpKey(id string, version int) string { return fmt.Sprintf("%s@%d", id, version) }
-
-func (m *Memory) UpsertBlueprint(_ context.Context, b Blueprint) (Blueprint, error) {
-	if b.ID == "" || b.Version < 1 {
-		return Blueprint{}, fmt.Errorf("store: blueprint id and version required: %w", apperr.ErrBadRequest)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := m.now()
-	k := bpKey(b.ID, b.Version)
-	if existing, ok := m.blueprints[k]; ok {
-		b.CreatedAt = existing.CreatedAt
-		b.CreatedBy = existing.CreatedBy
-	} else {
-		b.CreatedAt = now
-	}
-	b.UpdatedAt = now
-	m.blueprints[k] = b
-	return b, nil
-}
-
-func (m *Memory) GetBlueprint(_ context.Context, id string, version int) (Blueprint, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	b, ok := m.blueprints[bpKey(id, version)]
-	if !ok {
-		return Blueprint{}, fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
-	}
-	return b, nil
-}
-
-func (m *Memory) ListBlueprints(_ context.Context) ([]Blueprint, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]Blueprint, 0, len(m.blueprints))
-	for _, b := range m.blueprints {
-		out = append(out, b)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ID != out[j].ID {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].Version < out[j].Version
-	})
-	return out, nil
-}
-
-func (m *Memory) DeleteBlueprint(_ context.Context, id string, version int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	k := bpKey(id, version)
-	if _, ok := m.blueprints[k]; !ok {
-		return fmt.Errorf("store: blueprint %s@%d: %w", id, version, apperr.ErrNotFound)
-	}
-	delete(m.blueprints, k)
 	return nil
 }
 

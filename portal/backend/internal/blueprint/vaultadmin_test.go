@@ -126,6 +126,7 @@ func TestEngineWritesUseBrokeredToken(t *testing.T) {
 	}
 	record("/v1/ssh/config/ca", nil)
 	record("/v1/ssh/roles/dev-workspace", nil)
+	record("/v1/database/postgres-mcp/config/conn", nil)
 	record("/v1/github/config", nil)
 	record("/v1/github/permissionset/dev-workspace", nil)
 	record("/v1/auth/token/roles/periodic-boundary-cred-store", nil)
@@ -153,6 +154,9 @@ func TestEngineWritesUseBrokeredToken(t *testing.T) {
 	if err := va.WriteGitHubPermissionSet(ctx, ns, "github", "dev-workspace", 99, map[string]string{"contents": "write"}, []string{"acme/repo"}); err != nil {
 		t.Fatalf("WriteGitHubPermissionSet: %v", err)
 	}
+	if err := va.WriteLogical(ctx, ns, "database/postgres-mcp/config/conn", map[string]any{"plugin_name": "postgresql-database-plugin"}); err != nil {
+		t.Fatalf("WriteLogical: %v", err)
+	}
 	tok, err := va.CreatePeriodicToken(ctx, ns, []string{"boundary-cred-store"}, "24h")
 	if err != nil {
 		t.Fatalf("CreatePeriodicToken: %v", err)
@@ -174,6 +178,9 @@ func TestEngineWritesUseBrokeredToken(t *testing.T) {
 	}
 	if seen["/v1/github/config"]["prv_key"] != "PEM" {
 		t.Fatalf("github config payload = %v", seen["/v1/github/config"])
+	}
+	if seen["/v1/database/postgres-mcp/config/conn"]["plugin_name"] != "postgresql-database-plugin" {
+		t.Fatalf("logical write payload = %v", seen["/v1/database/postgres-mcp/config/conn"])
 	}
 	role := seen["/v1/auth/token/roles/periodic-boundary-cred-store"]
 	if role["orphan"] != true {
