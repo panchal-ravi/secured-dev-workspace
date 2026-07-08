@@ -21,6 +21,7 @@ func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
 // auth + project-admin gating (and rate-limit for mutate) at the mux.
 func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.HandlerFunc) http.Handler) {
 	mux.Handle("GET /api/projects/{name}/mcp-servers", protect(h.List))
+	mux.Handle("GET /api/projects/{name}/mcp-servers/{server}/tools", protect(h.Tools))
 	mux.Handle("POST /api/projects/{name}/mcp-servers", mutate(h.Deploy))
 	mux.Handle("POST /api/projects/{name}/mcp-servers/{server}/test", mutate(h.Test))
 	mux.Handle("PUT /api/projects/{name}/mcp-servers/{server}", mutate(h.Update))
@@ -35,6 +36,18 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cat)
+}
+
+// Tools returns a deployed server's tool catalog for the template-authoring
+// subset picker.
+func (h *Handlers) Tools(w http.ResponseWriter, r *http.Request) {
+	u, _ := auth.UserFrom(r.Context())
+	tools, err := h.svc.ServerTools(r.Context(), u.Groups, r.PathValue("name"), r.PathValue("server"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tools": tools})
 }
 
 func (h *Handlers) Deploy(w http.ResponseWriter, r *http.Request) {

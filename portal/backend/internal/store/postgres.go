@@ -92,9 +92,46 @@ CREATE TABLE IF NOT EXISTS project_mcp_servers (
     data       JSONB       NOT NULL,
     PRIMARY KEY (project, name)
 );
+CREATE TABLE IF NOT EXISTS project_agents (
+    project    TEXT        NOT NULL,
+    name       TEXT        NOT NULL,
+    status     TEXT        NOT NULL,
+    created_by TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL,
+    PRIMARY KEY (project, name)
+);
+CREATE TABLE IF NOT EXISTS project_agent_templates (
+    project    TEXT        NOT NULL,
+    name       TEXT        NOT NULL,
+    status     TEXT        NOT NULL,
+    created_by TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL,
+    PRIMARY KEY (project, name)
+);
+CREATE TABLE IF NOT EXISTS project_agent_instances (
+    project    TEXT        NOT NULL,
+    template   TEXT        NOT NULL,
+    subject    TEXT        NOT NULL,
+    status     TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL,
+    PRIMARY KEY (project, template, subject)
+);
 CREATE TABLE IF NOT EXISTS project_descriptors (
     project    TEXT PRIMARY KEY,
     status     TEXT        NOT NULL,
+    created_by TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_capabilities (
+    project    TEXT PRIMARY KEY,
     created_by TEXT        NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -121,6 +158,10 @@ CREATE TABLE IF NOT EXISTS project_templates (
     data         JSONB       NOT NULL,
     PRIMARY KEY (project, flavor)
 );
+-- 2026-07: project-developer collapsed into project-user (single member role).
+-- Rewrites legacy grants in place; idempotent, and no PK collision is possible
+-- because project-user rows can only be minted after this has run.
+UPDATE project_roles SET role = 'project-user' WHERE role = 'project-developer';
 `
 
 // NewPostgres opens the portal control-plane database, verifies connectivity, and
@@ -406,6 +447,292 @@ func (p *Postgres) scanProjectMCPRow(rows *sql.Rows) (ProjectMCPServer, error) {
 	return p.scanProjectMCP(rows, "", "")
 }
 
+// ---- project agents ----
+
+func (p *Postgres) UpsertProjectAgent(ctx context.Context, a ProjectAgent) (ProjectAgent, error) {
+	if a.Project == "" || a.Name == "" {
+		return ProjectAgent{}, fmt.Errorf("store: project agent requires project and name: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	a.CreatedAt, a.UpdatedAt = now, now
+	blob, err := json.Marshal(a)
+	if err != nil {
+		return ProjectAgent{}, fmt.Errorf("store: marshal project agent: %w", err)
+	}
+	const q = `
+INSERT INTO project_agents (project, name, status, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $5, $6)
+ON CONFLICT (project, name) DO UPDATE SET
+    status     = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at,
+    data       = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, a.Project, a.Name, a.Status, a.CreatedBy, now, blob)
+	if err := row.Scan(&a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		return ProjectAgent{}, fmt.Errorf("store: upsert project agent: %w", err)
+	}
+	return a, nil
+}
+
+func (p *Postgres) GetProjectAgent(ctx context.Context, project, name string) (ProjectAgent, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_agents WHERE project = $1 AND name = $2`
+	return p.scanProjectAgent(p.db.QueryRowContext(ctx, q, project, name), project, name)
+}
+
+func (p *Postgres) ListProjectAgents(ctx context.Context, project string) ([]ProjectAgent, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_agents WHERE project = $1 ORDER BY name`
+	rows, err := p.db.QueryContext(ctx, q, project)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project agents: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectAgent{}
+	for rows.Next() {
+		a, err := p.scanProjectAgent(rows, "", "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteProjectAgent(ctx context.Context, project, name string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_agents WHERE project = $1 AND name = $2`, project, name)
+	if err != nil {
+		return fmt.Errorf("store: delete project agent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project agent rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project agent %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func (p *Postgres) scanProjectAgent(row scanRow, project, name string) (ProjectAgent, error) {
+	var (
+		a         ProjectAgent
+		blob      []byte
+		status    string
+		createdBy string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := row.Scan(&blob, &status, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectAgent{}, fmt.Errorf("store: project agent %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectAgent{}, fmt.Errorf("store: get project agent: %w", err)
+	}
+	if err := json.Unmarshal(blob, &a); err != nil {
+		return ProjectAgent{}, fmt.Errorf("store: unmarshal project agent: %w", err)
+	}
+	a.Status, a.CreatedBy, a.CreatedAt, a.UpdatedAt = status, createdBy, createdAt, updatedAt
+	return a, nil
+}
+
+func (p *Postgres) UpsertProjectAgentTemplate(ctx context.Context, t ProjectAgentTemplate) (ProjectAgentTemplate, error) {
+	if t.Project == "" || t.Name == "" {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: project agent template requires project and name: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	t.CreatedAt, t.UpdatedAt = now, now
+	blob, err := json.Marshal(t)
+	if err != nil {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: marshal project agent template: %w", err)
+	}
+	const q = `
+INSERT INTO project_agent_templates (project, name, status, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $5, $6)
+ON CONFLICT (project, name) DO UPDATE SET
+    status     = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at,
+    data       = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, t.Project, t.Name, t.Status, t.CreatedBy, now, blob)
+	if err := row.Scan(&t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: upsert project agent template: %w", err)
+	}
+	return t, nil
+}
+
+func (p *Postgres) GetProjectAgentTemplate(ctx context.Context, project, name string) (ProjectAgentTemplate, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_agent_templates WHERE project = $1 AND name = $2`
+	return p.scanProjectAgentTemplate(p.db.QueryRowContext(ctx, q, project, name), project, name)
+}
+
+func (p *Postgres) ListProjectAgentTemplates(ctx context.Context, project string) ([]ProjectAgentTemplate, error) {
+	const q = `SELECT data, status, created_by, created_at, updated_at FROM project_agent_templates WHERE project = $1 ORDER BY name`
+	rows, err := p.db.QueryContext(ctx, q, project)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project agent templates: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectAgentTemplate{}
+	for rows.Next() {
+		t, err := p.scanProjectAgentTemplate(rows, "", "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteProjectAgentTemplate(ctx context.Context, project, name string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_agent_templates WHERE project = $1 AND name = $2`, project, name)
+	if err != nil {
+		return fmt.Errorf("store: delete project agent template: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project agent template rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project agent template %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func (p *Postgres) scanProjectAgentTemplate(row scanRow, project, name string) (ProjectAgentTemplate, error) {
+	var (
+		t         ProjectAgentTemplate
+		blob      []byte
+		status    string
+		createdBy string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := row.Scan(&blob, &status, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: project agent template %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: get project agent template: %w", err)
+	}
+	if err := json.Unmarshal(blob, &t); err != nil {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: unmarshal project agent template: %w", err)
+	}
+	t.Status, t.CreatedBy, t.CreatedAt, t.UpdatedAt = status, createdBy, createdAt, updatedAt
+	return t, nil
+}
+
+func (p *Postgres) UpsertProjectAgentInstance(ctx context.Context, in ProjectAgentInstance) (ProjectAgentInstance, error) {
+	if in.Project == "" || in.Template == "" || in.Subject == "" {
+		return ProjectAgentInstance{}, fmt.Errorf("store: project agent instance requires project, template, subject: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	in.UpdatedAt = now
+	blob, err := json.Marshal(in)
+	if err != nil {
+		return ProjectAgentInstance{}, fmt.Errorf("store: marshal project agent instance: %w", err)
+	}
+	const q = `
+INSERT INTO project_agent_instances (project, template, subject, status, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $5, $5, $6)
+ON CONFLICT (project, template, subject) DO UPDATE SET
+    status     = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at,
+    data       = EXCLUDED.data
+RETURNING created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, in.Project, in.Template, in.Subject, in.Status, now, blob)
+	if err := row.Scan(&in.CreatedAt, &in.UpdatedAt); err != nil {
+		return ProjectAgentInstance{}, fmt.Errorf("store: upsert project agent instance: %w", err)
+	}
+	return in, nil
+}
+
+func (p *Postgres) GetProjectAgentInstance(ctx context.Context, project, template, subject string) (ProjectAgentInstance, error) {
+	const q = `SELECT data, status, created_at, updated_at FROM project_agent_instances WHERE project = $1 AND template = $2 AND subject = $3`
+	return p.scanProjectAgentInstance(p.db.QueryRowContext(ctx, q, project, template, subject), project, template, subject)
+}
+
+func (p *Postgres) ListProjectAgentInstancesForOwner(ctx context.Context, project, subject string) ([]ProjectAgentInstance, error) {
+	const q = `SELECT data, status, created_at, updated_at FROM project_agent_instances WHERE project = $1 AND subject = $2 ORDER BY template`
+	rows, err := p.db.QueryContext(ctx, q, project, subject)
+	if err != nil {
+		return nil, fmt.Errorf("store: list project agent instances: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectAgentInstance{}
+	for rows.Next() {
+		in, err := p.scanProjectAgentInstance(rows, project, "", subject)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) ListRunningProjectAgentInstances(ctx context.Context) ([]ProjectAgentInstance, error) {
+	const q = `SELECT data, status, created_at, updated_at FROM project_agent_instances WHERE status = 'running'`
+	rows, err := p.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: list running project agent instances: %w", err)
+	}
+	defer rows.Close()
+	out := []ProjectAgentInstance{}
+	for rows.Next() {
+		in, err := p.scanProjectAgentInstance(rows, "", "", "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) CountProjectAgentInstances(ctx context.Context, project, template string) (int, error) {
+	const q = `SELECT COUNT(*) FROM project_agent_instances WHERE project = $1 AND template = $2`
+	var n int
+	if err := p.db.QueryRowContext(ctx, q, project, template).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count project agent instances: %w", err)
+	}
+	return n, nil
+}
+
+func (p *Postgres) DeleteProjectAgentInstance(ctx context.Context, project, template, subject string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM project_agent_instances WHERE project = $1 AND template = $2 AND subject = $3`, project, template, subject)
+	if err != nil {
+		return fmt.Errorf("store: delete project agent instance: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete project agent instance rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: project agent instance %s/%s/%s: %w", project, template, subject, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func (p *Postgres) scanProjectAgentInstance(row scanRow, project, template, subject string) (ProjectAgentInstance, error) {
+	var (
+		in        ProjectAgentInstance
+		blob      []byte
+		status    string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := row.Scan(&blob, &status, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectAgentInstance{}, fmt.Errorf("store: project agent instance %s/%s/%s: %w", project, template, subject, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectAgentInstance{}, fmt.Errorf("store: get project agent instance: %w", err)
+	}
+	if err := json.Unmarshal(blob, &in); err != nil {
+		return ProjectAgentInstance{}, fmt.Errorf("store: unmarshal project agent instance: %w", err)
+	}
+	in.Status, in.CreatedAt, in.UpdatedAt = status, createdAt, updatedAt
+	return in, nil
+}
+
 // ---- project descriptors ----
 
 func (p *Postgres) UpsertProjectDescriptor(ctx context.Context, d ProjectDescriptor) (ProjectDescriptor, error) {
@@ -492,6 +819,64 @@ func scanProjectDescriptor(row scanRow, project string) (ProjectDescriptor, erro
 	}
 	d.Status, d.CreatedBy, d.CreatedAt, d.UpdatedAt = status, createdBy, createdAt, updatedAt
 	return d, nil
+}
+
+// ---- project capabilities ----
+
+func (p *Postgres) UpsertProjectCapabilities(ctx context.Context, pc ProjectCapabilities) (ProjectCapabilities, error) {
+	if pc.Project == "" {
+		return ProjectCapabilities{}, fmt.Errorf("store: project capabilities project required: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	pc.CreatedAt, pc.UpdatedAt = now, now
+	blob, err := json.Marshal(pc)
+	if err != nil {
+		return ProjectCapabilities{}, fmt.Errorf("store: marshal project capabilities: %w", err)
+	}
+	const q = `
+INSERT INTO project_capabilities (project, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $3, $4)
+ON CONFLICT (project) DO UPDATE SET
+    updated_at = EXCLUDED.updated_at,
+    data       = EXCLUDED.data
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, pc.Project, pc.CreatedBy, now, blob)
+	if err := row.Scan(&pc.CreatedBy, &pc.CreatedAt, &pc.UpdatedAt); err != nil {
+		return ProjectCapabilities{}, fmt.Errorf("store: upsert project capabilities: %w", err)
+	}
+	return pc, nil
+}
+
+func (p *Postgres) GetProjectCapabilities(ctx context.Context, project string) (ProjectCapabilities, error) {
+	const q = `SELECT data, created_by, created_at, updated_at FROM project_capabilities WHERE project = $1`
+	var (
+		pc        ProjectCapabilities
+		blob      []byte
+		createdBy string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := p.db.QueryRowContext(ctx, q, project).Scan(&blob, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectCapabilities{}, fmt.Errorf("store: project capabilities %q: %w", project, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return ProjectCapabilities{}, fmt.Errorf("store: get project capabilities: %w", err)
+	}
+	if err := json.Unmarshal(blob, &pc); err != nil {
+		return ProjectCapabilities{}, fmt.Errorf("store: unmarshal project capabilities: %w", err)
+	}
+	pc.CreatedBy, pc.CreatedAt, pc.UpdatedAt = createdBy, createdAt, updatedAt
+	return pc, nil
+}
+
+// DeleteProjectCapabilities is idempotent: most projects never store a matrix,
+// so project-delete cleanup must not fail on a missing row.
+func (p *Postgres) DeleteProjectCapabilities(ctx context.Context, project string) error {
+	if _, err := p.db.ExecContext(ctx, `DELETE FROM project_capabilities WHERE project = $1`, project); err != nil {
+		return fmt.Errorf("store: delete project capabilities: %w", err)
+	}
+	return nil
 }
 
 // ---- base job templates ----

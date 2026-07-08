@@ -52,6 +52,11 @@ type Client interface {
 	// DiscoverTools polls until the gateway has discovered the peer's tools,
 	// returning their ids. Errors if none appear within the discovery window.
 	DiscoverTools(ctx context.Context, peerID string) (toolIDs []string, err error)
+	// ListTools returns the peer's discovered tools WITH their names and
+	// descriptions (a single non-polling GET — DiscoverTools keeps only ids).
+	// Used to surface a tool catalog for per-tool subset selection; returns an
+	// empty slice if the gateway has not discovered any tools for the peer yet.
+	ListTools(ctx context.Context, peerID string) ([]ToolInfo, error)
 	// CreateVirtualServer composes a virtual server bound to the given tool ids
 	// and returns its id, REPLACING any existing virtual server of the same name:
 	// after a peer delete+redeploy the old one references dead tool ids, so a
@@ -74,6 +79,15 @@ type Client interface {
 	DeleteVirtualServerByName(ctx context.Context, name string) error
 	// DeletePeer removes a peer registration (best-effort teardown).
 	DeletePeer(ctx context.Context, peerID string) error
+}
+
+// ToolInfo is one tool the gateway discovered for a peer, with the metadata a
+// template author needs to pick a subset. ID is the gateway tool id that
+// CreateVirtualServer's associated_tools expects.
+type ToolInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // ScopeProbe is the outcome of the consumption-mirror scope check. Passed reports
@@ -260,6 +274,32 @@ func (c *httpClient) DiscoverTools(ctx context.Context, peerID string) ([]string
 		}
 	}
 	return nil, fmt.Errorf("mcpgw: no tools discovered for peer %q after %ds", peerID, discoveryAttempts*int(discoveryInterval/time.Second))
+}
+
+func (c *httpClient) ListTools(ctx context.Context, peerID string) ([]ToolInfo, error) {
+	jwt, err := c.mintAdminJWT()
+	if err != nil {
+		return nil, err
+	}
+	// One shot: the caller only lists tools for a server that already passed
+	// deploy/Test (its tools are discovered), so there is nothing to poll for.
+	var tools []struct {
+		ID          string `json:"id"`
+		GatewayID   string `json:"gatewayId"`
+		GatewayID2  string `json:"gateway_id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := c.call(ctx, jwt, http.MethodGet, "/tools", nil, &tools); err != nil {
+		return nil, err
+	}
+	out := []ToolInfo{}
+	for _, t := range tools {
+		if t.GatewayID == peerID || t.GatewayID2 == peerID {
+			out = append(out, ToolInfo{ID: t.ID, Name: t.Name, Description: t.Description})
+		}
+	}
+	return out, nil
 }
 
 func (c *httpClient) CreateVirtualServer(ctx context.Context, name, description string, toolIDs []string) (string, error) {

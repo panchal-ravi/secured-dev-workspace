@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/admin"
+	"github.com/secured-dev-workspace/developer-portal/internal/agents"
 	"github.com/secured-dev-workspace/developer-portal/internal/api"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/basetmpladmin"
@@ -122,6 +123,8 @@ func run() error {
 	var projectMCP *projectadmin.Handlers
 	var projectTmpl *projecttemplate.Handlers
 	var projectEng *projectengines.Handlers
+	var agentHandlers *agents.Handlers
+	var agentSvc *agents.Service
 	// engineProvisioner (nil unless the admin plane is on) auto-provisions the standard
 	// engines when a project is created via the project-create plane below.
 	var engineProvisioner projectbootstrap.EngineProvisioner
@@ -134,6 +137,8 @@ func run() error {
 		}
 		adminHandlers, projectMCP = planes.admin, planes.projectMCP
 		projectTmpl, projectEng = planes.projectTmpl, planes.projectEng
+		agentHandlers = planes.agents
+		agentSvc = planes.agentSvc
 		if planes.engineSvc != nil {
 			engineProvisioner = planes.engineSvc
 		}
@@ -181,6 +186,7 @@ func run() error {
 		ProjectMCP:    projectMCP,
 		ProjectTmpl:   projectTmpl,
 		ProjectEng:    projectEng,
+		Agents:        agentHandlers,
 		Store:         st,
 		StaticDir:     staticDir,
 		Ready:         newReadinessCheck(vault, nomad),
@@ -215,6 +221,27 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Idle-instance reaper: stops per-user agent instances left idle past the TTL
+	// (job purged, row kept so the next chat re-provisions). Ticks until shutdown.
+	if agentSvc != nil && cfg.AgentReapInterval > 0 {
+		go func() {
+			t := time.NewTicker(cfg.AgentReapInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if n, err := agentSvc.ReapIdle(ctx, cfg.AgentIdleTTL); err != nil {
+						logger.Warn("agent instance reaper", "err", err)
+					} else if n > 0 {
+						logger.Info("agent instance reaper stopped idle instances", "count", n)
+					}
+				}
+			}
+		}()
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -263,6 +290,10 @@ type onboardingPlanes struct {
 	projectMCP  *projectadmin.Handlers
 	projectTmpl *projecttemplate.Handlers
 	projectEng  *projectengines.Handlers
+	agents      *agents.Handlers
+	// agentSvc is the agents Service (not just its handlers) so run() can drive the
+	// idle-instance reaper ticker.
+	agentSvc *agents.Service
 	// engineSvc is the engine-provision Service (not just its handlers) so the
 	// project-create plane can auto-provision engines at create via ProvisionAtCreate.
 	engineSvc *projectengines.Service
@@ -320,6 +351,23 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, peSvc, projectadmin.Config{
 		NodePool: cfg.AgentNodePool,
 	})
+	// AI-agents plane: reuses the §5 Vault broker (vadmin), the LiteLLM client, and
+	// the shared ContextForge gateway client (for per-template tool-subset virtual
+	// servers). Its WIF role config matches the executor's so the agent job's
+	// jwt-nomad login succeeds.
+	agSvc := agents.New(st, wsvc, nomad, vadmin, llm, gateway, nil, agents.Config{
+		NodePool:                  cfg.AgentNodePool,
+		Image:                     cfg.AgentRuntimeImage,
+		LLMModels:                 cfg.LLMModels,
+		LLMMaxBudget:              25,
+		LLMRPMLimit:               60,
+		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
+		MCPGatewayEndpoint:        cfg.MCPGatewayAddr,
+		KVMount:                   cfg.VaultKVMount,
+		VaultAuthPath:             "jwt-nomad",
+		VaultBoundAudience:        "vault.io",
+		VaultUserClaim:            "nomad_job_id",
+	})
 	// The template plane reuses the engine service to (a) mount extra add-on engines
 	// and (b) wire MCP servers from the catalog into a flavor's rendered source.
 	ptSvc := projecttemplate.New(st, wsvc, st, peSvc, peSvc, projecttemplate.Config{
@@ -332,6 +380,8 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 		projectMCP:  projectadmin.NewHandlers(pmSvc),
 		projectTmpl: projecttemplate.NewHandlers(ptSvc),
 		projectEng:  projectengines.NewHandlers(peSvc),
+		agents:      agents.NewHandlers(agSvc),
+		agentSvc:    agSvc,
 		engineSvc:   peSvc,
 		gateway:     gateway,
 		llm:         llm,

@@ -67,6 +67,7 @@ type DescriptorStore interface {
 	DeleteProjectTemplate(ctx context.Context, project, flavor string) error
 	ListProjectRoles(ctx context.Context, project string) ([]store.ProjectRole, error)
 	RevokeProjectRole(ctx context.Context, project, subject, role string) error
+	DeleteProjectCapabilities(ctx context.Context, project string) error
 }
 
 // RoleGranter bootstraps the first project-admin (satisfied by *projectrole.Service).
@@ -430,6 +431,10 @@ func (s *Service) DeleteProject(ctx context.Context, actor, project string) erro
 				fail("store.role "+r.Subject, err)
 			}
 		}
+	}
+	// Capability matrix row (idempotent; most projects never store one).
+	if err := s.desc.DeleteProjectCapabilities(ctx, project); err != nil {
+		fail("store.capabilities", err)
 	}
 
 	if len(errs) > 0 {

@@ -75,7 +75,15 @@ type Config struct {
 	MCPGatewayAddr string // PORTAL_MCP_GATEWAY_ADDR (ContextForge admin URL, e.g. http://<node>:4444)
 	LLMGatewayAddr string // PORTAL_LLM_GATEWAY_ADDR (LiteLLM admin URL, e.g. http://<node>:4000)
 	AgentNodePool  string // PORTAL_AGENT_NODE_POOL (default "agents")
-	DBDSN          string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
+	// AgentRuntimeImage is the container image a deployed AI agent runs (the
+	// deepagents FastAPI chat server). PORTAL_AGENT_RUNTIME_IMAGE.
+	AgentRuntimeImage string
+	// AgentIdleTTL is how long a per-user agent instance may sit idle before the
+	// reaper stops it; AgentReapInterval is the reaper's tick. Both in seconds
+	// (PORTAL_AGENT_IDLE_TTL / PORTAL_AGENT_REAP_INTERVAL); a zero interval disables.
+	AgentIdleTTL      time.Duration
+	AgentReapInterval time.Duration
+	DBDSN             string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
 
 	// Blueprint provisioner (project-deploy plane). The portal brokers a token
 	// native to each project namespace via a second Nomad workload identity, then
@@ -167,6 +175,9 @@ func Load() (Config, error) {
 		MCPGatewayAddr:       os.Getenv("PORTAL_MCP_GATEWAY_ADDR"),
 		LLMGatewayAddr:       os.Getenv("PORTAL_LLM_GATEWAY_ADDR"),
 		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
+		AgentRuntimeImage:    env("PORTAL_AGENT_RUNTIME_IMAGE", "panchalravi/agent-runtime:agentv2"),
+		AgentIdleTTL:         time.Duration(envInt("PORTAL_AGENT_IDLE_TTL", 1800)) * time.Second,
+		AgentReapInterval:    time.Duration(envInt("PORTAL_AGENT_REAP_INTERVAL", 300)) * time.Second,
 		DBDSN:                os.Getenv("PORTAL_DB_DSN"),
 		ProvisionerJWTPath:   os.Getenv("PORTAL_PROVISIONER_JWT_PATH"),
 		ProvisionerRole:      env("PORTAL_PROVISIONER_ROLE", "portal-provisioner"),

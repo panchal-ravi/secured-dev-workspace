@@ -141,7 +141,7 @@ export default function Templates() {
   return (
     <div className="page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h2>{name} — templates</h2>
+        <h2>{name} — workspace templates</h2>
         <Button renderIcon={Add} disabled={bases.length === 0} onClick={openCreate}>
           New template
         </Button>

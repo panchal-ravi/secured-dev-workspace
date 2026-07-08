@@ -55,6 +55,7 @@ export interface Me {
   groups: string[]
   roles: string[]
   project_roles?: { project: string; role: string }[]
+  project_capabilities?: { project: string; capabilities: string[] }[]
   local_ssh: boolean
 }
 
@@ -68,6 +69,33 @@ export function adminProjects(me: Me | null): string[] {
   return (me?.project_roles || [])
     .filter((r) => r.role === 'project-admin')
     .map((r) => r.project)
+}
+
+// agentProjects returns the projects where the user holds the ai-agents
+// capability, used to surface the AI-agents nav entry for non-admin holders.
+export function agentProjects(me: Me | null): string[] {
+  return (me?.project_capabilities || [])
+    .filter((c) => c.capabilities.includes('ai-agents'))
+    .map((c) => c.project)
+}
+
+// workspaceProjects returns the projects where the user holds the workspaces
+// capability, used to populate the developer project switcher in the nav.
+export function workspaceProjects(me: Me | null): string[] {
+  return (me?.project_capabilities || [])
+    .filter((c) => c.capabilities.includes('workspaces'))
+    .map((c) => c.project)
+}
+
+// hasCapability reports whether the user holds a capability (workspaces /
+// ai-agents) in a project under its role→capability matrix. The backend
+// enforces regardless; this only gates UI affordances. Falls back to true when
+// the field is absent (older backend) so nothing disappears mid-upgrade.
+export function hasCapability(me: Me | null, project: string, cap: string): boolean {
+  const pcs = me?.project_capabilities
+  if (!pcs) return true
+  const entry = pcs.find((c) => c.project === project)
+  return !!entry && entry.capabilities.includes(cap)
 }
 
 async function asJSON(r: Response) {
@@ -391,6 +419,28 @@ export function revokeProjectRole(project: string, subject: string, role = 'proj
   }).then(expectOK)
 }
 
+// ---- Project Admin: role→capability matrix ----
+
+// CapabilityMatrix maps a project role to the capabilities it grants;
+// is_default is true until the project stores its own matrix.
+export interface CapabilityMatrix {
+  matrix: Record<string, string[]>
+  is_default: boolean
+}
+
+export function getProjectCapabilities(project: string): Promise<CapabilityMatrix> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/capabilities`, { credentials: 'include' }).then(asJSON)
+}
+
+export function putProjectCapabilities(project: string, matrix: Record<string, string[]>): Promise<CapabilityMatrix> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/capabilities`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ matrix }),
+  }).then(asJSON)
+}
+
 // ---- Project Admin: MCP servers ----
 
 // PathGrant is a project-admin-supplied additional Vault path grant applied at deploy
@@ -499,6 +549,20 @@ export function deployProjectMcp(project: string, input: DeployMcpServerInput): 
 
 export function testProjectMcp(project: string, name: string): Promise<ProjectMcpServer> {
   return post(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}/test`)
+}
+
+// One tool a deployed MCP server exposes (gateway-discovered). Consumed by the
+// agent-template tool-subset picker.
+export interface McpTool {
+  id: string
+  name: string
+  description?: string
+}
+
+export function listMcpServerTools(project: string, name: string): Promise<{ tools: McpTool[] }> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}/tools`, {
+    credentials: 'include',
+  }).then(asJSON)
 }
 
 // Edits a deployed server in place: the full container definition (sent whole,
@@ -755,4 +819,318 @@ export function getEngineStatus(project: string): Promise<EngineStatus> {
 // automatically at project-create.
 export function setGithubCredentials(project: string, in_: ProvisionEnginesInput): Promise<{ status: string }> {
   return post(`/api/projects/${encodeURIComponent(project)}/engines/github`, in_)
+}
+
+// ---- Project: AI agents (ai-agents capability) ----
+
+// AgentTestResult records the /healthz probe of a deployed agent.
+export interface AgentTestResult {
+  passed: boolean
+  tools_discovered: number
+  message?: string
+  at: string
+}
+
+// ProjectAgent is a deployed YAML-configured agent. yaml_source is the single
+// source of truth; the flattened fields are for the list view.
+export interface ProjectAgent {
+  project: string
+  name: string
+  status: string
+  version: number
+  yaml_source: string
+  description?: string
+  greeting?: string
+  model?: string
+  mcp_servers?: string[]
+  job_id?: string
+  endpoint?: string
+  llm_key_alias?: string
+  test_result?: AgentTestResult
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export type ProjectAgentView = ProjectAgent & { running: boolean }
+
+export function listAgents(project: string): Promise<{ agents: ProjectAgentView[] }> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/agents`, { credentials: 'include' }).then(asJSON)
+}
+
+export function getAgent(project: string, name: string): Promise<ProjectAgent> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/agents/${encodeURIComponent(name)}`, {
+    credentials: 'include',
+  }).then(asJSON)
+}
+
+// validateAgentYAML checks the YAML server-side without deploying. Rejects with the
+// server's error message when invalid.
+export function validateAgentYAML(project: string, yaml: string): Promise<{ valid: boolean }> {
+  return post(`/api/projects/${encodeURIComponent(project)}/agents/validate`, { yaml })
+}
+
+export function deployAgent(project: string, yaml: string): Promise<ProjectAgent> {
+  return post(`/api/projects/${encodeURIComponent(project)}/agents`, { yaml })
+}
+
+export function updateAgent(project: string, name: string, yaml: string): Promise<ProjectAgent> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/agents/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ yaml }),
+  }).then(asJSON)
+}
+
+export function testAgent(project: string, name: string): Promise<ProjectAgent> {
+  return post(`/api/projects/${encodeURIComponent(project)}/agents/${encodeURIComponent(name)}/test`)
+}
+
+export function deleteAgent(project: string, name: string): Promise<void> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/agents/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}
+
+// AgentChatEvent is one decoded SSE event from the agent chat stream.
+export interface AgentChatEvent {
+  type: 'token' | 'tool' | 'done' | 'error'
+  text?: string
+  name?: string
+  message?: string
+}
+
+// chatWithAgent opens a streaming chat turn. It POSTs {message, thread_id} and
+// invokes onEvent for each SSE event as it arrives (EventSource cannot POST, so we
+// read the response body directly). Resolves when the stream ends. thread_id is
+// client-minted so a conversation keeps its LangGraph memory across turns.
+export async function chatWithAgent(
+  project: string,
+  name: string,
+  message: string,
+  threadId: string,
+  onEvent: (ev: AgentChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(`/api/projects/${encodeURIComponent(project)}/agents/${encodeURIComponent(name)}/chat`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ message, thread_id: threadId }),
+    signal,
+  })
+  if (!resp.ok || !resp.body) {
+    const body = await resp.json().catch(() => ({}))
+    throw new Error(body.error || resp.statusText)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // SSE events are separated by a blank line.
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const ev = parseSSE(chunk)
+      if (ev) onEvent(ev)
+    }
+  }
+}
+
+function parseSSE(chunk: string): AgentChatEvent | null {
+  let event = ''
+  let data = ''
+  for (const line of chunk.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) data += line.slice(5).trim()
+  }
+  if (!event) return null
+  let payload: Record<string, unknown> = {}
+  try {
+    payload = data ? JSON.parse(data) : {}
+  } catch {
+    payload = {}
+  }
+  return { type: event as AgentChatEvent['type'], ...payload }
+}
+
+// streamChatPost POSTs {message, thread_id} to an SSE endpoint and invokes onEvent
+// per decoded event (EventSource cannot POST, so the body is read directly).
+async function streamChatPost(
+  url: string,
+  message: string,
+  threadId: string,
+  onEvent: (ev: AgentChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ message, thread_id: threadId }),
+    signal,
+  })
+  if (!resp.ok || !resp.body) {
+    const body = await resp.json().catch(() => ({}))
+    throw new Error(body.error || resp.statusText)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const ev = parseSSE(chunk)
+      if (ev) onEvent(ev)
+    }
+  }
+}
+
+// ---- Agent templates (project-admin authoring plane) ----
+
+// TemplateWiring records one server's ContextForge wiring for a template.
+export interface TemplateWiring {
+  server: string
+  virtual_server_id: string
+  token_name: string
+  kv_path: string
+}
+
+// ProjectAgentTemplate is a project-admin-authored agent blueprint. yaml_source is
+// the source of truth; the flattened fields are for the card/list view.
+export interface ProjectAgentTemplate {
+  project: string
+  name: string
+  status: 'draft' | 'tested' | 'published'
+  version: number
+  yaml_source: string
+  description?: string
+  greeting?: string
+  model?: string
+  tool_selection?: Record<string, string[]>
+  wiring?: TemplateWiring[]
+  test_result?: AgentTestResult
+  job_id?: string
+  endpoint?: string
+  llm_key_alias?: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export type ProjectAgentTemplateView = ProjectAgentTemplate & { running: boolean }
+
+const tmplBase = (project: string) => `/api/projects/${encodeURIComponent(project)}/agents/templates`
+const tmplPath = (project: string, name: string) => `${tmplBase(project)}/${encodeURIComponent(name)}`
+
+export function listAgentTemplates(project: string): Promise<{ templates: ProjectAgentTemplateView[] }> {
+  return fetch(tmplBase(project), { credentials: 'include' }).then(asJSON)
+}
+
+export function getAgentTemplate(project: string, name: string): Promise<ProjectAgentTemplate> {
+  return fetch(tmplPath(project, name), { credentials: 'include' }).then(asJSON)
+}
+
+export function validateAgentTemplate(project: string, yaml: string): Promise<{ valid: boolean }> {
+  return post(`${tmplBase(project)}/validate`, { yaml })
+}
+
+// saveAgentTemplate authors (POST) or edits (PUT) a template as a draft. A new
+// template has no name yet, so the create path is a POST to the collection.
+export function saveAgentTemplate(project: string, yaml: string, name?: string): Promise<ProjectAgentTemplate> {
+  if (name) {
+    return fetch(tmplPath(project, name), {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml }),
+    }).then(asJSON)
+  }
+  return post(tmplBase(project), { yaml })
+}
+
+export function deployAgentTemplate(project: string, name: string): Promise<ProjectAgentTemplate> {
+  return post(`${tmplPath(project, name)}/deploy`)
+}
+
+export function testAgentTemplate(project: string, name: string): Promise<ProjectAgentTemplate> {
+  return post(`${tmplPath(project, name)}/test`)
+}
+
+export function publishAgentTemplate(project: string, name: string): Promise<ProjectAgentTemplate> {
+  return post(`${tmplPath(project, name)}/publish`)
+}
+
+export function deleteAgentTemplate(project: string, name: string): Promise<void> {
+  return fetch(tmplPath(project, name), { method: 'DELETE', credentials: 'include' }).then(expectOK)
+}
+
+// chatWithTemplate opens a streaming test-chat turn against a template's admin test
+// job (used to exercise a template before publishing).
+export function chatWithTemplate(
+  project: string,
+  name: string,
+  message: string,
+  threadId: string,
+  onEvent: (ev: AgentChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamChatPost(`${tmplPath(project, name)}/chat`, message, threadId, onEvent, signal)
+}
+
+// ---- Project-user AI agent instance plane (published cards → per-user instances) ----
+
+// AgentCard is a published template a project-user may launch.
+export interface AgentCard {
+  name: string
+  description?: string
+  greeting?: string
+  model?: string
+  tool_count: number
+}
+
+// AgentInstance is the caller's own running/stopped instance of a template.
+export interface AgentInstance {
+  template: string
+  status: string
+  running: boolean
+  last_active_at: string
+}
+
+const instBase = (project: string) => `/api/projects/${encodeURIComponent(project)}/agents/instances`
+
+export function listAgentCards(project: string): Promise<{ cards: AgentCard[] }> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/agents/cards`, { credentials: 'include' }).then(asJSON)
+}
+
+export function listAgentInstances(project: string): Promise<{ instances: AgentInstance[] }> {
+  return fetch(instBase(project), { credentials: 'include' }).then(asJSON)
+}
+
+// chatWithInstance opens a streaming chat turn against the caller's own instance of
+// a published template, starting it on demand if it isn't already running.
+export function chatWithInstance(
+  project: string,
+  template: string,
+  message: string,
+  threadId: string,
+  onEvent: (ev: AgentChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamChatPost(`${instBase(project)}/${encodeURIComponent(template)}/chat`, message, threadId, onEvent, signal)
+}
+
+export function deleteAgentInstance(project: string, template: string): Promise<void> {
+  return fetch(`${instBase(project)}/${encodeURIComponent(template)}`, { method: 'DELETE', credentials: 'include' }).then(expectOK)
 }

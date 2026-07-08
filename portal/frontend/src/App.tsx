@@ -8,12 +8,14 @@ import Login from './pages/Login'
 import Home from './pages/Home'
 import Projects from './pages/Projects'
 import ProjectPage from './pages/Project'
+import Agents from './pages/Agents'
 import Workspaces from './pages/Workspaces'
 import LlmModels from './pages/platformadmin/LlmModels'
 import BaseTemplates from './pages/platformadmin/BaseTemplates'
 import AdminProjects from './pages/platformadmin/Projects'
 import Members from './pages/projectadmin/Members'
 import ProjectMcpServers from './pages/projectadmin/McpServers'
+import AgentTemplates from './pages/projectadmin/AgentTemplates'
 import ProjectTemplates from './pages/projectadmin/Templates'
 import GithubAccess from './pages/projectadmin/GithubAccess'
 
@@ -22,7 +24,7 @@ type ThemeName = 'white' | 'g100'
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
-  const [navExpanded, setNavExpanded] = useState(false)
+  const [navExpanded, setNavExpanded] = useState(true)
   const [theme, setTheme] = useState<ThemeName>(
     () => (localStorage.getItem('portal-theme') as ThemeName) || 'white',
   )
@@ -74,12 +76,14 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:name" element={<ProjectPage />} />
+          <Route path="/projects/:name/agents" element={<Agents />} />
           <Route path="/workspaces" element={<Workspaces />} />
           {isPlatformAdmin(me) && <Route path="/admin/projects" element={<AdminProjects />} />}
           {isPlatformAdmin(me) && <Route path="/admin/llm-models" element={<LlmModels />} />}
           {isPlatformAdmin(me) && <Route path="/admin/base-templates" element={<BaseTemplates />} />}
           <Route path="/projects/:name/members" element={<Members />} />
           <Route path="/projects/:name/mcp-servers" element={<ProjectMcpServers />} />
+          <Route path="/projects/:name/agent-templates" element={<AgentTemplates />} />
           <Route path="/projects/:name/templates" element={<ProjectTemplates />} />
           <Route path="/projects/:name/github" element={<GithubAccess />} />
           <Route path="*" element={<Navigate to="/" replace />} />

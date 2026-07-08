@@ -55,6 +55,32 @@ func (h *Handlers) Revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// GetCapabilities returns the project's role→capability matrix; is_default
+// tells the UI whether the project has stored its own row yet.
+func (h *Handlers) GetCapabilities(w http.ResponseWriter, r *http.Request) {
+	matrix, isDefault, err := h.svc.GetCapabilities(r.Context(), r.PathValue("name"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"matrix": matrix, "is_default": isDefault})
+}
+
+func (h *Handlers) PutCapabilities(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Matrix map[string][]string `json:"matrix"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.SetCapabilities(r.Context(), actor(r), r.PathValue("name"), in.Matrix); err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"matrix": in.Matrix, "is_default": false})
+}
+
 func actor(r *http.Request) string {
 	u, _ := auth.UserFrom(r.Context())
 	return u.Email

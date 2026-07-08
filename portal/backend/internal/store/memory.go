@@ -16,11 +16,15 @@ import (
 type Memory struct {
 	mu           sync.Mutex
 	models       map[string]LLMModel
-	projectRoles map[string]ProjectRole       // key: project\x00subject\x00role
-	projectMCP   map[string]ProjectMCPServer  // key: project\x00name
-	projectDesc  map[string]ProjectDescriptor // key: project
-	baseTmpl     map[string]BaseJobTemplate   // key: name
-	projectTmpl  map[string]ProjectTemplate   // key: project\x00flavor
+	projectRoles map[string]ProjectRole          // key: project\x00subject\x00role
+	projectCaps  map[string]ProjectCapabilities  // key: project
+	projectMCP   map[string]ProjectMCPServer     // key: project\x00name
+	projectAgent map[string]ProjectAgent         // key: project\x00name
+	projectTmplA map[string]ProjectAgentTemplate // key: project\x00name
+	projectInstA map[string]ProjectAgentInstance // key: project\x00template\x00subject
+	projectDesc  map[string]ProjectDescriptor    // key: project
+	baseTmpl     map[string]BaseJobTemplate      // key: name
+	projectTmpl  map[string]ProjectTemplate      // key: project\x00flavor
 	audit        []AuditEvent
 	nextID       int64
 	now          func() time.Time
@@ -31,7 +35,11 @@ func NewMemory() *Memory {
 	return &Memory{
 		models:       map[string]LLMModel{},
 		projectRoles: map[string]ProjectRole{},
+		projectCaps:  map[string]ProjectCapabilities{},
 		projectMCP:   map[string]ProjectMCPServer{},
+		projectAgent: map[string]ProjectAgent{},
+		projectTmplA: map[string]ProjectAgentTemplate{},
+		projectInstA: map[string]ProjectAgentInstance{},
 		projectDesc:  map[string]ProjectDescriptor{},
 		baseTmpl:     map[string]BaseJobTemplate{},
 		projectTmpl:  map[string]ProjectTemplate{},
@@ -203,6 +211,190 @@ func (m *Memory) DeleteProjectMCPServer(_ context.Context, project, name string)
 	return nil
 }
 
+func (m *Memory) UpsertProjectAgent(_ context.Context, a ProjectAgent) (ProjectAgent, error) {
+	if a.Project == "" || a.Name == "" {
+		return ProjectAgent{}, fmt.Errorf("store: project agent requires project and name: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	k := pmsKey(a.Project, a.Name)
+	if existing, ok := m.projectAgent[k]; ok {
+		a.CreatedAt, a.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		a.CreatedAt = now
+	}
+	a.UpdatedAt = now
+	m.projectAgent[k] = a
+	return a, nil
+}
+
+func (m *Memory) GetProjectAgent(_ context.Context, project, name string) (ProjectAgent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.projectAgent[pmsKey(project, name)]
+	if !ok {
+		return ProjectAgent{}, fmt.Errorf("store: project agent %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return a, nil
+}
+
+func (m *Memory) ListProjectAgents(_ context.Context, project string) ([]ProjectAgent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectAgent{}
+	for _, a := range m.projectAgent {
+		if a.Project == project {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *Memory) DeleteProjectAgent(_ context.Context, project, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := pmsKey(project, name)
+	if _, ok := m.projectAgent[k]; !ok {
+		return fmt.Errorf("store: project agent %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	delete(m.projectAgent, k)
+	return nil
+}
+
+func (m *Memory) UpsertProjectAgentTemplate(_ context.Context, t ProjectAgentTemplate) (ProjectAgentTemplate, error) {
+	if t.Project == "" || t.Name == "" {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: project agent template requires project and name: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	k := pmsKey(t.Project, t.Name)
+	if existing, ok := m.projectTmplA[k]; ok {
+		t.CreatedAt, t.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		t.CreatedAt = now
+	}
+	t.UpdatedAt = now
+	m.projectTmplA[k] = t
+	return t, nil
+}
+
+func (m *Memory) GetProjectAgentTemplate(_ context.Context, project, name string) (ProjectAgentTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.projectTmplA[pmsKey(project, name)]
+	if !ok {
+		return ProjectAgentTemplate{}, fmt.Errorf("store: project agent template %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return t, nil
+}
+
+func (m *Memory) ListProjectAgentTemplates(_ context.Context, project string) ([]ProjectAgentTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectAgentTemplate{}
+	for _, t := range m.projectTmplA {
+		if t.Project == project {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *Memory) DeleteProjectAgentTemplate(_ context.Context, project, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := pmsKey(project, name)
+	if _, ok := m.projectTmplA[k]; !ok {
+		return fmt.Errorf("store: project agent template %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	delete(m.projectTmplA, k)
+	return nil
+}
+
+func instKey(project, template, subject string) string {
+	return project + "\x00" + template + "\x00" + subject
+}
+
+func (m *Memory) UpsertProjectAgentInstance(_ context.Context, in ProjectAgentInstance) (ProjectAgentInstance, error) {
+	if in.Project == "" || in.Template == "" || in.Subject == "" {
+		return ProjectAgentInstance{}, fmt.Errorf("store: project agent instance requires project, template, subject: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	k := instKey(in.Project, in.Template, in.Subject)
+	if existing, ok := m.projectInstA[k]; ok {
+		in.CreatedAt = existing.CreatedAt
+	} else {
+		in.CreatedAt = now
+	}
+	in.UpdatedAt = now
+	m.projectInstA[k] = in
+	return in, nil
+}
+
+func (m *Memory) GetProjectAgentInstance(_ context.Context, project, template, subject string) (ProjectAgentInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	in, ok := m.projectInstA[instKey(project, template, subject)]
+	if !ok {
+		return ProjectAgentInstance{}, fmt.Errorf("store: project agent instance %s/%s/%s: %w", project, template, subject, apperr.ErrNotFound)
+	}
+	return in, nil
+}
+
+func (m *Memory) ListProjectAgentInstancesForOwner(_ context.Context, project, subject string) ([]ProjectAgentInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectAgentInstance{}
+	for _, in := range m.projectInstA {
+		if in.Project == project && in.Subject == subject {
+			out = append(out, in)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Template < out[j].Template })
+	return out, nil
+}
+
+func (m *Memory) ListRunningProjectAgentInstances(_ context.Context) ([]ProjectAgentInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []ProjectAgentInstance{}
+	for _, in := range m.projectInstA {
+		if in.Status == "running" {
+			out = append(out, in)
+		}
+	}
+	return out, nil
+}
+
+func (m *Memory) CountProjectAgentInstances(_ context.Context, project, template string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, in := range m.projectInstA {
+		if in.Project == project && in.Template == template {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *Memory) DeleteProjectAgentInstance(_ context.Context, project, template, subject string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := instKey(project, template, subject)
+	if _, ok := m.projectInstA[k]; !ok {
+		return fmt.Errorf("store: project agent instance %s/%s/%s: %w", project, template, subject, apperr.ErrNotFound)
+	}
+	delete(m.projectInstA, k)
+	return nil
+}
+
 func (m *Memory) UpsertProjectDescriptor(_ context.Context, d ProjectDescriptor) (ProjectDescriptor, error) {
 	if d.Project == "" {
 		return ProjectDescriptor{}, fmt.Errorf("store: project descriptor project required: %w", apperr.ErrBadRequest)
@@ -248,6 +440,42 @@ func (m *Memory) DeleteProjectDescriptor(_ context.Context, project string) erro
 		return fmt.Errorf("store: project descriptor %q: %w", project, apperr.ErrNotFound)
 	}
 	delete(m.projectDesc, project)
+	return nil
+}
+
+func (m *Memory) UpsertProjectCapabilities(_ context.Context, pc ProjectCapabilities) (ProjectCapabilities, error) {
+	if pc.Project == "" {
+		return ProjectCapabilities{}, fmt.Errorf("store: project capabilities project required: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	if existing, ok := m.projectCaps[pc.Project]; ok {
+		pc.CreatedAt, pc.CreatedBy = existing.CreatedAt, existing.CreatedBy
+	} else {
+		pc.CreatedAt = now
+	}
+	pc.UpdatedAt = now
+	m.projectCaps[pc.Project] = pc
+	return pc, nil
+}
+
+func (m *Memory) GetProjectCapabilities(_ context.Context, project string) (ProjectCapabilities, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pc, ok := m.projectCaps[project]
+	if !ok {
+		return ProjectCapabilities{}, fmt.Errorf("store: project capabilities %q: %w", project, apperr.ErrNotFound)
+	}
+	return pc, nil
+}
+
+// DeleteProjectCapabilities is idempotent: most projects never store a matrix,
+// so project-delete cleanup must not fail on a missing row.
+func (m *Memory) DeleteProjectCapabilities(_ context.Context, project string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.projectCaps, project)
 	return nil
 }
 

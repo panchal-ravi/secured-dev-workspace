@@ -77,3 +77,26 @@ func TestPostgresProjectRoles(t *testing.T) {
 		t.Fatalf("revoke absent: want ErrNotFound, got %v", err)
 	}
 }
+
+// TestPostgresLegacyRoleMigration proves the schema script rewrites legacy
+// project-developer grants to project-user on (re-)application.
+func TestPostgresLegacyRoleMigration(t *testing.T) {
+	p := newTestPostgres(t)
+	ctx := context.Background()
+	if _, err := p.db.Exec(`TRUNCATE project_roles`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	if _, err := p.GrantProjectRole(ctx, ProjectRole{Project: "project-acme", Subject: "dev@x", Role: "project-developer", GrantedBy: "pa@x"}); err != nil {
+		t.Fatalf("grant legacy: %v", err)
+	}
+	if err := p.migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if has, _ := p.HasProjectRole(ctx, "project-acme", "dev@x", "project-user"); !has {
+		t.Fatalf("legacy grant not rewritten to project-user")
+	}
+	if has, _ := p.HasProjectRole(ctx, "project-acme", "dev@x", "project-developer"); has {
+		t.Fatalf("legacy project-developer row still present")
+	}
+}

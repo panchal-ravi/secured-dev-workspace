@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   Button,
+  Checkbox,
   InlineNotification,
   Loading,
   Select,
@@ -13,10 +14,21 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Tag,
   TextInput,
 } from '@carbon/react'
 import { Add, TrashCan } from '@carbon/icons-react'
-import { listProjectRoles, grantProjectRole, revokeProjectRole, ProjectRole } from '../../api/client'
+import {
+  listProjectRoles,
+  grantProjectRole,
+  revokeProjectRole,
+  getProjectCapabilities,
+  putProjectCapabilities,
+  ProjectRole,
+} from '../../api/client'
+
+const MATRIX_ROLES = ['project-admin', 'project-user']
+const CAPABILITIES = ['workspaces', 'ai-agents']
 
 export default function Members() {
   const { name = '' } = useParams()
@@ -26,10 +38,19 @@ export default function Members() {
   const [busy, setBusy] = useState('')
   const [subject, setSubject] = useState('')
   const [role, setRole] = useState('project-admin')
+  const [matrix, setMatrix] = useState<Record<string, string[]>>({})
+  const [matrixDefault, setMatrixDefault] = useState(true)
+  const [matrixDirty, setMatrixDirty] = useState(false)
 
   const refresh = () =>
-    listProjectRoles(name)
-      .then(setRoles)
+    Promise.all([
+      listProjectRoles(name).then(setRoles),
+      getProjectCapabilities(name).then((c) => {
+        setMatrix(c.matrix)
+        setMatrixDefault(c.is_default)
+        setMatrixDirty(false)
+      }),
+    ])
       .catch((e) => setErr(e.message))
       .finally(() => setLoading(false))
 
@@ -37,6 +58,16 @@ export default function Members() {
     refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name])
+
+  const toggleCap = (r: string, cap: string, on: boolean) => {
+    setMatrix((m) => {
+      const caps = new Set(m[r] || [])
+      if (on) caps.add(cap)
+      else caps.delete(cap)
+      return { ...m, [r]: CAPABILITIES.filter((c) => caps.has(c)) }
+    })
+    setMatrixDirty(true)
+  }
 
   const run = async (key: string, fn: () => Promise<unknown>) => {
     setBusy(key)
@@ -57,7 +88,7 @@ export default function Members() {
     <div className="page">
       <h2>{name} — members &amp; roles</h2>
       <p style={{ color: 'var(--cds-text-secondary)', margin: '0.5rem 0 1rem' }}>
-        Assign project members the admin or developer role. A member must already belong to the
+        Assign project members the admin or user role. A member must already belong to the
         project (its developers group) for a grant to take effect.
       </p>
       {err && (
@@ -78,7 +109,7 @@ export default function Members() {
           onChange={(e) => setRole(e.target.value)}
         >
           <SelectItem value="project-admin" text="project-admin" />
-          <SelectItem value="project-developer" text="project-developer" />
+          <SelectItem value="project-user" text="project-user" />
         </Select>
         <Button
           renderIcon={Add}
@@ -124,6 +155,57 @@ export default function Members() {
           </Table>
         </TableContainer>
       )}
+
+      <h3 style={{ marginTop: '2rem' }}>
+        Role capabilities{' '}
+        {matrixDefault && !matrixDirty && (
+          <Tag type="gray" size="sm">
+            defaults
+          </Tag>
+        )}
+      </h3>
+      <p style={{ color: 'var(--cds-text-secondary)', margin: '0.5rem 0 1rem' }}>
+        What each role may do in this project. Every member starts from the project-user row;
+        explicit grants add their role&apos;s capabilities on top. project-admin always keeps all
+        capabilities.
+      </p>
+      <TableContainer>
+        <Table size="lg">
+          <TableHead>
+            <TableRow>
+              <TableHeader>Role</TableHeader>
+              {CAPABILITIES.map((c) => (
+                <TableHeader key={c}>{c}</TableHeader>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {MATRIX_ROLES.map((r) => (
+              <TableRow key={r}>
+                <TableCell>{r}</TableCell>
+                {CAPABILITIES.map((c) => (
+                  <TableCell key={c}>
+                    <Checkbox
+                      id={`cap-${r}-${c}`}
+                      labelText=""
+                      checked={(matrix[r] || []).includes(c)}
+                      disabled={r === 'project-admin'}
+                      onChange={(_, { checked }) => toggleCap(r, c, checked)}
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      <Button
+        style={{ marginTop: '1rem' }}
+        disabled={!matrixDirty || busy !== ''}
+        onClick={() => run('capabilities', () => putProjectCapabilities(name, matrix))}
+      >
+        Save capabilities
+      </Button>
     </div>
   )
 }

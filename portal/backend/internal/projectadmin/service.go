@@ -526,6 +526,13 @@ func (s *Service) TestServer(ctx context.Context, actor string, groups []string,
 		return store.ProjectMCPServer{}, err
 	}
 
+	// Cache the tool catalog (with names/descriptions) so template authoring can
+	// offer a per-tool subset picker offline. Best-effort: a listing failure must
+	// not fail the Test itself (the probe below is the real verdict).
+	if tools, terr := s.gateway.ListTools(ctx, peerID); terr == nil {
+		row.Tools = toStoreTools(tools)
+	}
+
 	// The virtual servers + scoped token are throwaway probe scaffolding. Tear each
 	// down with a best-effort defer registered at creation, so an error on any later
 	// step still cleans up what was already created (the peer is kept, by design).
@@ -574,6 +581,40 @@ func (s *Service) TestServer(ctx context.Context, actor string, groups []string,
 	}
 	s.audit(ctx, actor, "project-mcp.test", project+"/"+name, outcome, nil)
 	return saved, nil
+}
+
+// ServerTools returns a deployed server's tool catalog (id/name/description) for
+// the template-authoring subset picker. It returns the catalog cached at Test
+// time; if none is cached yet but the peer is registered, it lists live from the
+// gateway. Membership is checked via GetProject.
+func (s *Service) ServerTools(ctx context.Context, groups []string, project, name string) ([]store.MCPTool, error) {
+	if _, err := s.projects.GetProject(ctx, project, groups); err != nil {
+		return nil, err
+	}
+	row, err := s.store.GetProjectMCPServer(ctx, project, name)
+	if err != nil {
+		return nil, err
+	}
+	if len(row.Tools) > 0 {
+		return row.Tools, nil
+	}
+	if row.PeerID == "" {
+		return []store.MCPTool{}, nil
+	}
+	tools, err := s.gateway.ListTools(ctx, row.PeerID)
+	if err != nil {
+		return nil, err
+	}
+	return toStoreTools(tools), nil
+}
+
+// toStoreTools converts the gateway's tool listing into the persisted shape.
+func toStoreTools(tools []mcpgw.ToolInfo) []store.MCPTool {
+	out := make([]store.MCPTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, store.MCPTool{ID: t.ID, Name: t.Name, Description: t.Description})
+	}
+	return out
 }
 
 // DeleteServer tears a deployed server down lease-safely: stop the Nomad job,

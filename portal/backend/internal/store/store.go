@@ -70,9 +70,21 @@ type ProjectMCPServer struct {
 	GatewayURL   string          `json:"gateway_url,omitempty"`
 	Transport    string          `json:"transport,omitempty"` // sse | streamable-http; passed to the gateway at RegisterPeer
 	TestResult   *MCPTestResult  `json:"test_result,omitempty"`
-	CreatedBy    string          `json:"created_by,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	// Tools is the gateway-discovered tool catalog (id/name/description), cached
+	// at Test time so a template author can pick a per-tool subset without a live
+	// gateway round-trip. Additive — absent on rows tested before this field.
+	Tools     []MCPTool `json:"tools,omitempty"`
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// MCPTool is one tool a deployed MCP server exposes, as discovered by the
+// ContextForge gateway. ID is the gateway tool id used to scope a virtual server.
+type MCPTool struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // MCPTestResult records the consumption-mirror verification of a deployed server.
@@ -85,6 +97,102 @@ type MCPTestResult struct {
 	OtherServerChecked bool      `json:"other_server_checked"`
 	Message            string    `json:"message,omitempty"`
 	At                 time.Time `json:"at"`
+}
+
+// ProjectAgent is a YAML-configured AI agent a project-user deployed into their
+// project. YAMLSource is the power user's verbatim agent YAML (the single source
+// of truth, re-parsed on each deploy); the flattened fields below are denormalized
+// for listing. No secret material is stored — the per-agent LiteLLM key lives only
+// in Vault KV, referenced by LLMKeyAlias.
+type ProjectAgent struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Version int    `json:"version"`
+
+	YAMLSource  string           `json:"yaml_source"`
+	Description string           `json:"description,omitempty"`
+	Greeting    string           `json:"greeting,omitempty"`
+	Model       string           `json:"model,omitempty"`
+	MCPServers  []string         `json:"mcp_servers,omitempty"`
+	JobID       string           `json:"job_id,omitempty"`
+	Endpoint    string           `json:"endpoint,omitempty"`      // host:port resolved from placement
+	LLMKeyAlias string           `json:"llm_key_alias,omitempty"` // LiteLLM virtual-key alias, deleted on agent delete
+	TestResult  *AgentTestResult `json:"test_result,omitempty"`
+
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// AgentTestResult records the /healthz probe of a deployed agent.
+type AgentTestResult struct {
+	Passed          bool      `json:"passed"`
+	ToolsDiscovered int       `json:"tools_discovered"`
+	Message         string    `json:"message,omitempty"`
+	At              time.Time `json:"at"`
+}
+
+// ProjectAgentTemplate is a project-admin-authored agent blueprint: system prompt,
+// model, and a per-server tool subset, authored as YAML. The admin deploy-tests a
+// template, then publishes it as an "agent card" that project-users instantiate
+// (see ProjectAgentInstance). YAMLSource is the source of truth; the flattened
+// fields are for the card view. No secret material is stored — the test LiteLLM
+// key lives only in Vault KV, referenced by LLMKeyAlias.
+type ProjectAgentTemplate struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	Status  string `json:"status"` // draft | tested | published
+	Version int    `json:"version"`
+
+	YAMLSource  string `json:"yaml_source"`
+	Description string `json:"description,omitempty"`
+	Greeting    string `json:"greeting,omitempty"`
+	Model       string `json:"model,omitempty"`
+	// ToolSelection is server → selected tool names (empty slice = all the
+	// server's tools), denormalized from the YAML for the card view.
+	ToolSelection map[string][]string `json:"tool_selection,omitempty"`
+
+	// Wiring records the ContextForge virtual servers + scoped-token names created
+	// for this template, so publish reuses them and delete tears them down.
+	Wiring []TemplateWiring `json:"wiring,omitempty"`
+
+	TestResult  *AgentTestResult `json:"test_result,omitempty"`
+	JobID       string           `json:"job_id,omitempty"`        // admin test job
+	Endpoint    string           `json:"endpoint,omitempty"`      // host:port of the test job
+	LLMKeyAlias string           `json:"llm_key_alias,omitempty"` // test LiteLLM key alias
+
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TemplateWiring is one MCP server's ContextForge wiring for a template: the
+// subset-scoped virtual server and the client token minted against it, plus the
+// Vault KV path where the agent job reads that server's {url, token}.
+type TemplateWiring struct {
+	Server          string `json:"server"`
+	VirtualServerID string `json:"virtual_server_id"`
+	TokenName       string `json:"token_name"`
+	KVPath          string `json:"kv_path"`
+}
+
+// ProjectAgentInstance is a project-user's isolated run of a published template.
+// It owns a per-user Nomad job but reuses the template's LiteLLM key and scoped
+// MCP token (per-user delegated identity is a later phase). Namespace is stored
+// so the idle reaper can purge the job without a project lookup. No secret
+// material is stored here.
+type ProjectAgentInstance struct {
+	Project      string    `json:"project"`
+	Template     string    `json:"template"`
+	Subject      string    `json:"subject"` // owner email
+	Namespace    string    `json:"namespace"`
+	Status       string    `json:"status"` // stopped | running
+	JobID        string    `json:"job_id,omitempty"`
+	Endpoint     string    `json:"endpoint,omitempty"` // host:port of the running job
+	LastActiveAt time.Time `json:"last_active_at"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // LLMModel is a platform-onboarded model in the LiteLLM gateway plus its registry
@@ -120,6 +228,20 @@ type ProjectRole struct {
 	Role      string    `json:"role"`
 	GrantedBy string    `json:"granted_by"`
 	GrantedAt time.Time `json:"granted_at"`
+}
+
+// ProjectCapabilities is a project's role→capability matrix row. Matrix maps a
+// project role (project-admin / project-user) to the
+// capabilities it grants (workspaces / ai-agents). A project without a row uses
+// rbac.DefaultCapabilityMatrix; a stored matrix replaces the defaults wholesale.
+// Get returns apperr.ErrNotFound when no row exists; Delete is idempotent (most
+// projects never store a row). No secret material.
+type ProjectCapabilities struct {
+	Project   string              `json:"project"`
+	Matrix    map[string][]string `json:"matrix"`
+	CreatedBy string              `json:"created_by,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
 }
 
 // ProjectDescriptor is a project's portal descriptor row: the contract the portal
@@ -250,11 +372,38 @@ type Store interface {
 	ListProjectRoles(ctx context.Context, project string) ([]ProjectRole, error)
 	ProjectRolesForSubject(ctx context.Context, subject string) ([]ProjectRole, error)
 
+	// Per-project role→capability matrix (absent row = built-in defaults).
+	UpsertProjectCapabilities(ctx context.Context, pc ProjectCapabilities) (ProjectCapabilities, error)
+	GetProjectCapabilities(ctx context.Context, project string) (ProjectCapabilities, error)
+	DeleteProjectCapabilities(ctx context.Context, project string) error
+
 	// Project-deployed MCP servers (blueprint-instantiated).
 	UpsertProjectMCPServer(ctx context.Context, s ProjectMCPServer) (ProjectMCPServer, error)
 	GetProjectMCPServer(ctx context.Context, project, name string) (ProjectMCPServer, error)
 	ListProjectMCPServers(ctx context.Context, project string) ([]ProjectMCPServer, error)
 	DeleteProjectMCPServer(ctx context.Context, project, name string) error
+
+	// Project-deployed AI agents (YAML-configured deep agents).
+	UpsertProjectAgent(ctx context.Context, a ProjectAgent) (ProjectAgent, error)
+	GetProjectAgent(ctx context.Context, project, name string) (ProjectAgent, error)
+	ListProjectAgents(ctx context.Context, project string) ([]ProjectAgent, error)
+	DeleteProjectAgent(ctx context.Context, project, name string) error
+
+	// Project-admin-authored AI agent templates (published as cards).
+	UpsertProjectAgentTemplate(ctx context.Context, t ProjectAgentTemplate) (ProjectAgentTemplate, error)
+	GetProjectAgentTemplate(ctx context.Context, project, name string) (ProjectAgentTemplate, error)
+	ListProjectAgentTemplates(ctx context.Context, project string) ([]ProjectAgentTemplate, error)
+	DeleteProjectAgentTemplate(ctx context.Context, project, name string) error
+
+	// Per-user AI agent instances (a project-user's isolated run of a published
+	// template). Keyed on (project, template, subject) so a user owns exactly one
+	// instance per template and can never resolve another user's.
+	UpsertProjectAgentInstance(ctx context.Context, in ProjectAgentInstance) (ProjectAgentInstance, error)
+	GetProjectAgentInstance(ctx context.Context, project, template, subject string) (ProjectAgentInstance, error)
+	ListProjectAgentInstancesForOwner(ctx context.Context, project, subject string) ([]ProjectAgentInstance, error)
+	ListRunningProjectAgentInstances(ctx context.Context) ([]ProjectAgentInstance, error)
+	CountProjectAgentInstances(ctx context.Context, project, template string) (int, error)
+	DeleteProjectAgentInstance(ctx context.Context, project, template, subject string) error
 
 	// Project descriptors (the portal's per-project contract; was Vault KV).
 	UpsertProjectDescriptor(ctx context.Context, d ProjectDescriptor) (ProjectDescriptor, error)

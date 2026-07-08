@@ -92,6 +92,7 @@ func (f *fakeNomad) JobExists(_, _ string) (bool, error) { return f.existsResp, 
 type fakeGateway struct {
 	probe          mcpgw.ScopeProbe
 	tools          []string
+	toolInfos      []mcpgw.ToolInfo
 	registered     []string
 	updatedPeers   []string // "peerID url transport" per UpdatePeer call
 	updatePeerErr  error
@@ -119,6 +120,9 @@ func (f *fakeGateway) ActivatePeer(_ context.Context, peerID string) error {
 	return nil
 }
 func (f *fakeGateway) DiscoverTools(context.Context, string) ([]string, error) { return f.tools, nil }
+func (f *fakeGateway) ListTools(context.Context, string) ([]mcpgw.ToolInfo, error) {
+	return f.toolInfos, nil
+}
 func (f *fakeGateway) CreateVirtualServer(_ context.Context, name, _ string, _ []string) (string, error) {
 	f.createdVS = append(f.createdVS, name)
 	return "vs-" + name, nil
@@ -559,6 +563,38 @@ func TestTestServer(t *testing.T) {
 	}
 	if _, err := svc.TestServer(ctx, "acme-admin@x", []string{"project-acme-developers"}, "project-acme", "nope"); !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("unknown: want ErrNotFound, got %v", err)
+	}
+}
+
+// TestServerTools pins the tool-catalog surface for template authoring: Test
+// caches the gateway's tools (with names) on the row, and ServerTools returns
+// that cache without a live gateway call.
+func TestServerTools(t *testing.T) {
+	ex := &fakeExecutor{rec: instanceRecord()}
+	g := &fakeGateway{
+		probe:     passingProbe(),
+		tools:     []string{"t1", "t2"},
+		toolInfos: []mcpgw.ToolInfo{{ID: "t1", Name: "search", Description: "full-text"}, {ID: "t2", Name: "fetch"}},
+	}
+	svc, _ := newService(t, ex, &fakeNomad{}, g)
+	ctx := context.Background()
+	groups := []string{"project-acme-developers"}
+	if _, err := svc.DeployServer(ctx, "acme-admin@x", groups, "project-acme", pgInput()); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if _, err := svc.TestServer(ctx, "acme-admin@x", groups, "project-acme", "postgres-mcp"); err != nil {
+		t.Fatalf("test: %v", err)
+	}
+
+	tools, err := svc.ServerTools(ctx, groups, "project-acme", "postgres-mcp")
+	if err != nil {
+		t.Fatalf("ServerTools: %v", err)
+	}
+	if len(tools) != 2 || tools[0].Name != "search" || tools[0].Description != "full-text" {
+		t.Fatalf("cached tool catalog not returned: %+v", tools)
+	}
+	if _, err := svc.ServerTools(ctx, groups, "project-acme", "nope"); !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("unknown server: want ErrNotFound, got %v", err)
 	}
 }
 

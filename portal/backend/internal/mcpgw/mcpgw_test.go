@@ -346,6 +346,40 @@ func TestCreateVirtualServer_ReplacesExistingByName(t *testing.T) {
 	}
 }
 
+func TestListTools(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tools", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, []map[string]string{
+			{"id": "t1", "gatewayId": "peer-1", "name": "search", "description": "full-text search"},
+			{"id": "t2", "gateway_id": "peer-1", "name": "fetch", "description": "get one record"},
+			{"id": "t3", "gatewayId": "peer-2", "name": "other", "description": "different peer"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "admin@acme.example", "test-secret", srv.Client())
+	tools, err := c.ListTools(context.Background(), "peer-1")
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("got %d tools for peer-1, want 2 (peer-2's tool must be filtered out)", len(tools))
+	}
+	// Both the camelCase and snake_case gatewayId spellings must be recognized,
+	// and names/descriptions must survive (DiscoverTools drops them).
+	byID := map[string]ToolInfo{}
+	for _, tl := range tools {
+		byID[tl.ID] = tl
+	}
+	if byID["t1"].Name != "search" || byID["t1"].Description != "full-text search" {
+		t.Fatalf("t1 metadata lost: %+v", byID["t1"])
+	}
+	if byID["t2"].Name != "fetch" {
+		t.Fatalf("snake_case gateway_id tool not matched: %+v", byID)
+	}
+}
+
 func TestMintAdminJWT(t *testing.T) {
 	c := &httpClient{adminEmail: "admin@acme.example", jwtSecret: "s3cr3t"}
 	tok, err := c.mintAdminJWT()
