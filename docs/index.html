@@ -1,0 +1,1275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Secured Remote Dev Workspace — Architecture Guide</title>
+<meta name="description" content="A Level-300 walkthrough of a central, network-isolated developer workspace built on IBM Verify and the HashiCorp stack (Boundary, Vault, Nomad): why source code should never live on a developer's machine, and how identity-brokered access, just-in-time credentials, and structural tenant isolation deliver it." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#fff; --bg-layer:#f4f4f4; --bg-hover:#e8e8e8; --border:#e0e0e0; --border-strong:#c6c6c6;
+  --text:#161616; --text-sub:#525252; --text-helper:#6f6f6f; --text-on-color:#fff;
+  --primary:#0f62fe; --primary-hv:#0043ce; --primary-wash:#edf5ff; --focus:#0f62fe;
+  --support-err:#da1e28; --support-ok:#24a148; --support-wn:#f1c21b;
+  /* Workspace layer accents: 1 identity(Verify) · 2 access(Boundary) · 3 credentials(Vault) · 4 egress(gateways) · 5 runtime(Nomad) */
+  --accent-1:#8a3ffc; --accent-1-wash:#f6f2ff;   /* IBM Verify — purple */
+  --accent-2:#1192e8; --accent-2-wash:#e5f6ff;   /* Boundary — cyan */
+  --accent-3:#007d79; --accent-3-wash:#d9fbfb;   /* Vault — teal */
+  --accent-4:#ee5396; --accent-4-wash:#fff0f7;   /* AI gateways — magenta */
+  --accent-5:#ff832b; --accent-5-wash:#fff2e8;   /* Nomad — orange */
+  --accent-risk:#da1e28; --accent-risk-wash:#fff1f1;
+  --pillar-count:5;
+  --s-01:.125rem; --s-02:.25rem; --s-03:.5rem; --s-04:.75rem; --s-05:1rem; --s-06:1.5rem;
+  --s-07:2rem; --s-08:2.5rem; --s-09:3rem; --s-10:4rem; --s-11:5rem; --s-12:6rem;
+  --ease-prod:cubic-bezier(.2,0,.38,.9); --ease-expr:cubic-bezier(.4,.14,.3,1);
+  --dur-fast:110ms; --dur-mod:240ms; --dur-slow:400ms;
+  --font-sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
+  --font-mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box} html,body{margin:0;padding:0} html{scroll-behavior:smooth}
+body{font-family:var(--font-sans);font-weight:400;font-size:17px;line-height:1.6;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+a{color:var(--primary);text-decoration:none;border-bottom:1px solid transparent;transition:border-color var(--dur-fast) var(--ease-prod)}
+a:hover{border-bottom-color:var(--primary)} a:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+code,pre,.mono{font-family:var(--font-mono);font-size:.95em}
+pre{background:var(--bg-layer);border:1px solid var(--border);padding:var(--s-05);overflow-x:auto;margin:0;line-height:1.6;font-size:13px}
+code.inline{background:var(--bg-layer);padding:.1em .35em;border-radius:2px;font-size:.92em}
+.page{max-width:1200px;margin:0 auto;padding:0 var(--s-06)} @media(min-width:1024px){.page{padding:0 var(--s-08)}}
+.progress{position:fixed;inset:0 auto auto 0;width:100%;height:2px;background:transparent;z-index:100;pointer-events:none}
+.progress::before{content:'';display:block;height:100%;width:var(--progress,0%);background:var(--primary);transition:width 80ms linear}
+.header{position:sticky;top:0;z-index:80;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.2) blur(8px);-webkit-backdrop-filter:saturate(1.2) blur(8px);border-bottom:1px solid var(--border)}
+.header-inner{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:var(--s-06);min-height:48px;padding:0 var(--s-06)}
+.brand{font-weight:600;font-size:14px;letter-spacing:.02em;white-space:nowrap}
+.brand .brand-dot{display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--primary);margin-right:var(--s-03);vertical-align:1px}
+.chapters-nav{display:flex;gap:var(--s-01);overflow-x:auto;scrollbar-width:none} .chapters-nav::-webkit-scrollbar{display:none}
+.chapters-nav a{font-size:12px;padding:6px 10px;color:var(--text-sub);border-radius:2px;white-space:nowrap}
+.chapters-nav a:hover{background:var(--bg-layer);color:var(--text)}
+.chapters-nav a.active{color:var(--primary);background:var(--primary-wash);font-weight:500}
+.header-actions{display:flex;gap:var(--s-03);align-items:center}
+.btn-ghost{background:transparent;color:var(--text-sub);border:1px solid transparent;padding:6px 10px;font:500 12px var(--font-sans);cursor:pointer}
+.btn-ghost:hover{background:var(--bg-layer);color:var(--text)}
+.btn-ghost kbd{font:500 10px var(--font-mono);border:1px solid var(--border-strong);padding:1px 4px;border-radius:2px;margin-left:6px;color:var(--text-sub)}
+.dotnav{position:fixed;bottom:0;left:0;right:0;z-index:70;background:var(--bg);border-top:1px solid var(--border);display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:var(--s-05);padding:10px var(--s-06);min-height:56px}
+.dotnav-btn{background:transparent;border:1px solid var(--border-strong);color:var(--text);padding:6px 12px;font:500 12px var(--font-sans);cursor:pointer;transition:all var(--dur-fast) var(--ease-prod)}
+.dotnav-btn:hover:not([disabled]){background:var(--primary);color:var(--text-on-color);border-color:var(--primary)}
+.dotnav-btn[disabled]{opacity:.4;cursor:not-allowed}
+.dotnav-label{text-align:center;font-size:12px;color:var(--text-sub);letter-spacing:.02em;text-transform:uppercase}
+.dotnav-dots{display:flex;gap:6px;justify-content:center;align-items:center;margin-top:4px}
+.dotnav-dots .dot{width:6px;height:6px;border-radius:50%;background:var(--border-strong);transition:all var(--dur-fast) var(--ease-prod)}
+.dotnav-dots .dot.active{background:var(--primary);width:16px;border-radius:3px}
+main{padding-bottom:96px}
+.chapter{padding:var(--s-10) 0 var(--s-11);border-top:1px solid var(--border);scroll-margin-top:52px}
+.chapter:first-of-type{border-top:none}
+.chapter-num{font:500 11px var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text-helper);display:block;margin-bottom:var(--s-03)}
+.chapter h2{font-weight:600;font-size:40px;line-height:1.15;margin:0 0 var(--s-05);max-width:840px;letter-spacing:-.01em}
+@media(min-width:1024px){.chapter h2{font-size:46px}}
+.chapter .lede{font-weight:300;font-size:20px;line-height:1.45;color:var(--text-sub);max-width:730px;margin:0 0 var(--s-08)}
+.subsection{padding-top:var(--s-08);opacity:0;transform:translateY(16px);transition:opacity var(--dur-slow) var(--ease-expr),transform var(--dur-slow) var(--ease-expr)}
+.subsection.revealed{opacity:1;transform:translateY(0)}
+.subsection h3{font-weight:600;font-size:22px;margin:0 0 var(--s-04);max-width:820px}
+.subsection h4{font-weight:600;font-size:14px;letter-spacing:.02em;text-transform:uppercase;color:var(--text-helper);margin:var(--s-06) 0 var(--s-03)}
+.subsection p{max-width:730px;margin:0 0 var(--s-05)}
+.subsection p.helper{color:var(--text-sub)}
+.grid{display:grid;gap:var(--s-05)} .grid.two{grid-template-columns:1fr} .grid.three{grid-template-columns:1fr}
+@media(min-width:720px){.grid.two{grid-template-columns:1fr 1fr}.grid.three{grid-template-columns:1fr 1fr}}
+@media(min-width:1024px){.grid.three{grid-template-columns:1fr 1fr 1fr}}
+.card{border:1px solid var(--border);background:var(--bg);padding:var(--s-05) var(--s-06);transition:border-color var(--dur-fast) var(--ease-prod)}
+.card:hover{border-color:var(--border-strong)}
+.card .card-title{font-weight:600;font-size:18px;margin:0 0 var(--s-03)}
+.card p{margin:0 0 var(--s-03);color:var(--text-sub);font-size:15px;line-height:1.55}
+.card p:last-child{margin-bottom:0}
+.card .card-tag{display:block;font:500 11px var(--font-mono);letter-spacing:.08em;color:var(--text-helper);margin:0 0 var(--s-03);text-transform:uppercase}
+.see-ch{display:inline-block;margin-top:var(--s-04);font:500 11px var(--font-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--text-helper)} .see-ch:hover{color:var(--primary)}
+.chip{display:inline-flex;align-items:center;gap:6px;font:500 11px var(--font-mono);letter-spacing:.02em;padding:2px 8px;border-radius:2px;border:1px solid;text-transform:uppercase}
+.chip[data-accent="1"]{background:var(--accent-1-wash);border-color:var(--accent-1);color:var(--accent-1)}
+.chip[data-accent="2"]{background:var(--accent-2-wash);border-color:var(--accent-2);color:var(--accent-2)}
+.chip[data-accent="3"]{background:var(--accent-3-wash);border-color:var(--accent-3);color:var(--accent-3)}
+.chip[data-accent="4"]{background:var(--accent-4-wash);border-color:var(--accent-4);color:var(--accent-4)}
+.chip[data-accent="5"]{background:var(--accent-5-wash);border-color:var(--accent-5);color:var(--accent-5)}
+.chip[data-accent="risk"]{background:var(--accent-risk-wash);border-color:var(--accent-risk);color:var(--accent-risk)}
+.node{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:.92em;padding:1px 7px;border-radius:2px;border:1px solid var(--border-strong);background:var(--bg);cursor:pointer;transition:all var(--dur-fast) var(--ease-prod)}
+.node:hover{background:var(--bg-layer);border-color:var(--primary);color:var(--primary)}
+.node:focus-visible{background:var(--bg-layer);border-color:var(--primary);color:var(--primary);outline:2px solid var(--focus);outline-offset:2px}
+.node.active{background:var(--primary-wash);border-color:var(--primary);color:var(--primary)}
+body.has-selection .node:not(.active){opacity:.35}
+.callout{border-left:3px solid var(--primary);background:var(--primary-wash);padding:var(--s-04) var(--s-05);margin:var(--s-06) 0;font-size:16px;line-height:1.6}
+.callout strong{font-weight:600}
+.callout[data-accent="risk"]{border-left-color:var(--accent-risk);background:var(--accent-risk-wash)}
+.callout[data-accent="1"]{border-left-color:var(--accent-1);background:var(--accent-1-wash)}
+.callout[data-accent="3"]{border-left-color:var(--accent-3);background:var(--accent-3-wash)}
+.callout[data-accent="4"]{border-left-color:var(--accent-4);background:var(--accent-4-wash)}
+.callout[data-accent="5"]{border-left-color:var(--accent-5);background:var(--accent-5-wash)}
+details.why-not{margin-top:var(--s-04);border-top:1px dashed var(--border);padding-top:var(--s-04)}
+details.why-not summary{font:500 12px var(--font-mono);color:var(--text-sub);cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:var(--s-03)}
+details.why-not summary::-webkit-details-marker{display:none}
+details.why-not summary::before{content:'+';display:inline-block;width:14px;height:14px;line-height:12px;text-align:center;border:1px solid var(--border-strong);color:var(--text-sub);font-family:var(--font-mono);font-size:13px}
+details.why-not[open] summary::before{content:'−'} details.why-not summary:hover{color:var(--primary)}
+details.why-not summary:hover::before{border-color:var(--primary);color:var(--primary)}
+details.why-not[open] summary{color:var(--text)}
+details.why-not .why-body{margin-top:var(--s-03);padding-left:22px;font-size:13px;line-height:1.55;color:var(--text-sub)}
+details.why-not .why-body p{margin:0 0 var(--s-03)}
+.svg-frame{background:var(--bg-layer);border:1px solid var(--border);padding:var(--s-06);margin:var(--s-06) 0 var(--s-05);display:flex;justify-content:center}
+.svg-frame svg{width:100%;height:auto;max-width:920px;display:block}
+.caption{font-size:14px;color:var(--text-sub);max-width:730px;margin:0 0 var(--s-06)}
+.detail{position:fixed;top:80px;right:-440px;width:420px;max-width:92vw;background:var(--bg);border:1px solid var(--border);box-shadow:0 6px 24px rgba(0,0,0,.08);padding:var(--s-06);transition:right var(--dur-mod) var(--ease-expr);z-index:85;max-height:calc(100vh - 140px);overflow-y:auto}
+body.has-selection .detail{right:24px}
+.detail h4{margin:0 0 var(--s-03);font-size:18px;font-weight:600}
+.detail .detail-kind{font:500 11px var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--text-helper)}
+.detail .detail-body{font-size:14px;color:var(--text-sub);margin:var(--s-04) 0;line-height:1.6}
+.detail .detail-meta{border-top:1px solid var(--border);padding-top:var(--s-04);font-size:13px;margin:0}
+.detail .detail-meta dt{font:500 11px var(--font-mono);text-transform:uppercase;color:var(--text-helper);margin-top:var(--s-03)}
+.detail .detail-meta dd{margin:2px 0 0;color:var(--text);font-family:var(--font-mono);font-size:13px;word-break:break-word}
+.detail-close{position:absolute;top:10px;right:10px;background:transparent;border:0;font:400 20px var(--font-mono);color:var(--text-sub);cursor:pointer;padding:4px 8px}
+.detail-close:hover{color:var(--text);background:var(--bg-layer)}
+.hero{padding-top:var(--s-11);border-top:0}
+.hero-eyebrow{font:500 12px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-helper);margin-bottom:var(--s-05)}
+.hero h1{font-weight:600;font-size:44px;line-height:1.08;letter-spacing:-.015em;margin:0 0 var(--s-06);max-width:940px}
+@media(min-width:1024px){.hero h1{font-size:60px}}
+.hero .lede{font-size:21px;font-weight:300;line-height:1.5;color:var(--text-sub);max-width:770px;margin:0 0 var(--s-08)}
+.hero-thesis{display:grid;grid-template-columns:1fr;gap:var(--s-04);margin:var(--s-08) 0}
+@media(min-width:720px){.hero-thesis{grid-template-columns:repeat(2,1fr)}}
+@media(min-width:1024px){.hero-thesis{grid-template-columns:repeat(var(--pillar-count,5),1fr)}}
+.hero-thesis .pillar{padding:var(--s-05);border:1px solid var(--border);border-top:2px solid var(--border-strong);background:var(--bg)}
+.hero-thesis .pillar[data-accent="1"]{border-top-color:var(--accent-1)} .hero-thesis .pillar[data-accent="2"]{border-top-color:var(--accent-2)}
+.hero-thesis .pillar[data-accent="3"]{border-top-color:var(--accent-3)} .hero-thesis .pillar[data-accent="4"]{border-top-color:var(--accent-4)}
+.hero-thesis .pillar[data-accent="5"]{border-top-color:var(--accent-5)}
+.hero-thesis .pillar .p-num{font:500 11px var(--font-mono);color:var(--text-helper);letter-spacing:.08em}
+.hero-thesis .pillar h3{margin:var(--s-03) 0;font-weight:600;font-size:17px}
+.hero-thesis .pillar p{margin:0;color:var(--text-sub);font-size:13.5px;line-height:1.5}
+.stat-badges{display:flex;flex-wrap:wrap;gap:var(--s-05);margin:var(--s-06) 0}
+.stat-badge{border:1px solid var(--border);border-left:3px solid var(--accent-risk);background:var(--bg);padding:var(--s-04) var(--s-05);flex:1 1 200px}
+.stat-badge .sb-num{font-weight:600;font-size:26px;letter-spacing:-.01em}
+.stat-badge .sb-lbl{font-size:13px;color:var(--text-sub);margin-top:var(--s-02);line-height:1.4}
+.stat-badge .sb-src{font:500 10px var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--text-helper);margin-top:var(--s-03);display:block}
+.stat-badge .sb-src a{color:var(--text-helper);border-bottom-color:var(--border)} .stat-badge .sb-src a:hover{color:var(--primary)}
+.card.risk-card{display:flex;flex-direction:column;gap:var(--s-03)}
+.card.risk-card .mitigation{margin-top:var(--s-03);padding-top:var(--s-04);border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:var(--s-02)}
+.card.risk-card .mitigation .mit-head{font:500 10px var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--text-helper)}
+.card.risk-card .mitigation p{color:var(--text-sub);font-size:13px;line-height:1.5;margin:0}
+.card.risk-card .src{font:500 10px var(--font-mono);color:var(--text-helper)} .card.risk-card .src a{color:var(--text-helper);border-bottom-color:var(--border)} .card.risk-card .src a:hover{color:var(--primary)}
+.layer-tag{display:inline-flex;align-items:center;gap:6px;font:500 11px var(--font-mono);letter-spacing:.02em;padding:2px 6px;border:1px solid var(--border)}
+.layer-tag::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--primary)}
+.layer-tag[data-accent="1"]::before{background:var(--accent-1)} .layer-tag[data-accent="1"]{color:var(--accent-1)}
+.layer-tag[data-accent="2"]::before{background:var(--accent-2)} .layer-tag[data-accent="2"]{color:var(--accent-2)}
+.layer-tag[data-accent="3"]::before{background:var(--accent-3)} .layer-tag[data-accent="3"]{color:var(--accent-3)}
+.layer-tag[data-accent="4"]::before{background:var(--accent-4)} .layer-tag[data-accent="4"]{color:var(--accent-4)}
+.layer-tag[data-accent="5"]::before{background:var(--accent-5)} .layer-tag[data-accent="5"]{color:var(--accent-5)}
+.peel{border:1px solid var(--border);background:var(--bg);padding:var(--s-05);margin:var(--s-05) 0}
+.peel__head{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--s-04)}
+.peel__head h4{margin:0;font-size:14px;text-transform:uppercase;letter-spacing:.02em;color:var(--text-helper)}
+.peel__reset{font:500 12px var(--font-sans);color:var(--text-sub);background:transparent;border:1px solid var(--border-strong);padding:4px 10px;cursor:pointer}
+.peel__reset:hover{background:var(--bg-layer);color:var(--text)}
+.peel__chips{display:flex;flex-wrap:wrap;gap:var(--s-03);margin-bottom:var(--s-05)}
+.peel-chip{display:inline-flex;align-items:center;gap:6px;font:500 12px var(--font-mono);padding:6px 10px;border:1px solid var(--border-strong);background:var(--bg);color:var(--text);cursor:pointer}
+.peel-chip__pip{width:8px;height:8px;border-radius:50%;background:var(--support-ok)}
+.peel-chip[aria-pressed="false"]{opacity:.5;border-style:dashed}
+.peel-chip[aria-pressed="false"] .peel-chip__pip{background:var(--border-strong)}
+.peel__break{border-left:3px solid var(--support-ok);background:var(--bg-layer);padding:var(--s-04) var(--s-05)}
+.peel__break.is-broken{border-left-color:var(--accent-risk);background:var(--accent-risk-wash)}
+.peel__break p{margin:0 0 var(--s-03);font-size:14px;font-weight:500} .peel__break ul{margin:0;padding-left:var(--s-05)}
+.peel__break li{font-size:14px;color:var(--text-sub);margin-bottom:var(--s-03)}
+.stepper{border:1px solid var(--border);background:var(--bg);padding:var(--s-05);margin:var(--s-05) 0}
+.stepper__rows{display:flex;flex-direction:column;gap:var(--s-03);margin-bottom:var(--s-05)}
+.step-row{border:1px solid var(--border);padding:var(--s-04);opacity:.4;transition:opacity var(--dur-mod),border-color var(--dur-mod),background var(--dur-mod)}
+.step-row.is-done{opacity:.8;border-color:var(--support-ok)}
+.step-row.is-active{opacity:1;border-color:var(--primary);background:var(--primary-wash)}
+.step-row .sr-tag{font:500 10px var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-helper);display:block;margin-bottom:2px}
+.step-row .sr-body{font-size:14px}
+.stepper__ctl{display:flex;align-items:center;gap:var(--s-04);flex-wrap:wrap}
+.stepper__ctl button{font:500 12px var(--font-sans);padding:6px 12px;border:1px solid var(--border-strong);background:var(--bg);cursor:pointer}
+.stepper__ctl button:hover{background:var(--primary);color:var(--text-on-color);border-color:var(--primary)}
+.stepper__indicator{font:500 12px var(--font-mono);color:var(--text-sub)}
+/* two-panel IDE stepper (Chapter 05) */
+.ide-stepper{border:1px solid var(--border);background:var(--bg);padding:var(--s-05);margin:var(--s-05) 0}
+.ide-stepper__grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:var(--s-05);align-items:start}
+@media (max-width:820px){.ide-stepper__grid{grid-template-columns:1fr}}
+.ide-steps{display:flex;flex-direction:column;gap:var(--s-03)}
+.ide-steps .step-row{cursor:pointer}
+.ide-steps__ctl{display:flex;align-items:center;gap:var(--s-04);flex-wrap:wrap;margin-top:var(--s-03)}
+.ide-steps__ctl button{font:500 12px var(--font-sans);padding:6px 12px;border:1px solid var(--border-strong);background:var(--bg);cursor:pointer}
+.ide-steps__ctl button:hover{background:var(--primary);color:var(--text-on-color);border-color:var(--primary)}
+.ide-steps__ctl button:disabled{opacity:.35;pointer-events:none}
+.ide-steps__ind{font:500 12px var(--font-mono);color:var(--text-sub)}
+.ide-mock{border:1px solid #393939;border-radius:6px;overflow:hidden;background:#161616;box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.ide-mock__bar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#262626;border-bottom:1px solid #393939}
+.ide-mock__dots{display:inline-flex;gap:6px}
+.ide-mock__dots i{width:11px;height:11px;border-radius:50%;display:block}
+.ide-mock__title{flex:1;text-align:center;font:500 11px var(--font-mono);color:#c6c6c6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ide-mock__remote{display:inline-flex;align-items:center;gap:5px;font:500 10px var(--font-mono);color:#f4f4f4;background:#0f62fe;padding:3px 8px;border-radius:3px}
+.ide-mock__remote::before{content:"";width:6px;height:6px;border-radius:50%;background:#42be65}
+.ide-mock__tabs{display:flex;background:#1f1f1f;border-bottom:1px solid #393939;font:500 11px var(--font-mono)}
+.ide-mock__tab{padding:7px 14px;color:#8d8d8d;border-right:1px solid #393939}
+.ide-mock__tab.is-on{color:#f4f4f4;background:#161616;border-top:2px solid #0f62fe;padding-top:5px}
+.ide-mock__body{min-height:264px;padding:14px 16px;font:400 12.5px/1.7 var(--font-mono);color:#e0e0e0;overflow-x:auto}
+@media (max-width:820px){.ide-mock__body{min-height:224px}}
+.ide-pane{display:none}
+.ide-pane.is-shown{display:block;animation:idefade .28s ease}
+@keyframes idefade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.ide-pane div{white-space:pre}
+.ide-pane .t-cmd{color:#f4f4f4}
+.ide-pane .t-cmd .p{color:#42be65}
+.ide-pane .t-out{color:#a8a8a8}
+.ide-pane .t-ok{color:#42be65}
+.ide-pane .t-key{color:#78a9ff}
+.ide-pane .t-agent{color:#be95ff}
+.ide-pane .t-note{color:#6f6f6f;font-style:italic;white-space:normal}
+.ide-pane .t-blank{display:block;height:10px}
+.ide-pane b.k{color:#ff8389;font-weight:600}
+/* Portal-screen stepper (Chapter 08) */
+.portal-mock{border:1px solid #c6c6c6;border-radius:6px;overflow:hidden;background:#f4f4f4;box-shadow:0 6px 20px rgba(0,0,0,.12)}
+.portal-mock__bar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#e0e0e0;border-bottom:1px solid #c6c6c6}
+.portal-mock__dots{display:inline-flex;gap:6px}
+.portal-mock__dots i{width:11px;height:11px;border-radius:50%;display:block}
+.portal-mock__url{flex:1;background:#fff;border:1px solid #c6c6c6;border-radius:4px;padding:4px 10px;font:500 11px var(--font-mono);color:#6f6f6f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.portal-mock__body{min-height:326px;background:#f4f4f4;font-family:var(--font-sans)}
+@media (max-width:820px){.portal-mock__body{min-height:280px}}
+.p-pane{display:none}
+.p-pane.is-shown{display:block;animation:idefade .28s ease}
+.pm-header{display:flex;align-items:center;gap:9px;height:40px;background:#161616;color:#f4f4f4;padding:0 16px;font:600 13px var(--font-sans)}
+.pm-header .pm-logo{width:9px;height:9px;background:#0f62fe;border-radius:2px}
+.pm-header .pm-user{margin-left:auto;font:400 11px var(--font-mono);color:#a8a8a8}
+.pm-content{padding:18px}
+.pm-tile{background:#fff;border:1px solid #e0e0e0;padding:18px}
+.pm-h{font:600 15px var(--font-sans);color:#161616;margin:0 0 6px}
+.pm-sub{font:400 12.5px var(--font-sans);color:#525252;margin:0 0 14px;line-height:1.5}
+.pm-meta{font:400 11px var(--font-mono);color:#8d8d8d;margin:6px 0 12px}
+.pm-btn{display:inline-flex;align-items:center;gap:14px;background:#0f62fe;color:#fff;border:none;padding:9px 12px 9px 14px;font:500 12.5px var(--font-sans)}
+.pm-btn .ic{opacity:.85}
+.pm-btn--ghost{display:inline-flex;align-items:center;background:#fff;color:#161616;border:1px solid #8d8d8d;padding:8px 12px;font:500 12.5px var(--font-sans)}
+.pm-btn--ghost.danger{color:#da1e28;border-color:#da1e28}
+.pm-tag{display:inline-block;font:500 11px var(--font-sans);padding:3px 10px;border-radius:11px}
+.pm-tag--green{background:#a7f0ba;color:#0e6027}
+.pm-tag--gray{background:#dde1e6;color:#393939}
+.pm-row-between{display:flex;align-items:center;justify-content:space-between}
+.pm-radio{display:flex;gap:11px;align-items:flex-start;border:1px solid #e0e0e0;background:#fff;padding:11px 13px;margin-bottom:8px}
+.pm-radio.is-sel{border:1.5px solid #0f62fe;box-shadow:inset 0 0 0 1px #0f62fe}
+.pm-radio__dot{width:16px;height:16px;border-radius:50%;border:1.5px solid #8d8d8d;margin-top:1px;flex:none;background:#fff}
+.pm-radio.is-sel .pm-radio__dot{border:5px solid #0f62fe}
+.pm-radio__t{font:600 13px var(--font-sans);color:#161616}
+.pm-radio__d{font:400 11.5px var(--font-sans);color:#6f6f6f;margin-top:2px}
+.pm-actions{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+.pm-tabs{display:flex;border-bottom:1px solid #e0e0e0;margin-top:6px}
+.pm-tab{padding:8px 14px;font:500 12px var(--font-sans);color:#525252;border-bottom:2px solid transparent}
+.pm-tab.is-on{color:#161616;border-bottom-color:#0f62fe;font-weight:600}
+.pm-connect{display:flex;align-items:flex-end;gap:8px;margin-top:6px}
+.pm-select{display:inline-flex;align-items:center;gap:22px;background:#fff;border:1px solid #8d8d8d;padding:8px 12px;font:500 12.5px var(--font-sans);color:#161616;justify-content:space-between}
+.pm-btnrow{display:flex;gap:8px;margin-top:14px}
+.pm-btnrow .pm-btn--ghost{padding:6px 12px;font-size:12px}
+.pm-ide{background:#1f1f1f;min-height:326px;display:flex;flex-direction:column}
+.pm-ide__bar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#333;color:#c6c6c6;font:500 11px var(--font-mono)}
+.pm-ide__wrap{display:flex;flex:1;min-height:0}
+.pm-ide__side{width:148px;background:#252526;font:400 11px/1.9 var(--font-mono);padding:8px 6px;border-right:1px solid #333}
+.pm-ide__side .f{padding:1px 6px;color:#cfcfcf;white-space:nowrap}
+.pm-ide__side .f.dir{color:#9cdcfe}
+.pm-ide__side .f.on{background:#37373d;color:#fff}
+.pm-ide__main{flex:1;display:flex;flex-direction:column;min-width:0}
+.pm-ide__tabs{display:flex;background:#2d2d2d;font:500 11px var(--font-mono)}
+.pm-ide__tab{padding:7px 13px;color:#8d8d8d;border-right:1px solid #1f1f1f}
+.pm-ide__tab.on{color:#f4f4f4;background:#1e1e1e;border-top:2px solid #0f62fe;padding-top:5px}
+.pm-ide__term{background:#1e1e1e;color:#e0e0e0;font:400 12px/1.75 var(--font-mono);padding:12px 14px;flex:1;white-space:pre;overflow-x:auto}
+.pm-ide__term .g{color:#42be65}.pm-ide__term .p{color:#be95ff}.pm-ide__term .n{color:#6f6f6f;font-style:italic;white-space:normal;display:block;margin-top:6px}
+.sandbox{border:1px solid var(--border);background:var(--bg);padding:var(--s-05);margin:var(--s-05) 0}
+.sandbox__controls{display:flex;flex-wrap:wrap;gap:var(--s-06);margin-bottom:var(--s-05)}
+.sandbox__controls label{font:500 12px var(--font-mono);color:var(--text-sub);display:flex;flex-direction:column;gap:6px}
+.sandbox__controls select{font:400 14px var(--font-sans);padding:6px 10px;border:1px solid var(--border-strong);background:var(--bg);color:var(--text)}
+.sandbox__decision{padding:var(--s-05);border:1px solid var(--border);border-left:3px solid var(--border-strong)}
+.sandbox__decision.is-allow{border-left-color:var(--support-ok);background:#defbe6}
+.sandbox__decision.is-deny{border-left-color:var(--accent-risk);background:var(--accent-risk-wash)}
+.sandbox__status{font-weight:600;font-size:16px;font-family:var(--font-mono)}
+.sandbox__detail{font-size:14px;color:var(--text-sub);margin-top:var(--s-03);line-height:1.55}
+.ws-cluster{border:1px solid #00a578;border-radius:3px;background:#d6f5ea;padding:var(--s-04);margin-bottom:var(--s-04)}
+.ws-cluster__tag{display:inline-block;font:600 12px var(--font-sans);color:#00695c;margin-bottom:var(--s-04)}
+.ws-cluster__boxes{display:flex;flex-wrap:wrap;gap:var(--s-04)}
+.ws-box{flex:1 1 180px;display:flex;flex-direction:column;gap:5px;text-align:left;padding:var(--s-04);background:#fff;border:1.5px dashed #00a578;border-radius:2px;transition:all var(--dur-fast) var(--ease-prod);font-family:var(--font-sans)}
+.ws-box__name{font-weight:600;font-size:14px;color:var(--text)}
+.ws-box__meta{font:400 11px var(--font-mono);color:#6f6f6f}
+.ws-box__actions{margin-top:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ws-box__btn{display:inline-flex;align-items:center;gap:6px;font:500 12px var(--font-sans);padding:6px 16px;background:var(--primary);color:#fff;border:0;border-radius:2px;cursor:pointer;transition:background var(--dur-fast) var(--ease-prod)}
+.ws-box__btn:hover{background:#0353e9}
+.ws-box__btn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.ws-box__ides{display:inline-flex;align-items:center;gap:7px}
+.ws-box__ides svg{display:block}
+.ws-box.is-allow{border-style:solid;border-color:var(--support-ok);background:#defbe6;box-shadow:0 0 0 1px var(--support-ok)}
+.ws-box.is-deny{border-style:solid;border-color:var(--accent-risk);background:var(--accent-risk-wash);box-shadow:0 0 0 1px var(--accent-risk)}
+.ws-hint{font:400 12px var(--font-sans);color:var(--text-sub);margin:0 0 var(--s-05)}
+.table-scroll{overflow-x:auto;margin:var(--s-05) 0}
+table.catalog{width:100%;border-collapse:collapse;font-size:14px;min-width:640px}
+table.catalog th,table.catalog td{text-align:left;padding:var(--s-04) var(--s-05);border-bottom:1px solid var(--border);vertical-align:top}
+table.catalog th{font:500 11px var(--font-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--text-helper)}
+table.catalog td .prod{font-weight:600}
+.tiers{display:grid;gap:var(--s-05);grid-template-columns:1fr;margin:var(--s-05) 0}
+@media(min-width:720px){.tiers{grid-template-columns:repeat(3,1fr)}}
+.tier{border:1px solid var(--border);border-top:3px solid var(--accent-5);padding:var(--s-05)}
+.tier .tier-n{font:500 10px var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-helper)}
+.tier h4{margin:var(--s-02) 0 var(--s-03);font-size:16px}
+.tier p{margin:0;font-size:13.5px;color:var(--text-sub);line-height:1.5}
+.tier .tier-iso{display:block;margin-top:var(--s-03);font:500 11px var(--font-mono);color:var(--accent-5)}
+footer{border-top:1px solid var(--border);padding:var(--s-09) 0 var(--s-10);color:var(--text-sub);font-size:13px;line-height:1.6}
+footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover{color:var(--primary);border-bottom-color:var(--primary)}
+@keyframes pulse-soft{0%,100%{opacity:1}50%{opacity:.7}}
+.svg-pulse{animation:pulse-soft 3.2s ease-in-out infinite}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.svg-pulse{animation:none!important}.subsection{transition:none;opacity:1;transform:none}svg animate,svg animateMotion,svg animateTransform{display:none}}
+</style>
+</head>
+<body>
+<div class="progress" id="progress" role="progressbar" aria-label="Reading progress"></div>
+
+<header class="header"><div class="header-inner">
+  <div class="brand"><span class="brand-dot"></span>SECURED DEV WORKSPACE</div>
+  <nav class="chapters-nav" aria-label="Chapters">
+    <a href="#problem" data-chapter>Problem</a>
+    <a href="#why-workspace" data-chapter>Why a workspace</a>
+    <a href="#foundations" data-chapter>Foundations</a>
+    <a href="#access" data-chapter>Access</a>
+    <a href="#credentials" data-chapter>Credentials</a>
+    <a href="#isolation" data-chapter>Runtime</a>
+    <a href="#ai-egress" data-chapter>AI egress</a>
+    <a href="#experience" data-chapter>Experience</a>
+    <a href="#reference" data-chapter>Reference</a>
+  </nav>
+  <div class="header-actions"><button class="btn-ghost" id="search-toggle" hidden>Search<kbd>/</kbd></button></div>
+</div></header>
+
+<main>
+  <!-- ================= HERO · Situation + Question pillars ================= -->
+  <section id="intro" class="chapter hero"><div class="page">
+    <div class="hero-eyebrow">A Level-300 Architecture Guide for Technical Audiences</div>
+    <h1>Give your coding agents a secured workspace — not the keys to your machine.</h1>
+    <p class="lede">
+      A coding agent runs with <strong>your full privileges</strong>: it reads your config files and secrets,
+      pulls untrusted packages off the internet, and needs a credential for every MCP server and model it calls.
+      On the developer's machine that means credential sprawl and an unbounded blast radius. So the agent — and the code, tools,
+      and secrets it touches — moves into a <strong>central, network-isolated secured workspace</strong> that the
+      developer opens straight from their everyday IDE — <strong>VS Code</strong>, or any editor with remote-development
+      support — over a brokered SSH session. The editor stays local; the code, the agent, and every credential run remotely. A mistake, a
+      malicious dependency, or a prompt injection stays contained, and nothing long-lived ever lands on the developer's machine. This guide walks the architecture from first principles,
+      using standards you already run: OIDC single sign-on and the HashiCorp stack.
+    </p>
+
+    <div class="svg-frame" aria-label="A developer connecting through an OIDC identity provider and Boundary into a Nomad or Kubernetes workspace, with Vault issuing every short-lived credential and the coding agent reaching tools and models only through central gateways">
+      <svg viewBox="0 0 960 360" role="img" aria-labelledby="hero-title">
+        <title id="hero-title">The trust chain: identity, brokered access, Vault-minted credentials, an isolated workspace, and governed AI egress</title>
+        <defs>
+          <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#525252"/></marker>
+        </defs>
+        <line x1="70" y1="170" x2="705" y2="170" stroke="#a8a8a8"/>
+        <!-- developer -->
+        <g><circle cx="60" cy="170" r="10" fill="#161616"/><text x="60" y="204" text-anchor="middle" font-family="IBM Plex Sans" font-size="12" fill="#525252">developer</text><text x="60" y="220" text-anchor="middle" font-family="IBM Plex Sans" font-size="11" fill="#6f6f6f">holds no key</text></g>
+        <!-- developer connects from their own IDE over the brokered SSH session -->
+        <g transform="translate(90,118)" aria-hidden="true">
+          <g transform="scale(0.6)"><path fill="#0098ff" fill-rule="evenodd" d="M22.7 30.7c.5.2 1 .2 1.5 0l6.3-3c.9-.5 1.5-1.4 1.5-2.4V6.7c0-1-.6-1.9-1.5-2.4l-6.3-3c-.6-.3-1.4-.2-2 .2C22 1.7 9.4 13.2 9.4 13.2l-5.5-4.2c-.5-.4-1.2-.4-1.7.1L.5 10.6c-.5.5-.5 1.4 0 1.9L5.3 16l-4.8 4.3c-.5.5-.5 1.4 0 1.9l1.7 1.5c.5.5 1.2.5 1.7.1l5.5-4.2s12.6 11.5 13 12zM24 8.9 17.2 16l6.8 7.1V8.9z"/></g>
+          <g transform="translate(24,1)">
+            <rect x="0" y="0.5" width="18" height="15" rx="2" fill="#fff" stroke="#8d8d8d" stroke-width="1.1"/>
+            <circle cx="3" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="6" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="9" cy="3.6" r="0.9" fill="#c6c6c6"/>
+            <line x1="2.6" y1="6.6" x2="15.4" y2="6.6" stroke="#e0e0e0" stroke-width="0.9"/>
+            <line x1="3" y1="9.3" x2="12.5" y2="9.3" stroke="#0f62fe" stroke-width="1.3"/>
+            <line x1="3" y1="12" x2="9" y2="12" stroke="#c6c6c6" stroke-width="1.3"/>
+          </g>
+          <text x="21" y="30" text-anchor="middle" font-family="IBM Plex Mono" font-size="8" fill="#525252">VS Code · any IDE</text>
+        </g>
+        <line x1="111" y1="152" x2="111" y2="167" stroke="#a8a8a8" stroke-width="1" stroke-dasharray="2 2"/>
+        <g font-family="IBM Plex Sans" font-size="12" text-anchor="middle">
+          <!-- 01 identity · IBM Verify (IBM blue) -->
+          <g transform="translate(235,170)">
+            <rect x="-64" y="-43" width="128" height="86" rx="3" fill="#edf5ff" stroke="#0f62fe"/>
+            <text y="-24" font-family="IBM Plex Mono" font-size="10" fill="#0f62fe">01</text>
+            <text y="-4" font-weight="600" fill="#161616">IBM Verify</text>
+            <text y="15" font-size="11" fill="#525252">authenticates</text>
+            <text y="33" font-family="IBM Plex Mono" font-size="9" fill="#0f62fe">SSO · OIDC</text>
+            <text y="60" font-size="10" font-style="italic" fill="#6f6f6f">or any OIDC IdP</text>
+          </g>
+          <!-- 02 access · Boundary (Boundary red) -->
+          <g transform="translate(455,170)">
+            <rect x="-64" y="-43" width="128" height="86" rx="3" fill="#fdecec" stroke="#ec585d"/>
+            <text y="-24" font-family="IBM Plex Mono" font-size="10" fill="#ec585d">02</text>
+            <text y="-4" font-weight="600" fill="#161616">Boundary</text>
+            <text y="15" font-size="11" fill="#525252">authorizes</text>
+            <text y="33" font-family="IBM Plex Mono" font-size="9" fill="#ec585d">broker · proxy</text>
+          </g>
+          <!-- 04 runtime · Nomad (Nomad green) — the box is the scheduler; the secured dev workspace container sits inside -->
+          <g transform="translate(785,170)">
+            <rect x="-82" y="-72" width="164" height="150" rx="3" fill="#d6f5ea" stroke="#00a578" stroke-width="1.4"/>
+            <text y="-56" font-family="IBM Plex Mono" font-size="10" fill="#00a578">04</text>
+            <text y="-40" font-weight="600" fill="#161616">Nomad</text>
+            <!-- secured dev workspace container -->
+            <rect x="-74" y="-28" width="148" height="82" rx="2" fill="#ffffff" stroke="#00a578" stroke-dasharray="3 2"/>
+            <text y="-14" font-size="10" fill="#00695c">secured dev workspace</text>
+            <rect x="-58" y="-2" width="116" height="24" rx="2" fill="#eafaf3" stroke="#00a578"/>
+            <text y="14" font-family="IBM Plex Mono" font-size="11" fill="#161616">coding agent</text>
+            <text y="38" font-size="9" fill="#6f6f6f">+ tools · deps · state · …</text>
+            <text y="70" font-size="10" font-style="italic" fill="#6f6f6f">or Kubernetes</text>
+          </g>
+          <!-- 03 credentials · Vault (Vault gold) — moved above Boundary -->
+          <g transform="translate(455,46)">
+            <rect x="-96" y="-27" width="192" height="54" rx="3" fill="#fcf4cc" stroke="#c9a227"/>
+            <text y="-5" font-weight="600" fill="#161616">03 · HashiCorp Vault</text>
+            <text y="14" font-size="10" fill="#525252">credential authority</text>
+          </g>
+          <!-- 05 gateways · MCP + LLM (neutral — no single product) -->
+          <g transform="translate(785,300)">
+            <rect x="-80" y="-26" width="160" height="52" rx="3" fill="#eef1f6" stroke="#697077"/>
+            <text y="-4" font-weight="600" fill="#161616">05 · AI gateways</text>
+            <text y="14" font-size="10" fill="#525252">MCP tools · LLM models</text>
+          </g>
+        </g>
+        <!-- Vault signs the short-lived SSH cert consumed in the brokered session -->
+        <line x1="455" y1="73" x2="455" y2="125" stroke="#525252" stroke-width="1.5" marker-end="url(#arw)"/>
+        <g font-family="IBM Plex Sans" font-size="10" fill="#525252" text-anchor="end"><text x="440" y="94">signs 5-min</text><text x="440" y="107">SSH cert</text></g>
+        <!-- Vault issues the in-workspace credentials via WIF — elbow into Nomad -->
+        <path d="M551,46 H785 V94" fill="none" stroke="#525252" stroke-width="1.5" marker-end="url(#arw)"/>
+        <g text-anchor="middle"><text x="662" y="30" font-family="IBM Plex Sans" font-size="10" fill="#161616">in-workspace credentials</text><text x="662" y="42" font-family="IBM Plex Mono" font-size="9" fill="#525252">GitHub · LLM · MCP</text></g>
+        <!-- the agent reaches tools and models only through the gateways -->
+        <line x1="785" y1="248" x2="785" y2="272" stroke="#525252" stroke-width="1.5" marker-end="url(#arw)"/>
+        <text x="798" y="264" font-family="IBM Plex Sans" font-size="10" fill="#525252">governed egress</text>
+        <!-- brokered session packet -->
+        <circle r="6" fill="#0f62fe"><animateMotion dur="7s" repeatCount="indefinite" path="M 70 170 L 705 170"/></circle>
+        <circle r="13" fill="#0f62fe" fill-opacity="0.22"><animateMotion dur="7s" repeatCount="indefinite" path="M 70 170 L 705 170"/><animate attributeName="r" values="9;16;9" dur="1.5s" repeatCount="indefinite"/></circle>
+      </svg>
+    </div>
+    <p class="caption">Vault is the credential authority behind <em>both</em> paths: it signs the short-lived SSH cert for the brokered session <em>and</em> issues the GitHub, LLM-gateway, and MCP-gateway credentials the agent uses inside the workspace, delivered by workload-identity federation. The identity provider and the workspace scheduler are swappable: any OIDC IdP in Verify's place, Nomad or Kubernetes in the scheduler's.</p>
+
+    <div class="callout"><strong>The whole chain.</strong> <span class="node" data-node="verify">IBM Verify</span> (or any OIDC IdP) confirms who you are. <span class="node" data-node="boundary">Boundary</span> decides whether you may connect and brokers the session. <span class="node" data-node="vault">Vault</span> mints every short-lived credential — the session's SSH certificate plus the workspace's GitHub, LLM, and MCP keys. And <span class="node" data-node="nomad">Nomad</span> (or Kubernetes) runs the workspace the agent works in.</div>
+
+    <div class="hero-thesis">
+      <div class="pillar" data-accent="1"><span class="p-num">01 · IDENTITY</span><h3>Who are you?</h3><p>Every session — and every action the agent takes on your behalf — is bound to a named person via your existing SSO. Never a shared account or a server address.</p></div>
+      <div class="pillar" data-accent="2"><span class="p-num">02 · ACCESS</span><h3>May you connect?</h3><p>An identity-aware broker is the only door in — no public address, SSH unreachable off-box. Each developer reaches only their own workspace (another's is denied — we test it), and the agent inside is never exposed to the network.</p></div>
+      <div class="pillar" data-accent="3"><span class="p-num">03 · CREDENTIAL</span><h3>With what?</h3><p>The agent holds nothing long-lived. Every credential — SSH certificate, git-push token, model key, scoped tool token — is minted just-in-time to in-memory tmpfs and scoped to the work, never a standing key on your machine. A per-project namespace keeps one project's secrets from ever reaching another.</p></div>
+      <div class="pillar" data-accent="5"><span class="p-num">04 · RUNTIME</span><h3>Where does it run?</h3><p>In a scheduled, isolated workspace, right-sized to the work — a GPU node for model development, or a microVM with its own kernel for untrusted code. Autonomous execution is contained there, never on your machine; a corrupted workspace is thrown away and rebuilt from a clean template, while your work on its durable volume survives a node failure.</p></div>
+      <div class="pillar" data-accent="4"><span class="p-num">05 · AI EGRESS</span><h3>What can it reach?</h3><p>Only what a project-admin allows. MCP tools, data, and models are reached through central gateways whose keys the agent never holds — every other tool returns <code class="inline">403</code>, model use runs on a per-project budget and allow-list, and every prompt and response is logged.</p></div>
+    </div>
+
+    <p class="helper" style="max-width:730px;color:var(--text-sub)">Read the chapters in order: the problem that makes this necessary, why a secured workspace is the answer, the foundations it stands on, then one chapter for each of the five questions above — closing with the developer experience and a reference catalog.</p>
+  </div></section>
+
+  <!-- ================= Chapter 01 · Complication ================= -->
+  <section id="problem" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 01 · <span style="color:var(--text-sub)">Problem</span></span>
+    <h2>The problem starts on the developer's machine</h2>
+    <p class="lede">
+      Remote developer workspaces are not new, and getting a developer's code and secrets off the machine is worth
+      doing. But they were built for a <em>person</em> working carefully at the keyboard. An autonomous coding agent is a different problem: it acts
+      unattended, at machine speed, with your full privilege, steered by untrusted input — the files, issues, and
+      pages it reads — and it needs a credential, a tool, and a model for almost everything it does. On an ungoverned
+      machine no one decides what it may reach or spend, and nothing records what it did. Six pressures converge on
+      that agent — each retired by one of the pillars, and by a <strong>project-admin</strong> who governs what the
+      project's agents may touch.
+    </p>
+
+    <div class="subsection">
+      <div class="grid three">
+        <div class="card risk-card">
+          <div><span class="chip" data-accent="risk">Autonomous execution</span><p class="card-title" style="margin-top:10px">Untrusted code runs itself</p><p>A coding agent installs and runs packages off the internet <em>on its own</em>, at machine speed — a malicious install script executes right next to your secrets and production access, with no human pausing to vet it. A generic remote workspace only relocates that blast; it doesn't contain it.</p></div>
+          <div class="mitigation"><span class="mit-head">Retired by</span><p><span class="layer-tag" data-accent="5">runtime</span> Untrusted code runs in a disposable container — or behind a hardware-virtualization wall — with no standing credentials to steal and nothing on the host to reach.</p></div>
+        </div>
+        <div class="card risk-card">
+          <div><span class="chip" data-accent="risk">Ungoverned tools</span><p class="card-title" style="margin-top:10px">Unbounded reach to tools &amp; data</p><p>An agent reaches systems through MCP servers. With nothing scoping which servers, tools, or datasets it may call, a single prompt injection — instructions hidden in a file, an issue, or a page it reads — turns "read this" into "call every tool and exfiltrate the database." Nobody has decided what this project's agent is allowed to touch.</p></div>
+          <div class="mitigation"><span class="mit-head">Retired by</span><p><span class="layer-tag" data-accent="4">AI egress</span> A <strong>project-admin</strong> composes a virtual MCP server exposing only the tools that project needs; the workspace holds a scoped token that returns <code class="inline">200</code> on that server and <code class="inline">403</code> on every other tool and server.</p></div>
+        </div>
+        <div class="card risk-card">
+          <div><span class="chip" data-accent="risk">Credential sprawl</span><p class="card-title" style="margin-top:10px">A secret for every tool &amp; model</p><p>Every MCP server and model the agent calls needs a credential — database URLs, API tokens, a provider key in <code class="inline">.env</code>. Wire them into the agent's environment and you have multiplied standing, long-lived secrets far beyond anything a human developer held — all readable by the agent, or by anyone who lands on the machine.</p></div>
+          <div class="mitigation"><span class="mit-head">Retired by</span><p><span class="layer-tag" data-accent="3">credential</span> Nothing is pasted anywhere. Vault mints each credential just-in-time to in-memory tmpfs; the workspace holds a scoped MCP token and a per-project LLM key — never the real database URI or provider key — and a per-project Vault namespace stops any of them crossing projects.</p></div>
+        </div>
+        <div class="card risk-card">
+          <div><span class="chip" data-accent="risk">Ungoverned LLM</span><p class="card-title" style="margin-top:10px">Model access with no budget or record</p><p>Pointed at a model endpoint, the agent streams your source and context off-box with no cap on spend, no limit on which models, and no record of what was sent. An agent looping unattended can burn budget or leak IP — and no one can answer "what did it send, and what did this project cost?"</p></div>
+          <div class="mitigation"><span class="mit-head">Retired by</span><p><span class="layer-tag" data-accent="4">AI egress</span> Every workspace's model traffic goes through one central gateway that holds the single provider key, enforces a per-project spend cap and rate limit, restricts models to an allow-list (<code class="inline">403</code> outside it), and logs every prompt and response tagged to the project.</p></div>
+        </div>
+        <div class="card risk-card">
+          <div><span class="chip" data-accent="risk">Blast radius</span><p class="card-title" style="margin-top:10px">Runs unattended, at your privilege</p><p>An agent mistake — a stray <code class="inline">rm -rf</code> — or a compromised agent runs with your full privilege and no human in the loop to catch it: destructive commands, lateral reach across whatever the machine can touch. Regulators then demand an attributable, exportable trail an ungoverned device can't produce.</p></div>
+          <div class="mitigation"><span class="mit-head">Retired by</span><p><span class="layer-tag" data-accent="5">runtime</span> <span class="layer-tag" data-accent="2">access</span> <span class="layer-tag" data-accent="1">identity</span> The agent is boxed in an isolated per-project workspace, every session is bound to a named person and brokered, and each project is walled off by construction.</p></div>
+        </div>
+        <div class="card risk-card">
+          <div><span class="chip" data-accent="risk">Endpoint exposure</span><p class="card-title" style="margin-top:10px">Code &amp; keys on the machine</p><p>Beneath all of it, the baseline: a full clone of proprietary source, plus the keys to reach it, sit on a sprawling, often-unmanaged fleet of devices. One lost or compromised machine walks the whole codebase out — the floor a remote workspace is expected to raise, and the ground everything above stands on.</p></div>
+          <div class="mitigation"><span class="mit-head">Retired by</span><p><span class="layer-tag" data-accent="5">runtime</span> The repo and tools live in a central container; the developer's machine holds no clone and no key. A lost device carries nothing.</p></div>
+        </div>
+      </div>
+
+      <div class="callout" data-accent="risk"><strong>The shape of the problem.</strong> None of these are fixed by moving the agent to a generic remote box — that just relocates an ungoverned agent. They share one root cause: a high-privilege agent acting on its own, holding the code and the secrets and reaching whatever tools and models it likes, with no one governing the scope, the spend, or the record. The answer is one place that governs it — a secured workspace where the tools it may call are scoped by a project-admin, its model access is centrally budgeted and logged, and identity, access, credentials, and isolation wrap around it.</div>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 02 · Why a secured remote workspace ================= -->
+  <section id="why-workspace" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 02 · <span style="color:var(--text-sub)">Why a workspace</span></span>
+    <h2>Why a coding agent needs a secured workspace</h2>
+    <p class="lede">
+      An AI coding agent shouldn't run on your machine at all — it should have a secured workspace of its own: a
+      container <strong>Nomad</strong> schedules onto the right class of hardware, wraps in identity, credentials, and
+      isolation, and can tear down and rebuild on demand. And it's not only safer — a workspace gives an autonomous
+      agent five things your machine can't, each one covered in a chapter below.
+    </p>
+
+    <div class="subsection">
+      <div class="grid three">
+        <div class="card">
+          <span class="card-tag">Containment</span>
+          <p class="card-title">A mistake stays in the box</p>
+          <p>An agent's stray <code class="inline">rm -rf</code>, a malicious install script, or a prompt injection plays out <em>inside</em> a disposable, Nomad-scheduled workspace — never on your machine, and never within reach of your code or standing secrets. When the work ends the workspace is torn down, and nothing the agent touched persists on your device.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Hardware isolation</span>
+          <p class="card-title">Not just a shared-kernel container</p>
+          <p>Plain containers share the host kernel — one kernel exploit escapes to everything on the box. When an agent runs untrusted or high-risk code, Nomad can place its workspace on a <strong>microVM node pool</strong>, where it runs as a hardware-isolated VM with its own guest kernel — so an escape has a machine boundary to cross, not just a namespace.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Ephemeral, not fragile</span>
+          <p class="card-title">Persistent to work in, disposable to recover</p>
+          <p>Your dependencies, tools, and working state live on a durable per-workspace volume that survives not just the session but the loss of the node itself — if a workspace is corrupted, wedged, or its node fails, Nomad reschedules it and your <code class="inline">/home/dev</code> re-attaches intact. The container is disposable and rebuilt from a clean template; the working data you care about is not.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Right-sized compute</span>
+          <p class="card-title">The right machine for what you're building</p>
+          <p>The developer selects the workspace template the work calls for, and Nomad schedules it onto the matching node pool: a <strong>GPU node</strong> for CUDA and other GPU-accelerated work; a <strong>hardware-isolated microVM</strong> when the agent executes untrusted or security-sensitive code; a standard node for everyday app and service builds. Server-class compute runs remotely, so your machine stays free — and needn't even stay online while a long job runs.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Environment scrubbing</span>
+          <p class="card-title">The agent never inherits your keys</p>
+          <p>Run an agent on your own machine and it inherits your whole shell — every exported API key, cloud profile, and <code class="inline">.env</code> on disk. In the workspace it starts from a clean environment; the only credentials present are minted just-in-time to in-memory tmpfs, scoped to the session, and gone when it ends.</p>
+          <a class="see-ch" href="#credentials">→ Ch 05 · Credentials</a>
+        </div>
+      </div>
+
+      <h3 style="margin-top:var(--s-08)">Where this fits</h3>
+      <p style="margin-bottom:var(--s-03)">These are the situations where a secured workspace does something a developer's own machine can't. Each links to the chapter that delivers it.</p>
+      <div class="grid three">
+        <div class="card">
+          <span class="card-tag">AI coding agents</span>
+          <p class="card-title">Run a coding agent with real access</p>
+          <p>Let the agent work directly against the repo, its tools, and its data, without putting your own machine at risk. Anything it breaks, or any malicious code it runs, stays inside the disposable workspace and never reaches your device or your standing secrets.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">AI/ML &amp; GPU</span>
+          <p class="card-title">GPU-backed workspaces</p>
+          <p>Pin a workspace to an NVIDIA-T4 node for CUDA and other heavier compute, carrying the same identity, credentials, and isolation as every other workspace.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Untrusted code</span>
+          <p class="card-title">Run third-party code behind a hardware wall</p>
+          <p>Place risky or untrusted code in a Kata microVM with its own guest kernel, so a container escape has a machine boundary to cross — not just a namespace.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Multi-team &amp; clients</span>
+          <p class="card-title">Keep every project walled off</p>
+          <p>Separate teams, clients, and contractors are isolated by construction across Vault, Boundary, and Nomad — and a negative test proves one developer can't reach another's workspace.</p>
+          <a class="see-ch" href="#access">→ Ch 04 · Access</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Any device</span>
+          <p class="card-title">No code or keys on the device</p>
+          <p>The machine holds no code, no keys, and no tokens; the code, the agent, and the compute all run remotely, so a lost or unmanaged device walks away with nothing.</p>
+          <a class="see-ch" href="#credentials">→ Ch 05 · Credentials</a>
+        </div>
+        <div class="card">
+          <span class="card-tag">Onboarding</span>
+          <p class="card-title">Nothing to install</p>
+          <p>A new developer signs in with company SSO and lands in a workspace with the repo already cloned, the toolchain installed, and git configured as them.</p>
+          <a class="see-ch" href="#experience">→ Ch 08 · Experience</a>
+        </div>
+      </div>
+
+      <h3 style="margin-top:var(--s-08)">When something goes wrong, it's contained</h3>
+      <p>Even when something slips through — a prompt injection hidden in a file the agent reads, or a compromised package — the workspace keeps the damage contained, without having to spot the attack first.</p>
+      <div class="callout">
+        <p><strong>A poisoned dependency executes at machine speed.</strong> It runs inside a disposable, optionally hardware-isolated workspace; your machine and the host node are untouched, and the container is rebuilt from a clean template in seconds.</p>
+        <p><strong>The agent reaches for a tool or dataset it was never granted.</strong> The MCP gateway returns <code class="inline">403</code> — it can touch only the tools and data a project-admin chose to expose.</p>
+        <p style="margin-bottom:0"><strong>It reaches toward another project's data or workspace.</strong> That is structurally impossible — separate Vault, Boundary, and Nomad namespaces — and the denial is part of the required test suite.</p>
+      </div>
+
+      <div class="callout"><strong>Why the move pays off.</strong> Putting the agent in a central, Nomad-scheduled workspace is what makes identity, access, credentials, isolation, and governed egress possible in the first place; the rest of this page shows how each one is delivered.</div>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 03 · Foundations ================= -->
+  <section id="foundations" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 03 · <span style="color:var(--text-sub)">Foundations</span></span>
+    <h2>Foundations this stands on</h2>
+    <p class="lede">
+      Every product here is off-the-shelf — IBM Verify plus the HashiCorp stack. The value isn't the parts;
+      it's wiring them together so each does one job. And nothing's locked in: the secured workspaces run on
+      Kubernetes just as well as Nomad, and with any OIDC-compatible identity provider in place of Verify.
+    </p>
+
+    <div class="subsection">
+      <div class="grid three">
+        <div class="card"><span class="card-tag">Identity · <span style="color:var(--accent-1)">Verify</span></span><p class="card-title"><span class="node" data-node="verify">IBM Verify</span></p><p>Developers sign in with the company SSO they already use — no new account, no extra password. Both Boundary and Nomad trust that identity, so every workspace session and every action the agent takes is tied to a named person through the <code class="inline">/token/email</code> claim.</p>
+          <details class="why-not"><summary>Why not per-vendor — is this IBM-only?</summary><div class="why-body"><p>No. The design relies only on standard OIDC claims, not a specific vendor. Any OIDC-compliant IdP can stand in Verify's place where one is already in use.</p></div></details>
+        </div>
+        <div class="card"><span class="card-tag">Access · <span style="color:var(--accent-2)">Boundary</span></span><p class="card-title"><span class="node" data-node="boundary">HashiCorp Boundary</span></p><p>Gives each developer identity-aware access to their own secured workspace — which runs on Nomad in a private network with no public address. Boundary authorizes the person, brokers the session through its worker proxy, and injects the SSH credential, so the developer connects without ever handling a host address or a key.</p>
+          <details class="why-not"><summary>Why brokered, not a bastion host?</summary><div class="why-body"><p>A bastion is still a reachable host with standing keys and a shared surface. Boundary exposes no workspace to the network at all: the <code class="inline">sshd</code> is unreachable off-box, and the developer never learns a host address or holds a key.</p></div></details>
+        </div>
+        <div class="card"><span class="card-tag">Credentials · <span style="color:var(--accent-3)">Vault</span></span><p class="card-title"><span class="node" data-node="vault">HashiCorp Vault</span></p><p>Hands the workspace every credential it needs, freshly minted and short-lived — the session SSH certificate, a git-push token, and the scoped tokens the agent uses to reach its <strong>MCP servers</strong> and <strong>LLM models</strong>. Nothing long-lived lands on the machine, and each project's secrets stay sealed in its own namespace.</p>
+          <details class="why-not"><summary>Why per-project namespaces, not path prefixes?</summary><div class="why-body"><p>A per-project Vault Enterprise <em>namespace</em> makes isolation Vault-enforced — a token minted in one namespace resolves only that namespace's paths. Path prefixes in a single namespace are the lighter, non-Enterprise alternative, but lean on policy correctness for the boundary.</p></div></details>
+        </div>
+        <div class="card"><span class="card-tag">Runtime · <span style="color:var(--accent-5)">Nomad</span></span><p class="card-title"><span class="node" data-node="nomad">HashiCorp Nomad</span></p><p>Runs the developer's workspace — and the coding agent inside it — as a managed, isolated container with a durable per-workspace volume that survives node failure, placed on the node pool the chosen template calls for: standard, GPU, or hardware-isolated microVM. Projects are walled off from one another by namespace, and a broken workspace is rescheduled onto a healthy node from a clean template — with its <code class="inline">/home/dev</code> re-attached — in seconds.</p>
+          <details class="why-not"><summary>Why not require Kubernetes?</summary><div class="why-body"><p>The same model — namespaces, scheduled pods, persistent volumes — maps directly onto Kubernetes wherever that is the house scheduler. The design needs only a scheduler with namespaces, not a specific one.</p></div></details>
+        </div>
+        <div class="card"><span class="card-tag">AI egress · <span style="color:var(--accent-4)">Gateways</span></span><p class="card-title"><span class="node" data-node="contextforge">MCP</span> + <span class="node" data-node="litellm">LLM</span> gateways</p><p>Decide what the coding agent is allowed to reach. ContextForge scopes which <strong>MCP tools</strong> and data it can call; LiteLLM controls which <strong>LLM models</strong> it may use, enforces a per-project budget, and records every prompt and response — all without the workspace ever holding a real provider key.</p>
+          <details class="why-not"><summary>Why centralize, not configure per workspace?</summary><div class="why-body"><p>Point-to-point integrations scatter provider keys and data grants across every workspace. One gateway is a single policy-and-audit point: scope, budget, and a full prompt/response record — and the provider is swappable by one config line.</p></div></details>
+        </div>
+        <div class="card"><span class="card-tag">Principle</span><p class="card-title">Standards, not a rebuild</p><p>You don't rip out what you already run. Two of the pieces are pluggable — the scheduler and the identity provider — so Nomad can give way to Kubernetes for the secured workspaces, and Verify to any OIDC-compatible IdP. The platform drops into a stack a team already operates.</p></div>
+      </div>
+
+      <div class="callout" data-accent="1"><strong>Each product answers one question.</strong> Verify proves who you are. Boundary decides whether you may connect, and brokers the session. Vault issues every credential and keeps it short-lived. Nomad runs the workspace in isolation. The two AI gateways govern what the agent can reach. The chapters that follow take them one at a time.</div>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 04 · Access (Boundary) ================= -->
+  <section id="access" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 04 · <span style="color:var(--accent-2)">Access</span></span>
+    <h2>One way in, and it knows who you are</h2>
+    <p class="lede">
+      The simplest guarantee first: the secured workspace has no public address. The only way in is Boundary,
+      which verifies each developer's <strong>SSO identity</strong> before any connection exists, brokers the
+      session, and grants reach to <strong>only their own</strong> workspace on <strong>Nomad</strong>. The
+      developer opens that workspace right inside their local IDE — <strong>VS Code</strong>, or any editor with
+      remote-development support — through the brokered session, with the code and the agent running remotely. The agent
+      inside is never exposed to the network — nothing off-box can dial it.
+    </p>
+
+    <div class="svg-frame" aria-label="A developer authenticates through the OIDC identity provider, Boundary authorizes and brokers the session, and the only path in reaches the secured workspace running on Nomad; a direct network connection from off-box is refused">
+      <svg viewBox="0 0 960 300" role="img" aria-labelledby="access-title">
+        <title id="access-title">The identity-aware path in: SSO identity, Boundary brokerage, and the Nomad workspace — with direct network access refused</title>
+        <defs>
+          <marker id="arw-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0f62fe"/></marker>
+          <marker id="arw-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#da1e28"/></marker>
+        </defs>
+        <!-- developer -->
+        <g><circle cx="50" cy="140" r="10" fill="#161616"/><text x="50" y="172" text-anchor="middle" font-family="IBM Plex Sans" font-size="12" fill="#525252">developer</text><text x="50" y="188" text-anchor="middle" font-family="IBM Plex Sans" font-size="11" fill="#6f6f6f">holds no key</text></g>
+        <!-- developer connects from their own IDE (VS Code or any remote-dev editor) over the brokered SSH session -->
+        <g transform="translate(72,86)" aria-hidden="true">
+          <g transform="scale(0.6)"><path fill="#0098ff" fill-rule="evenodd" d="M22.7 30.7c.5.2 1 .2 1.5 0l6.3-3c.9-.5 1.5-1.4 1.5-2.4V6.7c0-1-.6-1.9-1.5-2.4l-6.3-3c-.6-.3-1.4-.2-2 .2C22 1.7 9.4 13.2 9.4 13.2l-5.5-4.2c-.5-.4-1.2-.4-1.7.1L.5 10.6c-.5.5-.5 1.4 0 1.9L5.3 16l-4.8 4.3c-.5.5-.5 1.4 0 1.9l1.7 1.5c.5.5 1.2.5 1.7.1l5.5-4.2s12.6 11.5 13 12zM24 8.9 17.2 16l6.8 7.1V8.9z"/></g>
+          <g transform="translate(24,1)">
+            <rect x="0" y="0.5" width="18" height="15" rx="2" fill="#fff" stroke="#8d8d8d" stroke-width="1.1"/>
+            <circle cx="3" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="6" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="9" cy="3.6" r="0.9" fill="#c6c6c6"/>
+            <line x1="2.6" y1="6.6" x2="15.4" y2="6.6" stroke="#e0e0e0" stroke-width="0.9"/>
+            <line x1="3" y1="9.3" x2="12.5" y2="9.3" stroke="#0f62fe" stroke-width="1.3"/>
+            <line x1="3" y1="12" x2="9" y2="12" stroke="#c6c6c6" stroke-width="1.3"/>
+          </g>
+          <text x="21" y="30" text-anchor="middle" font-family="IBM Plex Mono" font-size="8" fill="#525252">VS Code · any IDE</text>
+        </g>
+        <line x1="93" y1="120" x2="93" y2="138" stroke="#a8a8a8" stroke-width="1" stroke-dasharray="2 2"/>
+        <!-- IdP · IBM Verify (IBM blue) -->
+        <g transform="translate(205,140)" font-family="IBM Plex Sans" text-anchor="middle">
+          <rect x="-62" y="-40" width="124" height="86" rx="3" fill="#edf5ff" stroke="#0f62fe"/>
+          <text y="-20" font-weight="600" font-size="13" fill="#161616">IBM Verify</text>
+          <text y="0" font-size="11" fill="#525252">authenticates</text>
+          <text y="18" font-family="IBM Plex Mono" font-size="9" fill="#0f62fe">SSO · OIDC</text>
+          <text y="38" font-size="10" font-style="italic" fill="#6f6f6f">or any OIDC IdP</text>
+        </g>
+        <!-- Boundary (Boundary red) -->
+        <g transform="translate(430,140)" font-family="IBM Plex Sans" text-anchor="middle">
+          <rect x="-66" y="-52" width="132" height="110" rx="3" fill="#fdecec" stroke="#ec585d"/>
+          <text y="-32" font-weight="600" font-size="13" fill="#161616">Boundary</text>
+          <text y="-13" font-size="11" fill="#525252">authorize (group→role)</text>
+          <text y="4" font-size="11" fill="#525252">broker + worker proxy</text>
+          <text y="24" font-family="IBM Plex Mono" font-size="10" fill="#ec585d">injects JIT SSH cert</text>
+        </g>
+        <!-- Nomad workspace (Nomad green) — box is the scheduler; secured dev workspace sits inside -->
+        <g transform="translate(765,140)" font-family="IBM Plex Sans" text-anchor="middle">
+          <rect x="-90" y="-72" width="180" height="150" rx="3" fill="#d6f5ea" stroke="#00a578" stroke-width="1.4"/>
+          <text y="-54" font-weight="600" font-size="13" fill="#161616">Nomad</text>
+          <rect x="-78" y="-40" width="156" height="96" rx="2" fill="#ffffff" stroke="#00a578" stroke-dasharray="3 2"/>
+          <text y="-24" font-size="10" fill="#00695c">secured dev workspace</text>
+          <rect x="-60" y="-12" width="120" height="30" rx="2" fill="#eafaf3" stroke="#00a578"/>
+          <text y="8" font-family="IBM Plex Mono" font-size="11" fill="#161616">sshd · CA-only</text>
+          <text y="38" font-size="10" fill="#6f6f6f">not on the network</text>
+          <text y="70" font-size="10" font-style="italic" fill="#6f6f6f">or Kubernetes</text>
+        </g>
+        <!-- allowed path arrows — flush against source and target box edges -->
+        <line x1="60" y1="140" x2="143" y2="140" stroke="#0f62fe" stroke-width="2" marker-end="url(#arw-b)"/>
+        <line x1="267" y1="140" x2="364" y2="140" stroke="#0f62fe" stroke-width="2" marker-end="url(#arw-b)"/>
+        <line x1="496" y1="140" x2="675" y2="140" stroke="#0f62fe" stroke-width="2" marker-end="url(#arw-b)"/>
+        <!-- animated brokered session: developer → workspace -->
+        <circle r="6" fill="#0f62fe"><animateMotion dur="6s" repeatCount="indefinite" path="M 60 140 L 675 140"/></circle>
+        <circle r="13" fill="#0f62fe" fill-opacity="0.22"><animateMotion dur="6s" repeatCount="indefinite" path="M 60 140 L 675 140"/><animate attributeName="r" values="9;16;9" dur="1.5s" repeatCount="indefinite"/></circle>
+        <!-- blocked direct path: developer attempts a direct connection to the Nomad workspace — refused -->
+        <path d="M 58 150 C 220 262, 540 262, 698 218" fill="none" stroke="#da1e28" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arw-r)"/>
+        <g transform="translate(380,242)"><circle r="11" fill="#fff" stroke="#da1e28"/><line x1="-5" y1="-5" x2="5" y2="5" stroke="#da1e28" stroke-width="2"/><line x1="5" y1="-5" x2="-5" y2="5" stroke="#da1e28" stroke-width="2"/></g>
+        <text x="380" y="290" text-anchor="middle" font-family="IBM Plex Sans" font-size="11" fill="#da1e28">direct SSH from off-box · refused</text>
+      </svg>
+    </div>
+
+    <div class="subsection">
+      <h3>Each developer reaches only their own workspace — try it</h3>
+      <p>
+        A per-developer Boundary <span class="node" data-node="managed-group">managed group</span>, matched on the
+        <code class="inline">/token/email</code> claim, maps to a role granting <code class="inline">authorize-session</code>
+        on <em>only that developer's</em> workspace. Choose who you're authenticated as, then hit <strong>Connect</strong>
+        on a workspace — the way you would from the Portal — and watch the broker decide.
+      </p>
+
+      <div class="sandbox" id="access-sandbox">
+        <div class="sandbox__controls">
+          <label>Authenticated as
+            <select data-sb-actor><option value="alice">alice (developer)</option><option value="bob">bob (developer)</option></select></label>
+        </div>
+        <div class="ws-cluster" aria-label="Nomad — developer workspaces">
+          <span class="ws-cluster__tag">Nomad</span>
+          <div class="ws-cluster__boxes">
+            <div class="ws-box" data-sb-ws="alice">
+              <span class="ws-box__name">alice's workspace</span>
+              <span class="ws-box__meta">sshd · CA-only</span>
+              <div class="ws-box__actions">
+                <button type="button" class="ws-box__btn" data-sb-connect="alice">Connect</button>
+                <span class="ws-box__ides" aria-label="opens in VS Code or any IDE" title="Opens in VS Code or any remote-dev IDE">
+                  <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true"><path fill="#0098ff" fill-rule="evenodd" d="M22.7 30.7c.5.2 1 .2 1.5 0l6.3-3c.9-.5 1.5-1.4 1.5-2.4V6.7c0-1-.6-1.9-1.5-2.4l-6.3-3c-.6-.3-1.4-.2-2 .2C22 1.7 9.4 13.2 9.4 13.2l-5.5-4.2c-.5-.4-1.2-.4-1.7.1L.5 10.6c-.5.5-.5 1.4 0 1.9L5.3 16l-4.8 4.3c-.5.5-.5 1.4 0 1.9l1.7 1.5c.5.5 1.2.5 1.7.1l5.5-4.2s12.6 11.5 13 12zM24 8.9 17.2 16l6.8 7.1V8.9z"/></svg>
+                  <svg width="18" height="17" viewBox="-1 -0.5 20 17" aria-hidden="true"><rect x="0" y="0.5" width="18" height="15" rx="2" fill="#fff" stroke="#8d8d8d" stroke-width="1.1"/><circle cx="3" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="6" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="9" cy="3.6" r="0.9" fill="#c6c6c6"/><line x1="2.6" y1="6.6" x2="15.4" y2="6.6" stroke="#e0e0e0" stroke-width="0.9"/><line x1="3" y1="9.3" x2="12.5" y2="9.3" stroke="#0f62fe" stroke-width="1.3"/><line x1="3" y1="12" x2="9" y2="12" stroke="#c6c6c6" stroke-width="1.3"/></svg>
+                </span>
+              </div>
+            </div>
+            <div class="ws-box" data-sb-ws="bob">
+              <span class="ws-box__name">bob's workspace</span>
+              <span class="ws-box__meta">sshd · CA-only</span>
+              <div class="ws-box__actions">
+                <button type="button" class="ws-box__btn" data-sb-connect="bob">Connect</button>
+                <span class="ws-box__ides" aria-label="opens in VS Code or any IDE" title="Opens in VS Code or any remote-dev IDE">
+                  <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true"><path fill="#0098ff" fill-rule="evenodd" d="M22.7 30.7c.5.2 1 .2 1.5 0l6.3-3c.9-.5 1.5-1.4 1.5-2.4V6.7c0-1-.6-1.9-1.5-2.4l-6.3-3c-.6-.3-1.4-.2-2 .2C22 1.7 9.4 13.2 9.4 13.2l-5.5-4.2c-.5-.4-1.2-.4-1.7.1L.5 10.6c-.5.5-.5 1.4 0 1.9L5.3 16l-4.8 4.3c-.5.5-.5 1.4 0 1.9l1.7 1.5c.5.5 1.2.5 1.7.1l5.5-4.2s12.6 11.5 13 12zM24 8.9 17.2 16l6.8 7.1V8.9z"/></svg>
+                  <svg width="18" height="17" viewBox="-1 -0.5 20 17" aria-hidden="true"><rect x="0" y="0.5" width="18" height="15" rx="2" fill="#fff" stroke="#8d8d8d" stroke-width="1.1"/><circle cx="3" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="6" cy="3.6" r="0.9" fill="#c6c6c6"/><circle cx="9" cy="3.6" r="0.9" fill="#c6c6c6"/><line x1="2.6" y1="6.6" x2="15.4" y2="6.6" stroke="#e0e0e0" stroke-width="0.9"/><line x1="3" y1="9.3" x2="12.5" y2="9.3" stroke="#0f62fe" stroke-width="1.3"/><line x1="3" y1="12" x2="9" y2="12" stroke="#c6c6c6" stroke-width="1.3"/></svg>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="ws-hint" data-sb-hint>Hit Connect on a workspace to request a session — exactly as you would from the Portal.</p>
+        <div class="sandbox__decision" data-sb-decision>
+          <div class="sandbox__status" data-sb-status>—</div>
+          <div class="sandbox__detail" data-sb-detail>Pick who you're authenticated as, then Connect to a workspace.</div>
+        </div>
+      </div>
+      <p class="helper" style="color:var(--text-sub)">This is exactly the required negative-isolation test (gate 8): a second, non-admin developer authenticating and attempting the first developer's target is <strong>denied</strong> — their managed group holds no grant on it. Isolation is enforced by the system, not by convention.</p>
+      <details class="why-not"><summary>Why identity-bound authorization, not a shared jump host?</summary><div class="why-body"><p>A shared host authorizes at the network edge and trusts everyone who lands on it. Here the grant is per-developer and per-target: the decision is made against the SSO identity before a session exists, so "reach only your own workspace" is structural, not a firewall rule someone can widen.</p></div></details>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 05 · Credentials (Vault) ================= -->
+  <section id="credentials" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 05 · <span style="color:var(--accent-3)">Credentials</span></span>
+    <h2>Nothing long-lived is ever handed out</h2>
+    <p class="lede">
+      You're in — and this is the part that makes it safe to hand a coding agent real privileges. Run that agent on
+      your own machine and it inherits your whole shell: every exported API key, cloud profile, and <code class="inline">.env</code>
+      on disk. In the workspace it starts from a clean environment and holds nothing standing. Whatever it needs next —
+      to push a commit, call a model, or reach a tool — Vault mints on demand, renders it to in-memory tmpfs, and scopes
+      it to the project's own Vault namespace. Four credentials, one trust fabric, and not one of them is a key left
+      lying on the machine.
+    </p>
+
+    <div class="subsection">
+      <div class="grid three">
+        <div class="card"><span class="chip" data-accent="3">SSH</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="jit-cert">Session certificate</span></p><p>The workspace's <code class="inline">sshd</code> trusts <em>only</em> a per-project Vault SSH CA — static keys are inert (<code class="inline">AuthorizedKeysFile none</code>). Boundary injects a fresh certificate for each session, stamped with the developer's email as <code class="inline">key_id</code> for audit; a reconnect mints a new one. There is no key to steal, leak, or rotate.</p></div>
+        <div class="card"><span class="chip" data-accent="3">Git</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="github-app-token">GitHub App token</span></p><p>Pushing needs no stored PAT — there is none anywhere. Vault's external GitHub plugin mints a short-lived <em>App installation</em> token from a pre-scoped, per-project <code class="inline">contents:write</code> permission set, rendered only to tmpfs and re-minted before its one-hour life runs out. Commits are the developer's; the push carries the project's App.</p></div>
+        <div class="card"><span class="chip" data-accent="3">Model</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="virtual-key">LLM model key</span></p><p>The agent never holds a real model-provider key. Vault hands the workspace a <strong>per-project virtual key</strong> for the <span class="node" data-node="litellm">LLM gateway</span> — scoped to an allow-list of models, a budget, and a rate limit — while the one real provider key stays inside the gateway. Ask for a model outside the list and it returns <code class="inline">403</code>.</p></div>
+        <div class="card"><span class="chip" data-accent="3">Tool</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="scoped-token">MCP tool token</span></p><p>To reach its tools the agent gets a <strong>per-project scoped token</strong> that resolves to a single virtual <span class="node" data-node="contextforge">MCP server</span> — the exact subset of tools a project-admin exposed. It answers <code class="inline">200</code> there and <code class="inline">403</code> on every other tool and server, and it carries no database URI: the agent never talks to a datastore directly.</p></div>
+        <div class="card"><span class="chip" data-accent="3">Trust</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="vault-namespace">Namespace + workload identity</span></p><p>None of these ride on a static Vault token, and none can reach across projects. Each project lives in its <strong>own Vault namespace</strong>, and Nomad trades a per-job <span class="node" data-node="wif">workload identity</span> for a short, read-only token — about thirty minutes, a handful of narrow read paths. One project's SSH CA, App token, model key, and tool token are unreachable from another's.</p></div>
+      </div>
+
+      <h3>Walk a single connection, credential by credential</h3>
+      <p>Follow one session on the left; the panel on the right is the developer's IDE, showing the exact evidence at each step. Watch every credential get minted, used, and scoped — from the SSH certificate that lets you in, to the pre-wired model and MCP server the coding agent reaches — without a single standing key on the machine.</p>
+
+      <div class="ide-stepper" id="connect-stepper">
+        <div class="ide-stepper__grid">
+          <div class="ide-steps">
+            <div class="step-row is-active" data-step="1"><span class="sr-tag">Step 1 · SSH · session certificate</span><div class="sr-body">From the Portal you pick your IDE and click <strong>Open</strong> on the workspace card. The Secured Workspace helper writes <code class="inline">~/.ssh/config</code> and launches the IDE over Remote-SSH; Boundary brokers the session and Vault signs a certificate stamped with your email as <code class="inline">key_id</code> — no key, no host address, and the workspace was never on the network.</div></div>
+            <div class="step-row" data-step="2"><span class="sr-tag">Step 2 · Git · GitHub App token</span><div class="sr-body">You push a commit. There is no PAT anywhere — Vault's GitHub plugin mints a one-hour App installation token (<code class="inline">contents:write</code>) straight to tmpfs. The commit is yours; the push carries the project's App.</div></div>
+            <div class="step-row" data-step="3"><span class="sr-tag">Step 3 · Model · LLM model key</span><div class="sr-body">You start the coding agent. Whichever agent the workspace template bakes in — Claude Code here, but it could be any coding CLI — arrives <strong>already installed and configured</strong> against the org-approved model (DeepSeek, in this project), reached through the LLM gateway on a per-project virtual key. You set no key, endpoint, or model.</div></div>
+            <div class="step-row" data-step="4"><span class="sr-tag">Step 4 · Tool · MCP tool token</span><div class="sr-body"><code class="inline">claude mcp list</code> already shows this project's <code class="inline">demo-db</code> server — pre-registered at provisioning with a Vault-issued, project-scoped token. The agent reaches only this project's data through the MCP gateway; every other server is <code class="inline">403</code>.</div></div>
+            <div class="step-row" data-step="5"><span class="sr-tag">Step 5 · Trust · namespace + workload identity</span><div class="sr-body">Every credential above was rendered to in-memory tmpfs, scoped to the project's own Vault namespace, and leased against a ~30-minute workload-identity token. Nothing is standing, nothing reaches another project, and it all disappears at session end.</div></div>
+            <div class="ide-steps__ctl">
+              <button data-step-prev>◀ Back</button><button data-step-next>Next ▶</button>
+              <span class="ide-steps__ind" data-step-ind>Step 1 / 5 · SSH cert</span>
+            </div>
+          </div>
+
+          <div class="ide-mock" aria-hidden="true">
+            <div class="ide-mock__bar">
+              <span class="ide-mock__dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
+              <span class="ide-mock__title" data-ide-title>proj-alpha — service</span>
+              <span class="ide-mock__remote">SSH: proj-alpha</span>
+            </div>
+            <div class="ide-mock__tabs"><span class="ide-mock__tab">agent.py</span><span class="ide-mock__tab is-on">TERMINAL</span></div>
+            <div class="ide-mock__body">
+              <div class="ide-pane is-shown" data-pane="1">
+<div class="t-out"><span class="t-ok">[portal]</span>   Open ▸ VS Code · workspace proj-alpha</div>
+<div class="t-key">[helper]   ~/.ssh/config written · launching IDE…</div>
+<div class="t-key">[boundary] session authorized · target=proj-alpha</div>
+<div class="t-key">[vault]    ssh-cert signed · key_id=ravi@acme.com · ttl 5m</div>
+<div class="t-ok">● Remote-SSH: connected to proj-alpha ✓</div>
+<span class="t-blank"></span>
+<div class="t-note">One click in the Portal — no key on disk, no host address, a fresh cert every reconnect.</div>
+              </div>
+              <div class="ide-pane" data-pane="2">
+<div class="t-cmd"><span class="p">dev@proj-alpha</span>:~/service$ git push origin feature</div>
+<div class="t-key">[vault] github-app token → /secrets (tmpfs) · contents:write · 1h</div>
+<div class="t-out">Enumerating objects: 12, done.</div>
+<div class="t-out">To github.com:acme/service.git</div>
+<div class="t-ok">   a1b2c3d..e4f5a6b  feature -> feature</div>
+<span class="t-blank"></span>
+<div class="t-note">No PAT anywhere — the token is minted per push and never stored.</div>
+              </div>
+              <div class="ide-pane" data-pane="3">
+<div class="t-cmd"><span class="p">dev@proj-alpha</span>:~/service$ claude   <span class="t-note"># or any agent the template ships</span></div>
+<div class="t-agent">✻ Claude Code — ready</div>
+<div class="t-agent">  model: <b class="k">deepseek</b> (org-approved) · via LLM gateway</div>
+<span class="t-blank"></span>
+<div class="t-cmd">&gt; What model are you using?</div>
+<div class="t-agent">● I'm a DeepSeek model, served through your org's LLM</div>
+<div class="t-agent">  gateway on a per-project virtual key (allow-list · budget).</div>
+<span class="t-blank"></span>
+<div class="t-note">Pre-configured — the developer set no key, endpoint, or model.</div>
+              </div>
+              <div class="ide-pane" data-pane="4">
+<div class="t-cmd"><span class="p">dev@proj-alpha</span>:~/service$ claude mcp list</div>
+<div class="t-ok">demo-db   ✓ connected   (project-scoped · via MCP gateway)</div>
+<span class="t-blank"></span>
+<div class="t-cmd">&gt; Use the demo-db tools to list employees — names and roles</div>
+<div class="t-agent">● Ada Lovelace  — Lead Engineer</div>
+<div class="t-agent">  Alan Turing   — Staff Researcher</div>
+<div class="t-agent">  Grace Hopper  — Principal Architect</div>
+<span class="t-blank"></span>
+<div class="t-note">Only this project's data · 403 on every other server &amp; tool.</div>
+              </div>
+              <div class="ide-pane" data-pane="5">
+<div class="t-cmd"><span class="p">dev@proj-alpha</span>:~/service$ ls /secrets   <span class="t-note"># tmpfs · RAM only</span></div>
+<div class="t-out">jit-cert   github-app-token   llm-virtual-key   mcp-token</div>
+<div class="t-key">[vault] namespace=acme/proj-alpha · WIF · ttl≈30m · read-only</div>
+<span class="t-blank"></span>
+<div class="t-ok">Nothing standing. Nothing cross-project.</div>
+<div class="t-note">Every lease expires on its own and is gone at session end.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <details class="why-not"><summary>Why short-lived certificates, not managed SSH keys?</summary><div class="why-body"><p>A key — however well managed — is a standing secret: it exists on disk somewhere, can be copied, and must be rotated and revoked. A per-session certificate has none of those properties: it is minted at connect time, expires on its own, is never stored, and its <code class="inline">key_id</code> ties every session to a named person for audit. There is simply nothing to steal between sessions.</p></div></details>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 06 · Isolation (Nomad) ================= -->
+  <section id="isolation" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 06 · <span style="color:var(--accent-5)">Runtime</span></span>
+    <h2>Isolated by construction, at two levels</h2>
+    <p class="lede">
+      An autonomous coding agent installs and runs untrusted code at machine speed — so <em>where</em> it runs decides how
+      far a bad outcome can travel. Nomad contains it in two dimensions: <strong>tenants</strong> are walled off structurally,
+      so one project can never reach another; and <strong>runtime</strong> isolation scales from a shared-kernel container up
+      to a hardware-virtualization boundary for the riskiest code — the same image throughout, only the wall changes.
+    </p>
+
+    <div class="svg-frame" aria-label="Three runtime tiers on three node pools, each stronger than the last">
+      <svg viewBox="0 0 920 220" role="img" aria-labelledby="iso-title">
+        <title id="iso-title">Container, GPU node, and Kata microVM runtime tiers</title>
+        <g font-family="IBM Plex Sans" text-anchor="middle">
+          <g transform="translate(160,110)"><rect x="-120" y="-70" width="240" height="140" rx="3" fill="#fff2e8" stroke="#ff832b"/><text y="-44" font-weight="600" font-size="14" fill="#161616">container</text><text y="-22" font-size="11" fill="#525252">default node pool</text><text y="0" font-size="11" fill="#525252">shared-kernel namespaces</text><text y="40" font-family="IBM Plex Mono" font-size="10" fill="#ff832b">standard workloads</text></g>
+          <g transform="translate(460,110)"><rect x="-120" y="-70" width="240" height="140" rx="3" fill="#fff2e8" stroke="#ff832b"/><text y="-44" font-weight="600" font-size="14" fill="#161616">GPU node</text><text y="-22" font-size="11" fill="#525252">gpu node pool · T4</text><text y="0" font-size="11" fill="#525252">same image + CUDA</text><text y="40" font-family="IBM Plex Mono" font-size="10" fill="#ff832b">heavier workloads</text></g>
+          <g transform="translate(760,110)"><rect x="-120" y="-70" width="240" height="140" rx="3" fill="#fff" stroke="#161616" stroke-width="1.6"/><text y="-44" font-weight="600" font-size="14" fill="#161616">microVM (Kata)</text><text y="-22" font-size="11" fill="#525252">microvm pool · bare metal</text><text y="0" font-size="11" fill="#525252">own guest kernel · KVM wall</text><text y="40" font-family="IBM Plex Mono" font-size="10" fill="#161616">untrusted code</text></g>
+        </g>
+      </svg>
+    </div>
+    <p class="caption">For a developer, choosing a stronger tier is just picking a different <strong>template tile</strong> in the Portal's <em>Create workspace</em> screen — nothing to configure. Behind that tile the OCI image and the entire credential stack are reused byte-for-byte; only the runtime boundary changes.</p>
+
+    <div class="subsection">
+      <h3>Tenant isolation is structural — remove a wall to see it</h3>
+      <p>
+        Each project gets its own <span class="node" data-node="vault-namespace">Vault namespace</span>, <span class="node" data-node="boundary-scope">Boundary scope</span>, and
+        <span class="node" data-node="nomad-namespace">Nomad namespace</span>. Cross-project access is impossible by construction, not policy-gated. Toggle a boundary off
+        to read what it was preventing:
+      </p>
+
+      <div class="peel">
+        <div class="peel__head"><h4>Per-project isolation boundaries</h4><button class="peel__reset" data-peel-reset>Reset all on</button></div>
+        <div class="peel__chips">
+          <button class="peel-chip" data-layer="vault" aria-pressed="true"><span class="peel-chip__pip"></span>Vault namespace</button>
+          <button class="peel-chip" data-layer="boundary" aria-pressed="true"><span class="peel-chip__pip"></span>Boundary scope</button>
+          <button class="peel-chip" data-layer="nomad" aria-pressed="true"><span class="peel-chip__pip"></span>Nomad namespace</button>
+        </div>
+        <div class="peel__break" data-peel-break aria-live="polite">
+          <p data-peel-label>All boundaries engaged — cross-project access is structurally impossible.</p>
+          <ul data-peel-list>
+            <li data-layer="vault" hidden><strong>Vault namespace removed:</strong> credentials would no longer resolve to only one project — a token minted for project A could reach project B's SSH CA, database role, and secrets. The hard isolation boundary is gone.</li>
+            <li data-layer="boundary" hidden><strong>Boundary scope removed:</strong> brokered access is no longer partitioned per project — role grants could authorize sessions across project boundaries instead of within one.</li>
+            <li data-layer="nomad" hidden><strong>Nomad namespace removed:</strong> workloads could schedule into one another's space; a namespace-scoped ACL backstop no longer contains a job to its project.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h4>The runtime tiers</h4>
+      <div class="tiers">
+        <div class="tier"><span class="tier-n">Tier 1 · default</span><h4>Container</h4><p>A managed Docker container on the standard node pool with a persistent <code class="inline">/home/dev</code> volume. It <strong>shares the host kernel</strong> through Linux namespaces — the baseline for standard work.</p><span class="tier-iso">isolation: namespaces</span></div>
+        <div class="tier"><span class="tier-n">Tier 2 · gpu</span><h4>GPU node</h4><p>The same workspace pinned to a <code class="inline">g4dn.xlarge</code> NVIDIA-T4 node for heavier workloads. Proof inside: <code class="inline">nvidia-smi</code> sees the T4.</p><span class="tier-iso">isolation: namespaces + GPU</span></div>
+        <div class="tier"><span class="tier-n">Tier 3 · microvm</span><h4>Kata microVM</h4><p>The same image inside a <span class="node" data-node="kata">Kata Containers microVM</span> — its own guest kernel behind a KVM wall — on a bare-metal pool. A container escape is contained by the VM, not just Linux namespaces.</p><span class="tier-iso">isolation: hardware (KVM)</span></div>
+      </div>
+      <p class="helper" style="color:var(--text-sub)">Proof point (microVM gate): inside the workspace <code class="inline">uname -r</code> shows a Kata guest kernel (e.g. 6.1.62) — <em>different</em> from the host node's — and <code class="inline">/home/dev</code> mounts over <code class="inline">virtiofs</code>. A distinct guest kernel can only happen inside the microVM.</p>
+      <p>
+        <strong>Match the machine to the work.</strong> Most workspaces run standard; CUDA and other GPU-accelerated work gets a
+        <strong>GPU</strong> node; untrusted or agent-driven code that warrants a hard wall gets the <strong>microVM</strong> —
+        a one-line flavor change, with the same image and the same credential stack throughout. And because the runtime is
+        immutable and rebuilt from the template on every placement, a workspace an agent wedges — a broken toolchain, a
+        poisoned dependency — is discarded and rescheduled from clean in seconds: the container is disposable and rebuilt
+        clean, while your <code class="inline">/home/dev</code> lives on a durable per-workspace volume that survives node
+        failure and re-attaches wherever the workspace reschedules.
+      </p>
+      <details class="why-not"><summary>Why hardware isolation only for some workspaces, not all?</summary><div class="why-body"><p>Kata microVMs need bare-metal nodes (KVM is unavailable in nested-virt guests) and cost more per hour, so they are an opt-in flavor for untrusted or high-risk code rather than the default. Because the image and credential stack are identical across tiers, offering hardware isolation is a one-line flavor definition on the platform side — a project-admin publishes the microVM template and it appears as another tile in the developer's picker. Making the microVM the default is on the roadmap.</p></div></details>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 07 · AI egress (gateways) ================= -->
+  <section id="ai-egress" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 07 · <span style="color:var(--accent-4)">AI egress</span></span>
+    <h2>What the coding agent is allowed to reach</h2>
+    <p class="lede">
+      Every workspace runs a coding agent — inside the container, never on the developer's machine. That agent is
+      exactly where the "code leaving via AI" risk lives, so its reach is governed the same way access is: it
+      touches tools, data, and models only through two central gateways that scope, budget, and audit every call.
+    </p>
+
+    <div class="svg-frame" aria-label="The in-workspace coding agent reaches tools and models only through the MCP and LLM gateways">
+      <svg viewBox="0 0 920 250" role="img" aria-labelledby="ai-title">
+        <title id="ai-title">The workspace coding agent reaching data via the MCP gateway and models via the LLM gateway</title>
+        <!-- workspace (Nomad) -->
+        <g transform="translate(150,125)" text-anchor="middle" font-family="IBM Plex Sans"><rect x="-100" y="-70" width="200" height="140" rx="3" fill="#d6f5ea" stroke="#00a578" stroke-width="1.4"/><text y="-50" font-weight="600" font-size="13" fill="#161616">Nomad</text><rect x="-86" y="-38" width="172" height="94" rx="2" fill="#fff" stroke="#00a578" stroke-dasharray="3 2"/><text y="-22" font-size="10" fill="#00695c">secured dev workspace</text><rect x="-66" y="-8" width="132" height="30" rx="2" fill="#eafaf3" stroke="#00a578"/><text y="12" font-family="IBM Plex Mono" font-size="11" fill="#161616">coding agent</text><text y="44" font-size="10" fill="#525252">scoped token · virtual key</text></g>
+        <!-- MCP gateway -->
+        <g transform="translate(540,70)"><rect x="-110" y="-34" width="220" height="68" rx="3" fill="#fff0f7" stroke="#ee5396"/><text y="-8" text-anchor="middle" font-family="IBM Plex Sans" font-weight="600" font-size="12" fill="#161616">MCP gateway (ContextForge)</text><text y="12" text-anchor="middle" font-family="IBM Plex Sans" font-size="11" fill="#525252">per-project virtual server · 403 else</text></g>
+        <!-- LLM gateway -->
+        <g transform="translate(540,180)"><rect x="-110" y="-34" width="220" height="68" rx="3" fill="#fff0f7" stroke="#ee5396"/><text y="-8" text-anchor="middle" font-family="IBM Plex Sans" font-weight="600" font-size="12" fill="#161616">LLM gateway (LiteLLM)</text><text y="12" text-anchor="middle" font-family="IBM Plex Sans" font-size="11" fill="#525252">one provider key · budget · audit</text></g>
+        <!-- backends -->
+        <g transform="translate(830,70)"><rect x="-56" y="-24" width="112" height="48" rx="2" fill="#f4f4f4" stroke="#c6c6c6"/><text y="4" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" fill="#525252">project data</text></g>
+        <g transform="translate(830,180)"><rect x="-56" y="-24" width="112" height="48" rx="2" fill="#f4f4f4" stroke="#c6c6c6"/><text y="4" text-anchor="middle" font-family="IBM Plex Mono" font-size="11" fill="#525252">model provider</text></g>
+        <line x1="250" y1="105" x2="428" y2="72" stroke="#ee5396" stroke-width="2" marker-end="url(#arw)"/>
+        <line x1="250" y1="145" x2="428" y2="180" stroke="#ee5396" stroke-width="2" marker-end="url(#arw)"/>
+        <line x1="650" y1="70" x2="772" y2="70" stroke="#525252" stroke-width="1.5" marker-end="url(#arw)"/>
+        <line x1="650" y1="180" x2="772" y2="180" stroke="#525252" stroke-width="1.5" marker-end="url(#arw)"/>
+      </svg>
+    </div>
+    <p class="caption">The workspace holds only a scoped MCP token and a per-project LLM virtual key, both rendered to tmpfs. It never holds a database URI or the real provider key — the gateways do.</p>
+
+    <div class="subsection">
+      <h3>Two gateways, two policy points — click either to inspect</h3>
+      <div class="grid two">
+        <div class="card"><span class="chip" data-accent="4">Tools &amp; data</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="contextforge">MCP gateway</span> · ContextForge</p><p>Federates each project's MCP server as a <span class="node" data-node="scoped-token">per-project virtual server</span>. The agent holds a client token scoped to its own virtual server and reaches that and nothing else — every other project's server and the gateway's admin API return <code class="inline">403</code>. The tools and data it can touch are exactly the subset a project-admin exposed, and no more.</p></div>
+        <div class="card"><span class="chip" data-accent="4">Models</span><p class="card-title" style="margin-top:10px"><span class="node" data-node="litellm">LLM gateway</span> · LiteLLM</p><p>Serves the API the agent speaks and holds the <em>one</em> central provider key. Each project gets a <span class="node" data-node="virtual-key">virtual key</span> scoped to allowed models with a budget and rate limit; the workspace authenticates with it and never sees the real key. Every prompt/response is logged per project, and the provider is swappable (DeepSeek → watsonx.ai) by a one-line config change with no workspace edit.</p></div>
+      </div>
+      <p class="helper" style="color:var(--text-sub)">Governed by default, enforced by the credential: the workspace ships already pointed at the gateway — the developer configures no endpoint, key, or model — and the real control is the token itself, not a config file. The workspace holds only a scoped virtual key, so a request for a model outside its allow-list returns <code class="inline">403</code> at the gateway, whatever agent or setting sent it.</p>
+
+      <div class="callout" data-accent="4"><strong>Governance you can hand an auditor.</strong> Because every call runs through the gateways, the record is central. Each session and action ties to a named person — the SSH certificate's <code class="inline">key_id</code> is the developer's email. Model access runs on a per-project budget and rate limit (for example <code class="inline">$50</code> and <code class="inline">120</code> requests/min), and every prompt and response is logged and tagged to the project, with spend exportable from the gateway. Ask for a model outside the allow-list and it returns <code class="inline">403</code>.</div>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 08 · Experience ================= -->
+  <section id="experience" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 08 · <span style="color:var(--text-sub)">Experience</span></span>
+    <h2>What the developer actually does</h2>
+    <p class="lede">
+      All of the above is invisible at the keyboard. A developer never writes Terraform, never touches a token,
+      and never learns a server address. Four steps, and everything the earlier chapters described happens
+      underneath.
+    </p>
+
+    <div class="subsection">
+      <div class="ide-stepper" id="dx-stepper">
+        <div class="ide-stepper__grid">
+          <div class="ide-steps">
+            <div class="step-row is-active" data-step="1"><span class="sr-tag">Step 1 · Sign in</span><div class="sr-body">Sign in with your normal company SSO. No account to create, no key to generate.</div></div>
+            <div class="step-row" data-step="2"><span class="sr-tag">Step 2 · Create workspace</span><div class="sr-body">Create a workspace from the self-service <span class="node" data-node="portal">Developer Portal</span> — pick a ready-made template: standard, GPU-backed, or microVM-isolated. Repo and image are pinned by the project.</div></div>
+            <div class="step-row" data-step="3"><span class="sr-tag">Step 3 · Open in IDE</span><div class="sr-body">Open it straight from the Portal — pick your IDE and click <strong>Open</strong>. A narrow <span class="node" data-node="protocol-helper">secured-ws:// helper</span> writes the managed SSH config block and launches Remote-SSH, brokered transparently by the Boundary Client Agent.</div></div>
+            <div class="step-row" data-step="4"><span class="sr-tag">Step 4 · Start coding</span><div class="sr-body">Start coding. The project is already cloned, tools installed, git configured as you, and the coding agent connected to your project's approved tools and models. Work is saved between sessions.</div></div>
+            <div class="ide-steps__ctl">
+              <button data-step-prev>◀ Back</button><button data-step-next>Next ▶</button>
+              <span class="ide-steps__ind" data-step-ind>Step 1 / 4 · sign in</span>
+            </div>
+          </div>
+
+          <div class="portal-mock" aria-hidden="true">
+            <div class="portal-mock__bar">
+              <span class="portal-mock__dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
+              <span class="portal-mock__url" data-portal-url>portal.acme.dev/login</span>
+            </div>
+            <div class="portal-mock__body">
+              <div class="p-pane is-shown" data-pane="1">
+                <div class="pm-content" style="min-height:326px;display:flex;align-items:center;justify-content:center">
+                  <div class="pm-tile" style="max-width:360px;width:100%">
+                    <div class="pm-h">Secured Dev Workspace</div>
+                    <p class="pm-sub">Sign in with IBM Verify to access your projects and create secured dev workspaces.</p>
+                    <button class="pm-btn">Sign in with IBM Verify <span class="ic">→</span></button>
+                  </div>
+                </div>
+              </div>
+              <div class="p-pane" data-pane="2">
+                <div class="pm-header"><span class="pm-logo"></span>Secured Dev Workspace<span class="pm-user">pravi · project acme</span></div>
+                <div class="pm-content">
+                  <div class="pm-tile">
+                    <div class="pm-h">Create workspace</div>
+                    <p class="pm-sub">A new workspace is provisioned with a generated name — your identity, git config, the SSH port and the volume are all configured automatically. Choose a template:</p>
+                    <div class="pm-radio is-sel"><span class="pm-radio__dot"></span><div><div class="pm-radio__t">Standard workspace</div><div class="pm-radio__d">Container on the standard pool · repo: acme/service</div></div></div>
+                    <div class="pm-radio"><span class="pm-radio__dot"></span><div><div class="pm-radio__t">GPU workspace</div><div class="pm-radio__d">NVIDIA T4 — CUDA &amp; GPU-accelerated work</div></div></div>
+                    <div class="pm-radio"><span class="pm-radio__dot"></span><div><div class="pm-radio__t">microVM (Kata)</div><div class="pm-radio__d">Hardware-isolated — untrusted or high-risk code</div></div></div>
+                    <div class="pm-actions"><button class="pm-btn--ghost">Cancel</button><button class="pm-btn">Create</button></div>
+                  </div>
+                </div>
+              </div>
+              <div class="p-pane" data-pane="3">
+                <div class="pm-header"><span class="pm-logo"></span>Secured Dev Workspace<span class="pm-user">pravi · project acme</span></div>
+                <div class="pm-content">
+                  <div class="pm-tile">
+                    <div class="pm-row-between"><div class="pm-h" style="margin:0">ws-7f3a2b</div><span class="pm-tag pm-tag--green">running</span></div>
+                    <div style="margin:8px 0"><span class="pm-tag pm-tag--gray">standard</span></div>
+                    <p class="pm-meta">port 2231 · tsess_a1b2c3</p>
+                    <div class="pm-tabs"><span class="pm-tab is-on">VSCode (ProxyCommand)</span><span class="pm-tab">Transparent</span></div>
+                    <p class="pm-sub" style="margin:12px 0 8px">Open it directly — the Secured Workspace helper writes the SSH config and launches your IDE:</p>
+                    <div class="pm-connect"><span class="pm-select">VS Code <span style="opacity:.55">▾</span></span><button class="pm-btn">Open <span class="ic">↗</span></button></div>
+                    <div class="pm-btnrow"><span class="pm-btn--ghost">Stop</span><span class="pm-btn--ghost">Logs</span><span class="pm-btn--ghost danger">Destroy</span></div>
+                  </div>
+                </div>
+              </div>
+              <div class="p-pane" data-pane="4">
+                <div class="pm-ide">
+                  <div class="pm-ide__bar"><span class="portal-mock__dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span> proj-alpha — Remote-SSH · service</div>
+                  <div class="pm-ide__wrap">
+                    <div class="pm-ide__side">
+                      <div class="f dir">▾ service</div>
+                      <div class="f" style="padding-left:16px">▸ src</div>
+                      <div class="f on" style="padding-left:16px">agent.py</div>
+                      <div class="f" style="padding-left:16px">README.md</div>
+                    </div>
+                    <div class="pm-ide__main">
+                      <div class="pm-ide__tabs"><span class="pm-ide__tab">agent.py</span><span class="pm-ide__tab on">TERMINAL</span></div>
+<div class="pm-ide__term"><span class="g">✓</span> repo cloned · <span class="g">✓</span> tools ready · <span class="g">✓</span> git as you
+<span class="g">dev@proj-alpha</span>:~/service$ claude
+<span class="p">✻ Claude Code ready</span> · deepseek · MCP: demo-db ✓<span class="n">Everything was wired at provisioning — just start coding.</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="callout"><strong>No keys to copy. No tools to install. No source code to download. No tokens to paste.</strong> Developers do all of this through the Portal. Operators who prefer Terraform reach the same result through the <code class="inline">terraform/workspace</code> tier.</div>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 09 · Reference & getting started ================= -->
+  <section id="reference" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 09 · <span style="color:var(--text-sub)">Reference</span></span>
+    <h2>Reference &amp; getting started</h2>
+    <p class="lede" style="margin-bottom:var(--s-05)">Each product owns one part of the security model. Only the base platform is provisioned with Terraform; projects and workspaces are created from the Portal — each step run by a different role, so no one person ever holds every privilege at once.</p>
+
+    <div class="subsection" style="padding-top:var(--s-05)">
+      <h3>Who owns what</h3>
+      <div class="table-scroll"><table class="catalog">
+        <thead><tr><th>Product</th><th>The one property it owns</th><th>Question answered</th></tr></thead>
+        <tbody>
+          <tr><td><span class="prod">IBM Verify</span></td><td>OIDC single sign-on; every access bound to the <code class="inline">/token/email</code> claim.</td><td><span class="layer-tag" data-accent="1">who are you</span></td></tr>
+          <tr><td><span class="prod">Boundary</span></td><td>Identity-aware access broker; the single authenticated entry point, per-target authorization.</td><td><span class="layer-tag" data-accent="2">may you connect</span></td></tr>
+          <tr><td><span class="prod">Vault</span></td><td>Credential authority: SSH CA, ephemeral git tokens, dynamic DB roles, per-project secrets.</td><td><span class="layer-tag" data-accent="3">with what credential</span></td></tr>
+          <tr><td><span class="prod">Nomad</span></td><td>Scheduler and isolation boundary; namespace per tenant, node pool per hardware tier.</td><td><span class="layer-tag" data-accent="5">where does it run</span></td></tr>
+          <tr><td><span class="prod">ContextForge + LiteLLM</span></td><td>Central MCP and model egress; scope, budget, and audit for the in-workspace agent.</td><td><span class="layer-tag" data-accent="4">what can it reach</span></td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Three tiers, three roles</h3>
+      <p>Only the base platform is provisioned with Terraform. Everything above it — projects and their workspaces — is created from the Portal, never HCL. Each role holds only what its tier needs: the Platform Admin runs the one privileged apply and onboards projects, Project Admins configure their own project, and developers only ever create and reach their own workspace.</p>
+      <div class="table-scroll"><table class="catalog">
+        <thead><tr><th>Tier</th><th>Role</th><th>What they set up</th></tr></thead>
+        <tbody>
+          <tr><td><span class="prod">Platform</span> · <code class="inline">terraform/infra</code></td><td>Platform Admin</td><td>Provisions the base platform with Terraform — Boundary, Nomad, Vault, and the LLM + MCP gateways. Then creates each new project from the Portal, and with it a fresh Boundary scope, Vault namespace, and Nomad namespace.</td></tr>
+          <tr><td><span class="prod">Project</span> · Portal</td><td>Project Admin</td><td>Configures the project's MCP servers and workspace templates — from the Portal.</td></tr>
+          <tr><td><span class="prod">Workspace</span> · Portal</td><td>Developer</td><td>Creates and connects to their own workspace — from the Portal.</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div></section>
+
+  <footer><div class="page">
+    <p><strong>Secured Remote Dev Workspace</strong> — a Level-300 architecture guide for technical audiences. Built on IBM Verify and the HashiCorp stack (Boundary · Vault · Nomad).</p>
+    <p style="margin-top:var(--s-04)">Diagrams are logical views of the design pattern, not a specific deployment topology. Statistics are attributed to their sources; product mechanics trace to the repository's <code class="inline">ARCHITECTURE.md</code> and tier READMEs. For the full architecture, see <a href="https://github.com/">the repository</a>.</p>
+  </div></footer>
+</main>
+
+<!-- Detail panel -->
+<aside class="detail" id="detail" aria-hidden="true" aria-label="Component details">
+  <button class="detail-close" id="detail-close" aria-label="Close">×</button>
+  <span class="detail-kind" id="detail-kind"></span>
+  <h4 id="detail-name"></h4>
+  <div class="detail-body" id="detail-body"></div>
+  <dl class="detail-meta" id="detail-meta"></dl>
+</aside>
+
+<!-- Bottom dot-nav -->
+<nav class="dotnav" aria-label="Chapter navigation">
+  <button class="dotnav-btn" id="prev-btn">← Prev</button>
+  <div><div class="dotnav-label" id="dotnav-label"></div><div class="dotnav-dots" id="dotnav-dots"></div></div>
+  <button class="dotnav-btn" id="next-btn">Next →</button>
+</nav>
+
+<script>
+/* ---- Node registry ---- */
+const NODES = {
+  verify:{kind:'identity provider',name:'IBM Verify',body:'OIDC single sign-on. Both Boundary and Nomad trust it; per-developer authorization derives from the /token/email claim, which is also the SSH certificate key_id — so every access is bound to a named person. Any OIDC-compliant IdP can stand in its place.',meta:{Role:'SSO · OIDC',Claim:'/token/email',Swap:'any OIDC IdP'}},
+  boundary:{kind:'access broker',name:'HashiCorp Boundary',body:'The single, authenticated entry point to every workspace. Performs per-developer authorization (managed group → role → authorize-session on exactly one target), brokers the session through its worker proxy, and injects the session credential — so the workspace sshd is never network-reachable.',meta:{Role:'identity-aware access broker',Transparent:'Client Agent + target aliases',Store:'least-privilege periodic token'}},
+  vault:{kind:'credential authority',name:'HashiCorp Vault',body:'Central credential authority and secrets store. Signs per-session SSH certificates from a per-project CA, mints short-lived GitHub App push tokens, issues dynamic auto-rotating database roles, and holds each project job template + gateway coordinates in KV.',meta:{Role:'JIT credentials · secrets',Isolation:'namespace per project (Enterprise)',Access:'Nomad over workload-identity federation'}},
+  nomad:{kind:'scheduler',name:'HashiCorp Nomad',body:'Workload scheduler and isolation boundary. Runs each workspace as a managed container whose /home/dev is a durable, network-attached per-workspace EBS volume (AWS EBS CSI driver) that survives node failure and re-attaches when the workspace reschedules onto another node. Partitions tenants by namespace (ACL-backstopped) and hardware by node pool (default · gpu · microvm). Maps directly onto Kubernetes.',meta:{Role:'scheduler · isolation',Storage:'durable per-workspace EBS · survives node loss',Pools:'default · gpu · microvm',Maps:'Kubernetes'}},
+  litellm:{kind:'AI gateway',name:'AI / LLM Gateway (LiteLLM)',body:'A platform-tier Nomad job (namespace infra, backed by Postgres) that every workspace agent calls instead of the model provider directly. Holds the one central provider key, issues each project a scoped virtual key (allowed models + budget + rate limit), and logs every prompt/response per project.',meta:{Path:'infra namespace',Key:'one central provider key held here',Provider:'swappable by one config line'}},
+  contextforge:{kind:'AI gateway',name:'AI / MCP Gateway (ContextForge)',body:'A platform-tier Nomad job (namespace infra) that federates each project MCP server as a per-project virtual server and decides which servers/tools a workspace may reach. A workspace holds a client token scoped to its own virtual server; every other server and the admin API return 403.',meta:{Path:'infra namespace',Scope:'per-project virtual MCP server',Deny:'403 on everything else'}},
+  'jit-cert':{kind:'credential',name:'Just-in-time SSH certificate',body:'The workspace sshd trusts only a Vault SSH CA (TrustedUserCAKeys; AuthorizedKeysFile none, so static keys are inert). Boundary injects a fresh short-lived Vault-signed certificate per session, stamped with the developer email as key_id for audit. A new connection re-invokes Boundary for a fresh cert.',meta:{Issuer:'Vault SSH CA (per project)','key_id':'developer email',TTL:'covers the handshake · fresh per reconnect'}},
+  'github-app-token':{kind:'credential',name:'Ephemeral git push token',body:'Pushing needs no stored PAT. Vault’s external GitHub secrets plugin mints a short-lived GitHub App installation token from a pre-scoped, per-project contents:write permission set. consul-template re-mints it before expiry; it renders only to tmpfs, never to /home/dev. Commits are authored by the developer; the push is the App bot.',meta:{Type:'GitHub App installation token',Scope:'contents:write (pre-scoped)',Rendered:'tmpfs only'}},
+  wif:{kind:'trust',name:'Workload-identity federation',body:'Nomad fetches each project SSH CA public key from Vault over the jwt-nomad auth method — no static Vault token is baked into a job. The trust chain is established without embedding secrets.',meta:{Method:'jwt-nomad',Effect:'no static token in jobs'}},
+  'vault-namespace':{kind:'isolation',name:'Per-project Vault namespace',body:'Each project gets its own Vault Enterprise namespace — the hard isolation boundary. Inside it: ssh (SSH CA), database (dynamic read-only Postgres role), github (App token broker), and KV runtime coordinates. A token minted in one namespace resolves only that namespace’s paths. Path prefixes in a single namespace are the lighter non-Enterprise alternative.',meta:{Boundary:'Vault-enforced',Contains:'ssh · database · github · KV',Alt:'path prefixes (weaker)'}},
+  'boundary-scope':{kind:'isolation',name:'Per-project Boundary scope',body:'Each project gets its own Boundary scope — the container for that project’s targets, roles, and credential store. An authorize-session grant lives inside one scope, so a developer’s role can only reach targets within their own project, never another’s. Access is partitioned per project at the broker itself.',meta:{Boundary:'Boundary-enforced',Contains:'targets · roles · credential store',Grant:'authorize-session, project-scoped'}},
+  'nomad-namespace':{kind:'isolation',name:'Per-project Nomad namespace',body:'Each project’s workspaces schedule into its own Nomad namespace, guarded by a namespace-scoped ACL. A job in one project cannot schedule into, read, or reach another project’s namespace — a scheduler-layer backstop beneath the Vault and Boundary walls.',meta:{Boundary:'Nomad ACL-enforced',Contains:'workspace jobs · volumes',Backstop:'namespace ACL'}},
+  kata:{kind:'runtime',name:'Kata Containers microVM',body:'A workspace flavor that runs the same OCI image inside a Kata microVM — its own guest kernel behind a hardware-virtualization (KVM) boundary — on a dedicated bare-metal node pool. A kernel or container escape is contained by the VM boundary, not just Linux namespaces. Proof: uname -r shows a guest kernel distinct from the host.',meta:{Pool:'microvm (bare metal)',Boundary:'KVM / hardware',Proof:'distinct guest kernel + virtiofs'}},
+  'virtual-key':{kind:'credential',name:'Per-project LLM virtual key',body:'A scoped key issued by the LLM gateway (allowed models + budget + rate limit), written to Vault and rendered to the workspace tmpfs. The workspace authenticates with it and never sees the real provider key; a request for a model outside its scope returns 403.',meta:{Scope:'allowed models + budget + rate limit',Rendered:'tmpfs',Hides:'the real provider key'}},
+  'scoped-token':{kind:'credential',name:'Scoped MCP client token',body:'A per-project client token that reaches only the project’s virtual MCP server on the gateway. Written over WIF from secret/projects/mcp to the workspace tmpfs. The workspace holds no database URI — it never talks to the database directly.',meta:{Reaches:'one virtual MCP server',Rendered:'tmpfs',Holds:'no DB URI'}},
+  'managed-group':{kind:'authorization',name:'Boundary managed group',body:'A per-developer group matched on the /token/email claim, mapped to a role that grants authorize-session on only that developer’s target. This is what makes "reach only your own workspace" structural, and what the negative-isolation test proves.',meta:{Match:'/token/email',Grants:'authorize-session on one target',Proof:'negative-isolation test (gate 8)'}},
+  portal:{kind:'experience',name:'Developer Portal',body:'A self-service web app (Carbon React + Go) — the direct-API equivalent of the terraform/workspace tier. Developers sign in with SSO, see only projects their groups allow, pick a flavor, and click create. No HCL, no state, no tokens.',meta:{Stack:'Carbon React + Go',Auth:'IBM Verify OIDC (PKCE)',Equivalent:'terraform/workspace tier'}},
+  'protocol-helper':{kind:'experience',name:'secured-ws:// protocol helper',body:'A narrow local URL-scheme handler (same pattern as vscode://) that bridges the remote Portal to the developer’s machine. Three verbs — authenticate, connect, disconnect. It validates every parameter and rebuilds each command and SSH-config block itself, so a link can never run an arbitrary command or write arbitrary config.',meta:{Verbs:'authenticate · connect · disconnect',Safety:'strict per-param validation',Pattern:'like vscode://'}}
+};
+
+/* ---- Detail panel ---- */
+const detail=document.getElementById('detail');
+function openNode(k){const n=NODES[k];if(!n)return;
+  document.getElementById('detail-kind').textContent=n.kind;
+  document.getElementById('detail-name').textContent=n.name;
+  document.getElementById('detail-body').textContent=n.body;
+  const m=document.getElementById('detail-meta');m.innerHTML='';
+  for(const[k2,v]of Object.entries(n.meta||{})){const dt=document.createElement('dt');dt.textContent=k2;const dd=document.createElement('dd');dd.textContent=v;m.append(dt,dd);}
+  document.body.classList.add('has-selection');detail.setAttribute('aria-hidden','false');
+  document.querySelectorAll('.node.active').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.node[data-node="'+k+'"]').forEach(x=>x.classList.add('active'));}
+function closeDetail(){document.body.classList.remove('has-selection');detail.setAttribute('aria-hidden','true');
+  document.querySelectorAll('.node.active').forEach(x=>x.classList.remove('active'));}
+document.addEventListener('click',e=>{const n=e.target.closest('.node');
+  if(n&&n.dataset.node){e.preventDefault();openNode(n.dataset.node);return;}
+  if(document.body.classList.contains('has-selection')&&!e.target.closest('#detail')&&!e.target.closest('.node'))closeDetail();});
+document.getElementById('detail-close').addEventListener('click',closeDetail);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();});
+document.querySelectorAll('.node').forEach(n=>{n.setAttribute('role','button');n.setAttribute('tabindex','0');
+  n.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openNode(n.dataset.node);}});});
+
+/* ---- Page core: progress + active-nav + reveal + dot-nav ---- */
+const progressEl=document.getElementById('progress');
+const chapterLinks=Array.from(document.querySelectorAll('.chapters-nav a[data-chapter]'));
+const chapters=chapterLinks.map(a=>document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const dotContainer=document.getElementById('dotnav-dots');
+const dotLabel=document.getElementById('dotnav-label');
+const prevBtn=document.getElementById('prev-btn'),nextBtn=document.getElementById('next-btn');
+chapters.forEach((c,i)=>{const d=document.createElement('span');d.className='dot';d.dataset.i=i;dotContainer.appendChild(d);});
+let activeChapterIndex=-1;
+function setActive(i){if(i===activeChapterIndex)return;activeChapterIndex=i;
+  chapterLinks.forEach((a,j)=>a.classList.toggle('active',j===i));
+  dotContainer.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('active',j===i));
+  const h2=chapters[i].querySelector('h2, h1');
+  dotLabel.textContent=(h2?h2.textContent.trim().split('—')[0].trim():chapterLinks[i].textContent).slice(0,42);
+  prevBtn.disabled=i===0;nextBtn.disabled=i===chapters.length-1;}
+prevBtn.addEventListener('click',()=>{if(activeChapterIndex>0)chapters[activeChapterIndex-1].scrollIntoView({behavior:'smooth',block:'start'})});
+nextBtn.addEventListener('click',()=>{if(activeChapterIndex<chapters.length-1)chapters[activeChapterIndex+1].scrollIntoView({behavior:'smooth',block:'start'})});
+function updateProgressAndActive(){const st=window.scrollY,dh=document.documentElement.scrollHeight-window.innerHeight;
+  progressEl.style.setProperty('--progress',Math.min(100,Math.max(0,(st/Math.max(1,dh))*100))+'%');
+  const trig=window.innerHeight/3;let idx=0;
+  for(let i=0;i<chapters.length;i++){if(chapters[i].getBoundingClientRect().top-trig<=0)idx=i;}setActive(idx);}
+window.addEventListener('scroll',updateProgressAndActive,{passive:true});
+window.addEventListener('resize',updateProgressAndActive);updateProgressAndActive();
+const revealEl=el=>el.classList.add('revealed');
+if('IntersectionObserver' in window){
+  const revealObs=new IntersectionObserver((es,o)=>es.forEach(e=>{if(e.isIntersecting){revealEl(e.target);o.unobserve(e.target);}}),{rootMargin:'0px 0px -10% 0px'});
+  document.querySelectorAll('.subsection').forEach(el=>revealObs.observe(el));
+  /* fail-safe: embedded viewers (e.g. VS Code Live Preview) can throttle/skip the observer callback, leaving content stuck at opacity:0 — reveal anything on-screen on load/scroll */
+  const revealOnScreen=()=>document.querySelectorAll('.subsection:not(.revealed)').forEach(el=>{if(el.getBoundingClientRect().top<window.innerHeight*0.95)revealEl(el);});
+  window.addEventListener('load',revealOnScreen);
+  window.addEventListener('scroll',revealOnScreen,{passive:true});
+}else{
+  document.querySelectorAll('.subsection').forEach(revealEl);
+}
+if(window.location.hash){setTimeout(()=>{const t=document.querySelector(window.location.hash);if(t)t.scrollIntoView({block:'start'})},50);}
+
+/* ---- Peel widgets ---- */
+document.querySelectorAll('.peel').forEach(root=>{
+  const chips=root.querySelectorAll('.peel-chip'),box=root.querySelector('[data-peel-break]'),
+    label=root.querySelector('[data-peel-label]'),items=root.querySelectorAll('[data-peel-list] li'),
+    okLabel=label.textContent;
+  function render(){const off=Array.from(chips).filter(c=>c.getAttribute('aria-pressed')==='false').map(c=>c.dataset.layer);
+    items.forEach(li=>{li.hidden=!off.includes(li.dataset.layer);});
+    box.classList.toggle('is-broken',off.length>0);
+    label.textContent=off.length===0?okLabel:off.length+' boundar'+(off.length>1?'ies':'y')+' down — what it was preventing:';}
+  chips.forEach(c=>c.addEventListener('click',()=>{c.setAttribute('aria-pressed',c.getAttribute('aria-pressed')==='true'?'false':'true');render();}));
+  root.querySelector('[data-peel-reset]').addEventListener('click',()=>{chips.forEach(c=>c.setAttribute('aria-pressed','true'));render();});
+  render();});
+
+/* ---- Stepper widgets ---- */
+document.querySelectorAll('.stepper').forEach(root=>{
+  const rows=root.querySelectorAll('.step-row'),btn=root.querySelector('[data-step-btn]'),ind=root.querySelector('[data-step-ind]');
+  let step=0;
+  function paint(){rows.forEach((r,i)=>{const n=i+1;r.classList.toggle('is-done',n<step);r.classList.toggle('is-active',n===step);});
+    ind.textContent='Step '+step+' / '+rows.length+(step===0?' · idle':' · '+(rows[step-1].querySelector('.sr-tag')?rows[step-1].querySelector('.sr-tag').textContent.replace(/Step \d+ · ?/,'').trim()||('step '+step):'step '+step));
+    btn.textContent=step>=rows.length?'↻ Replay':'Step ▶';}
+  btn.addEventListener('click',()=>{step=step>=rows.length?1:step+1;paint();});
+  root.querySelector('[data-step-reset]').addEventListener('click',()=>{step=0;paint();});
+  paint();});
+
+/* ---- Two-panel IDE stepper (Chapter 05 · walk the credentials) ---- */
+(function(){const root=document.getElementById('connect-stepper');if(!root)return;
+  const rows=root.querySelectorAll('.step-row'),panes=root.querySelectorAll('[data-pane]'),
+    prev=root.querySelector('[data-step-prev]'),next=root.querySelector('[data-step-next]'),
+    ind=root.querySelector('[data-step-ind]');
+  const N=rows.length,labels=['','SSH cert','GitHub token','LLM model key','MCP tool token','namespace + WIF'];
+  let step=1;
+  function paint(){
+    rows.forEach((r,i)=>{const n=i+1;r.classList.toggle('is-done',n<step);r.classList.toggle('is-active',n===step);});
+    panes.forEach(p=>p.classList.toggle('is-shown',Number(p.dataset.pane)===step));
+    ind.textContent='Step '+step+' / '+N+' · '+labels[step];
+    prev.disabled=step<=1;next.disabled=step>=N;}
+  prev.addEventListener('click',()=>{if(step>1){step--;paint();}});
+  next.addEventListener('click',()=>{if(step<N){step++;paint();}});
+  rows.forEach((r,i)=>r.addEventListener('click',()=>{step=i+1;paint();}));
+  paint();})();
+
+/* ---- Two-panel Portal stepper (Chapter 08 · the developer journey) ---- */
+(function(){const root=document.getElementById('dx-stepper');if(!root)return;
+  const rows=root.querySelectorAll('.step-row'),panes=root.querySelectorAll('[data-pane]'),
+    prev=root.querySelector('[data-step-prev]'),next=root.querySelector('[data-step-next]'),
+    ind=root.querySelector('[data-step-ind]'),url=root.querySelector('[data-portal-url]');
+  const N=rows.length,
+    labels=['','sign in','create workspace','open in IDE','start coding'],
+    urls=['','portal.acme.dev/login','portal.acme.dev/projects/acme › create','portal.acme.dev/projects/acme','↳ VS Code · Remote-SSH: proj-alpha'];
+  let step=1;
+  function paint(){
+    rows.forEach((r,i)=>{const n=i+1;r.classList.toggle('is-done',n<step);r.classList.toggle('is-active',n===step);});
+    panes.forEach(p=>p.classList.toggle('is-shown',Number(p.dataset.pane)===step));
+    ind.textContent='Step '+step+' / '+N+' · '+labels[step];
+    if(url)url.textContent=urls[step];
+    prev.disabled=step<=1;next.disabled=step>=N;}
+  prev.addEventListener('click',()=>{if(step>1){step--;paint();}});
+  next.addEventListener('click',()=>{if(step<N){step++;paint();}});
+  rows.forEach((r,i)=>r.addEventListener('click',()=>{step=i+1;paint();}));
+  paint();})();
+
+/* ---- Sandbox evaluator (Boundary negative isolation) ---- */
+(function(){const root=document.getElementById('access-sandbox');if(!root)return;
+  const actor=root.querySelector('[data-sb-actor]'),boxes=root.querySelectorAll('[data-sb-ws]'),
+    connects=root.querySelectorAll('[data-sb-connect]'),hint=root.querySelector('[data-sb-hint]'),
+    dec=root.querySelector('[data-sb-decision]'),status=root.querySelector('[data-sb-status]'),detail=root.querySelector('[data-sb-detail]');
+  let chosen=null;
+  function render(){
+    boxes.forEach(b=>b.classList.remove('is-allow','is-deny'));
+    if(!chosen){dec.classList.remove('is-allow','is-deny');status.textContent='—';
+      detail.textContent="Pick who you're authenticated as, then Connect to a workspace.";return;}
+    const allow=actor.value===chosen;
+    root.querySelector('[data-sb-ws="'+chosen+'"]').classList.add(allow?'is-allow':'is-deny');
+    dec.classList.toggle('is-allow',allow);dec.classList.toggle('is-deny',!allow);
+    status.textContent=allow?'200 · session authorized':'403 · denied';
+    detail.textContent=allow
+      ?"The Portal asks Boundary to authorize the session. "+actor.value+"'s managed group grants authorize-session on "+chosen+"'s workspace, so the broker injects a short-lived, Vault-signed SSH certificate and the workspace opens in the IDE — no key ever touches the machine."
+      :"The Portal asks Boundary to authorize the session, but "+actor.value+" holds no grant on "+chosen+"'s workspace. The broker refuses before any connection exists — the required negative-isolation test.";}
+  connects.forEach(b=>b.addEventListener('click',()=>{chosen=b.dataset.sbConnect;
+    if(hint)hint.textContent=actor.value+' · Connect → '+chosen+"'s workspace";render();}));
+  actor.addEventListener('change',render);render();})();
+</script>
+</body>
+</html>
