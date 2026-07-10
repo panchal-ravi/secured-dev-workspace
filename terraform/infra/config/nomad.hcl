@@ -19,6 +19,17 @@ client {
   enabled = true
 }
 
+# The EBS CSI node plugin runs privileged (it stages/mounts the block device
+# backing a workspace's /home/dev CSI volume), so the docker driver must allow it.
+# NOTE: like the vault{} block below, this file is the cloud-init SOURCE only —
+# aws_instance.this has lifecycle ignore_changes=all, so a clean destroy+recreate
+# (not terraform apply on a running node) is what puts this into effect.
+plugin "docker" {
+  config {
+    allow_privileged = true
+  }
+}
+
 acl {
   enabled = true
 }

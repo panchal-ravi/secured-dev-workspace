@@ -156,6 +156,12 @@ variable "mcp_gateway_image" {
   default     = "ghcr.io/ibm/mcp-context-forge:latest"
 }
 
+variable "ebs_csi_driver_image" {
+  description = "AWS EBS CSI driver image for the Nomad controller + node plugin jobs (ebs-csi.tf). Pin a concrete release tag."
+  type        = string
+  default     = "public.ecr.aws/ebs-csi-driver/aws-ebs-csi-driver:v1.44.0"
+}
+
 # --- LiteLLM AI Gateway (see llm-gateway.tf) ---
 
 variable "litellm_image" {

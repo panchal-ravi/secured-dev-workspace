@@ -168,3 +168,9 @@ variable "boundary_org_name" {
   type        = string
   default     = "primary-org"
 }
+
+variable "enable_workspace_backups" {
+  description = "Provision AWS Backup (daily, 30-day retention) for per-workspace EBS volumes, selected by the backup=secured-workspace tag."
+  type        = bool
+  default     = true
+}

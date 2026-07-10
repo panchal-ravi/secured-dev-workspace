@@ -30,9 +30,9 @@ func (f *fakeNomad) CreateBindingRule(_, _, bind string) error {
 	f.ops = append(f.ops, "create-rule "+bind)
 	return nil
 }
-func (f *fakeNomad) ListJobIDs(ns string) ([]string, error)          { return f.jobs, nil }
-func (f *fakeNomad) PurgeJob(ns, id string) error                    { f.ops = append(f.ops, "purge "+id); return nil }
-func (f *fakeNomad) ListHostVolumeNames(ns string) ([]string, error) { return f.vols, nil }
+func (f *fakeNomad) ListJobIDs(ns string) ([]string, error)         { return f.jobs, nil }
+func (f *fakeNomad) PurgeJob(ns, id string) error                   { f.ops = append(f.ops, "purge "+id); return nil }
+func (f *fakeNomad) ListCSIVolumeNames(ns string) ([]string, error) { return f.vols, nil }
 func (f *fakeNomad) DeleteHostVolume(ns, name string) error {
 	f.ops = append(f.ops, "delete-vol "+name)
 	return nil

@@ -47,9 +47,11 @@ job "${job_name}" {
       }
     }
 
-    # Persistent home — the dynamic host volume created by the dev-workspace tier.
+    # Persistent home — a durable per-workspace EBS volume (AWS EBS CSI driver),
+    # provisioned by the portal at create. Survives node crash / instance
+    # replacement; reattaches to a replacement node in the same AZ.
     volume "home" {
-      type            = "host"
+      type            = "csi"
       source          = "${volume_name}"
       read_only       = false
       access_mode     = "single-node-writer"

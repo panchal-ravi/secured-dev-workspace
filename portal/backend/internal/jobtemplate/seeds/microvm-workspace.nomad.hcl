@@ -50,11 +50,14 @@ job "${job_name}" {
       }
     }
 
-    # Persistent home — the dynamic host volume created by the dev-workspace tier.
-    # Bind-mounted into the Kata guest over virtio-fs (why the AMI pins the qemu
-    # hypervisor + shared_fs = "virtio-fs").
+    # Persistent home — a durable per-workspace EBS volume (AWS EBS CSI driver),
+    # provisioned by the portal at create; survives node crash / instance
+    # replacement. Bind-mounted into the Kata guest over virtio-fs (why the AMI
+    # pins the qemu hypervisor + shared_fs = "virtio-fs"). NOTE: virtio-fs over a
+    # CSI (block-backed ext4) mount is unverified — if the guest can't share it,
+    # fall back to attachment_mode = "block-device" so Kata mounts it directly.
     volume "home" {
-      type            = "host"
+      type            = "csi"
       source          = "${volume_name}"
       read_only       = false
       access_mode     = "single-node-writer"

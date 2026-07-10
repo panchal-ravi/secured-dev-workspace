@@ -1,0 +1,49 @@
+# AWS EBS CSI driver — NODE plugin. Rendered by terraform/infra/ebs-csi.tf.
+# type = "system" so it runs on EVERY Nomad client (default, gpu, microvm,
+# agents pools), letting a workspace on any pool stage + mount its /home/dev EBS
+# volume. Runs PRIVILEGED: it attaches/mounts host block devices, which needs
+# host /dev access (docker --privileged provides it) — the node configs enable
+# allow_privileged for the docker driver to permit this.
+job "ebs-csi-node" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "system"
+  # Run on EVERY node pool (default, gpu, microvm, agents) — a system job defaults
+  # to the "default" pool only, which would leave gpu/microvm workspace flavors
+  # without the node plugin needed to stage/mount their /home/dev CSI volume.
+  node_pool = "all"
+
+  group "node" {
+    task "plugin" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = false
+        privileged = true
+
+        args = [
+          "node",
+          "--endpoint=unix://csi/csi.sock",
+          "--logging-format=text",
+          "--v=2",
+        ]
+      }
+
+      env {
+        AWS_REGION = "${aws_region}"
+      }
+
+      csi_plugin {
+        id        = "aws-ebs"
+        type      = "node"
+        mount_dir = "/csi"
+      }
+
+      resources {
+        cpu    = 200
+        memory = 128
+      }
+    }
+  }
+}

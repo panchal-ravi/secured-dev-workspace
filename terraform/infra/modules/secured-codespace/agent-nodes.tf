@@ -61,6 +61,7 @@ resource "aws_instance" "agent" {
   vpc_security_group_ids      = [aws_security_group.instance.id]
   associate_public_ip_address = true
   user_data_base64            = data.cloudinit_config.agent[count.index].rendered
+  iam_instance_profile        = aws_iam_instance_profile.instance.name
 
   root_block_device {
     volume_size = var.agent_root_volume_size

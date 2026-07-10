@@ -111,6 +111,22 @@ What this changes (all additive):
   ACL policy applied and is bound to the `developer-portal` job (`nomad acl policy info
   infra-portal-service-discovery`). The gateways must be in the **same namespace**
   (`infra`) as the portal for the workload-identity read to resolve.
+  > **Startup-ordering race (after a full destroy+recreate).** If the portal task
+  > starts *before* the `mcp-gateway`/`llm-gateway` services finish registering, its
+  > `gateways.env` template renders **empty**, and because that template is
+  > `change_mode = "noop"` (chosen to avoid a gateway-flap restart loop) the portal
+  > **never re-reads** the addresses once the gateways come up — so the onboarding
+  > plane stays **disabled** with `engineProvisioner`/`projectEng`/`projectTmpl`
+  > unwired (symptoms: project-create skips engine auto-provisioning → empty
+  > `credential_library_id` + gray checkmarks; GitHub-credentials save no-ops;
+  > "New template" button disabled). **Fix: once both gateway services are healthy,
+  > restart the portal once so it re-renders with populated addresses:**
+  > ```bash
+  > nomad job restart -namespace infra -on-error=fail developer-portal
+  > ```
+  > Confirm the boot log now reads `platform-admin onboarding plane enabled` with
+  > non-empty `mcp_gateway`/`llm_gateway`. Any project created while the plane was
+  > disabled must be **deleted and recreated** so creation auto-provisions its engines.
 - Identity / RBAC:
   ```bash
   curl -s https://<portal>/api/me        # platform-admin user → "roles":["platform-admin"]
@@ -288,3 +304,74 @@ portal's own state durable, the **`store.Postgres`** impl is already built and v
 and is selected automatically when `PORTAL_DB_DSN` is set. The remaining infra is a
 `portal-postgres` Nomad job + a Vault DB dynamic role (`portal-app`) that renders the
 DSN into the portal job env — to be added next.
+
+## Durable workspace storage (EBS CSI)
+
+Workspace `/home/dev` is a durable **per-workspace AWS EBS volume** provisioned through the
+**AWS EBS CSI driver on Nomad** (replacing the node-local `mkdir` host volume, which was lost
+on instance replacement). The volume survives node crash / instance replacement and reattaches
+to a replacement node in the same AZ. Only workspace volumes use CSI; the `mkdir` stores
+(portal/LiteLLM Postgres, MCP SQLite) are unchanged.
+
+Pieces: `ebs-csi.tf` + `templates/ebs-csi-{controller,node}.nomad.hcl.tftpl` (driver jobs in
+`infra`); `modules/secured-codespace/iam.tf` (instance profile — the instances had none before);
+`allow_privileged = true` on the docker driver in every node's Nomad config (the node plugin
+stages block devices); `internal/hashistack/nomad.go` (`CreateHostVolume`/`DeleteHostVolume`
+now drive the Nomad CSI API); the three workspace seed jobspecs (`volume "home"` → `type = "csi"`);
+and `modules/secured-codespace/backup.tf` (daily AWS Backup, selected by the `backup=secured-workspace`
+tag the driver stamps on each volume; toggle `enable_workspace_backups`).
+
+**ACTION REQUIRED — apply via a clean destroy + recreate, not `terraform apply` on the running
+node.** `aws_instance.this` has `lifecycle { ignore_changes = all }` and `config/nomad.hcl` is the
+cloud-init source only, so the new instance profile and `allow_privileged` reach a node **only at
+first boot**. Rebuild sequence:
+
+```bash
+awscreds                                   # refresh AWS creds (doormat); run via `! awscreds` if interactive
+# destroy (reverse-create order), each with a clean env:
+for tier in workspace project infra; do
+  ( cd ../$tier 2>/dev/null || cd terraform/$tier
+    env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+        -u VAULT_ADDR -u VAULT_TOKEN -u NOMAD_ADDR -u NOMAD_TOKEN \
+        terraform destroy -auto-approve )
+done
+# recreate: infra first (nodes boot with the profile + allow_privileged + CSI jobs), then re-onboard
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+    -u VAULT_ADDR -u VAULT_TOKEN -u NOMAD_ADDR -u NOMAD_TOKEN \
+    terraform apply -auto-approve
+```
+
+**Verify:**
+
+```bash
+nomad plugin status aws-ebs                 # Controllers 1/1, Nodes N/N healthy
+# create a workspace from the Portal, then:
+nomad volume status -namespace <project-ns> # the home-<handle>-<ws> CSI volume, Schedulable
+# an EBS vol-… tagged Name=home-… + backup=secured-workspace appears in the EC2 console
+# SSH in → `df -h /home/dev` shows a ~20G ext4 EBS device (e.g. /dev/nvme1n1, NOT the root fs)
+# write a file, force a reschedule (drain/replace the node), reconnect → the file survives
+```
+
+**ACTION REQUIRED — the deployed portal image must carry the CSI code, and the base
+templates must be re-seeded.** The `type = "csi"` volume stanza lives in the portal's
+**embedded seed HCL** and the CSI provisioning lives in `internal/hashistack/nomad.go`, so a
+portal image built *before* this change still creates `mkdir` volumes. After building +
+pushing an image that contains the CSI code (`portal/scripts/build-image.sh`, pin the tag in
+`portal.auto.tfvars`, `terraform apply -target=nomad_job.developer_portal`), refresh the base
+templates — `SeedBaseTemplates` **never overwrites an existing row** (`jobtemplate/seeds.go`),
+so the shipped `type = "host"` rows persist until deleted:
+
+```bash
+# 1. delete the shipped base-template rows (predicated — an unpredicated wipe is blocked):
+nomad alloc exec -namespace infra -task postgres <portal-postgres-alloc> \
+  psql -U portal -d portal -c \
+  "DELETE FROM base_job_templates WHERE name IN ('dev-workspace','gpu-workspace','microvm-workspace');"
+# 2. restart the portal so it re-seeds them from the embedded type=csi HCL:
+nomad job restart -namespace infra -on-error=fail developer-portal
+# 3. project-admin: delete + recreate each project template (re-bakes from the csi base)
+# 4. developer: delete the old mkdir workspace + create a new one → it gets a CSI/EBS volume
+```
+
+Verified live 2026-07-10 (portal `:agentv14`): a Portal-created workspace produced CSI volume
+`home-alice-wmj4d` backed by EBS `vol-…` (gp3, 20 GiB, encrypted, `backup=secured-workspace`),
+mounted at `/home/dev` on `/dev/nvme1n1`.

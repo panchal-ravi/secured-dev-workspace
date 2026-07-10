@@ -34,6 +34,14 @@ plugin "nomad-device-nvidia" {
   }
 }
 
+# The EBS CSI node plugin runs privileged (it stages/mounts the block device
+# backing a workspace's /home/dev CSI volume), so the driver must allow it.
+plugin "docker" {
+  config {
+    allow_privileged = true
+  }
+}
+
 acl {
   enabled = true
 }

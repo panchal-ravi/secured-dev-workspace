@@ -78,6 +78,7 @@ resource "aws_instance" "this" {
   vpc_security_group_ids      = [aws_security_group.instance.id]
   associate_public_ip_address = true
   user_data_base64            = data.cloudinit_config.this.rendered
+  iam_instance_profile        = aws_iam_instance_profile.instance.name
 
   root_block_device {
     volume_size = var.root_volume_size

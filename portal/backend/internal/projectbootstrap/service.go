@@ -27,7 +27,7 @@ type NomadNSClient interface {
 	CreateBindingRule(authMethod, selector, bindName string) error
 	ListJobIDs(namespace string) ([]string, error)
 	PurgeJob(namespace, jobID string) error
-	ListHostVolumeNames(namespace string) ([]string, error)
+	ListCSIVolumeNames(namespace string) ([]string, error)
 	DeleteHostVolume(namespace, name string) error
 	DeleteNamespace(name string) error
 	DeleteACLPolicy(name string) error
@@ -373,7 +373,7 @@ func (s *Service) DeleteProject(ctx context.Context, actor, project string) erro
 	// Sweep dynamic host volumes (workspace homes) BEFORE the namespace: Nomad
 	// deletes a namespace that still holds volumes, leaving them as undeletable
 	// orphans — and the home data would silently survive on the node's disk.
-	if vols, err := s.nomad.ListHostVolumeNames(ns); err != nil {
+	if vols, err := s.nomad.ListCSIVolumeNames(ns); err != nil {
 		fail("nomad.list-volumes", err)
 	} else {
 		for _, v := range vols {

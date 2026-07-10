@@ -3,7 +3,7 @@
 # PROJECT-STATIC values listed below in place; the PER-WORKSPACE placeholders are
 # escaped in the source (doubled "$$") so they survive that pass untouched,
 # leaving single-"$" placeholders the Developer Portal fills at create time.
-# Single Docker task: a persistent /home/dev (dynamic host volume), the project's
+# Single Docker task: a persistent /home/dev (durable EBS CSI volume), the project's
 # Vault SSH CA public key installed as TrustedUserCAKeys (only Boundary-injected,
 # CA-signed certs log in — no static authorized_keys), git pre-configured for the
 # logged-in developer with a short-lived Vault-minted GitHub App token as the push
@@ -40,9 +40,11 @@ job "${job_name}" {
       }
     }
 
-    # Persistent home — the dynamic host volume created by the dev-workspace tier.
+    # Persistent home — a durable per-workspace EBS volume (AWS EBS CSI driver),
+    # provisioned by the portal at create. Survives node crash / instance
+    # replacement; reattaches to a replacement node in the same AZ.
     volume "home" {
-      type            = "host"
+      type            = "csi"
       source          = "${volume_name}"
       read_only       = false
       access_mode     = "single-node-writer"
