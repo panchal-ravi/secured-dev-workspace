@@ -27,17 +27,23 @@ job "nomad-boundary-host-sync" {
 
       # WIF: exchange the Nomad task JWT for a short Vault token scoped to this job's
       # own KV secret path (the infra-nomad-boundary-host-sync role/policy).
+      # change_mode=noop: the KV secrets are STATIC, so when the WIF token hits its
+      # token_max_ttl (1h) Nomad re-derives it silently instead of restarting the task
+      # (the vault stanza defaults to change_mode=restart — that was the ~hourly restart).
+      # The reconciler re-authenticates to Boundary on session expiry on its own.
       vault {
-        role = "${wif_role}"
+        role        = "${wif_role}"
+        change_mode = "noop"
       }
 
       # Boundary admin creds + the read-only Nomad token from Vault KV. env=true
-      # sources them as environment; change_mode=restart so a rotation restarts the
-      # sync. KV v2 ⇒ values are under .Data.data.*.
+      # sources them as environment once at start; change_mode=noop because the values
+      # are static (a rotation is a Terraform action, picked up on the next task start).
+      # KV v2 ⇒ values are under .Data.data.*.
       template {
         destination = "secrets/sync.env"
         env         = true
-        change_mode = "restart"
+        change_mode = "noop"
         data        = <<EOH
 {{ with secret "${kv_path}" }}
 SYNC_BOUNDARY_LOGIN={{ .Data.data.boundary_login }}

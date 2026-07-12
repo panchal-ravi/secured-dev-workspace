@@ -442,10 +442,15 @@ followed back on the reverse move). Two operational notes:
 - **`:reachv2` fix** — the reconciler's host-set lookup must **Read** the set (Boundary's
   host-set *List* API returns `host_ids: null`); the earlier List-only lookup never saw the
   host it had created and looped on the unique-name collision. Fixed in `nomad-boundary-host-sync`.
-- **Benign hourly restart** — the sync job renews its 1h-TTL Vault-templated `sync.env`
-  (Boundary creds + Nomad token) with `change_mode = "restart"`, so it gracefully restarts
-  ~hourly (clean `shutting down`→`starting`, zero errors; the loop is level-triggered and
-  reconverges on boot). Optional tidy-up: `change_mode = "noop"` + a longer secret TTL.
+- **No periodic restart** — the KV secrets are static, so the job's `vault{}` + `template{}`
+  stanzas use `change_mode = "noop"`: when the WIF token hits `token_max_ttl` (1h) Nomad
+  re-derives it without bouncing the task (the `vault` stanza's *default* `change_mode =
+  "restart"` was the earlier hourly restart, firing on token re-derivation — not the template).
+  Because the task now runs long-lived, the reconciler re-authenticates to Boundary on **session
+  expiry itself**: any Boundary call that returns 401 triggers one re-auth + retry
+  (`retryOnAuthExpiry` in `internal/boundary`), so the session token stays valid without a
+  restart. Rotating the underlying Boundary password / Nomad token is a Terraform action, picked
+  up at the next task start.
 
 ## AI-agents plane (deep-agents on Nomad)
 
