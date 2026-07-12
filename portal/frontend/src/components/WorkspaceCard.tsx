@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, InlineNotification, Loading, Modal, Tag, TextInput, Tile } from '@carbon/react'
+import { Button, InlineNotification, Loading, Modal, Stack, Tag, TextInput, Tile } from '@carbon/react'
 import { destroyWorkspace, disconnectLink, startWorkspace, stopWorkspace, Workspace } from '../api/client'
 import ConnectTabs from './ConnectTabs'
 import FeatureTags from './FeatureTags'
@@ -126,18 +126,19 @@ export default function WorkspaceCard({ ws, onChanged }: { ws: Workspace; onChan
           })
         }}
       >
-        <p>
-          This permanently deletes workspace <strong>{ws.workspace_name}</strong>, including its home volume and all
-          Boundary access. This cannot be undone.
-        </p>
-        <TextInput
-          id={`destroy-confirm-${ws.name}`}
-          labelText={`Type "${ws.workspace_name}" to confirm`}
-          placeholder={ws.workspace_name}
-          value={destroyConfirmText}
-          onChange={(e) => setDestroyConfirmText(e.target.value)}
-          style={{ marginTop: '1rem' }}
-        />
+        <Stack gap={5}>
+          <p>
+            This permanently deletes workspace <strong>{ws.workspace_name}</strong>, including its home volume and all
+            Boundary access. This cannot be undone.
+          </p>
+          <TextInput
+            id={`destroy-confirm-${ws.name}`}
+            labelText={`Type "${ws.workspace_name}" to confirm`}
+            placeholder={ws.workspace_name}
+            value={destroyConfirmText}
+            onChange={(e) => setDestroyConfirmText(e.target.value)}
+          />
+        </Stack>
       </Modal>
     </Tile>
   )

@@ -1,0 +1,48 @@
+# AWS EBS CSI driver — CONTROLLER plugin. Rendered by terraform/infra/ebs-csi.tf.
+# Runs once in the "infra" namespace; calls the EC2 API (CreateVolume / Attach /
+# Detach / Delete) so the portal can provision a durable per-workspace EBS volume
+# for /home/dev that survives node crash / instance replacement. Reaches EC2 via
+# the node's IAM instance profile (see modules/secured-codespace/iam.tf); no
+# static creds. Not privileged — only the node plugin stages block devices.
+job "ebs-csi-controller" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "service"
+
+  group "controller" {
+    count = 1
+
+    task "plugin" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = false
+
+        args = [
+          "controller",
+          "--endpoint=unix://csi/csi.sock",
+          "--logging-format=text",
+          "--v=2",
+        ]
+      }
+
+      # Region for the EC2 API client. The instance profile supplies credentials
+      # via IMDS; AWS_REGION is set explicitly so it never depends on an IMDS hop.
+      env {
+        AWS_REGION = "${aws_region}"
+      }
+
+      csi_plugin {
+        id        = "aws-ebs"
+        type      = "controller"
+        mount_dir = "/csi"
+      }
+
+      resources {
+        cpu    = 200
+        memory = 128
+      }
+    }
+  }
+}

@@ -10,10 +10,11 @@ import "errors"
 
 // The error classes. Wrap, don't compare to these directly outside Status.
 var (
-	ErrBadRequest = errors.New("bad request") // 400 — malformed or invalid input
-	ErrForbidden  = errors.New("forbidden")   // 403 — authenticated but not allowed
-	ErrNotFound   = errors.New("not found")   // 404 — resource does not exist
-	ErrConflict   = errors.New("conflict")    // 409 — name/state collision
+	ErrBadRequest  = errors.New("bad request") // 400 — malformed or invalid input
+	ErrForbidden   = errors.New("forbidden")   // 403 — authenticated but not allowed
+	ErrNotFound    = errors.New("not found")   // 404 — resource does not exist
+	ErrConflict    = errors.New("conflict")    // 409 — name/state collision
+	ErrUnavailable = errors.New("unavailable") // 503 — a dependency is not ready yet (retryable)
 )
 
 // Status returns the HTTP status for a wrapped error, or 0 when the error is not
@@ -28,6 +29,8 @@ func Status(err error) int {
 		return 404
 	case errors.Is(err, ErrConflict):
 		return 409
+	case errors.Is(err, ErrUnavailable):
+		return 503
 	default:
 		return 0
 	}

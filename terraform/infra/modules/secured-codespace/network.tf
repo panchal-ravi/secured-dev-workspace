@@ -308,6 +308,22 @@ resource "aws_security_group" "instance" {
     self        = true
   }
 
+  # Project MCP servers run as Nomad jobs on the "agents" node pool and the
+  # ContextForge gateway (main node) federates to them at nodeIP:<port> to run the
+  # consumption-mirror test + serve workspaces. Since Phase F the portal maps them
+  # to Nomad DYNAMIC host ports (default range 20000-32000; the old 8080-8099
+  # static band retired with the platform-admin MCP plane), so open that range
+  # intra-SG (self=true confines it to cluster members). Without this the
+  # gateway's dial is dropped → its POST /gateways peer validation hangs →
+  # portal Test times out with "upstream service error".
+  ingress {
+    description = "MCP servers on agent nodes (Nomad dynamic ports) reached by the ContextForge gateway (main node)"
+    from_port   = 20000
+    to_port     = 32000
+    protocol    = "tcp"
+    self        = true
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,33 +13,99 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/admin"
+	"github.com/secured-dev-workspace/developer-portal/internal/agents"
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
+	"github.com/secured-dev-workspace/developer-portal/internal/basetmpladmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectbootstrap"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectengines"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
+	"github.com/secured-dev-workspace/developer-portal/internal/projecttemplate"
+	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
 
 type server struct {
 	auth  *auth.Authenticator
 	svc   *workspace.Service
+	roles *projectrole.Service
+	caps  rbac.CapabilityStore        // nil when no store is wired
 	ready func(context.Context) error // readiness probe; nil = always ready
 }
 
+// capStore adapts store.Store to rbac.CapabilityStore so the rbac package needs
+// no store import.
+type capStore struct{ st store.Store }
+
+func (c capStore) RolesForSubjectInProject(ctx context.Context, project, subject string) ([]string, error) {
+	grants, err := c.st.ProjectRolesForSubject(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+	roles := []string{}
+	for _, g := range grants {
+		if g.Project == project {
+			roles = append(roles, g.Role)
+		}
+	}
+	return roles, nil
+}
+
+func (c capStore) GetCapabilityMatrix(ctx context.Context, project string) (map[string][]string, bool, error) {
+	pc, err := c.st.GetProjectCapabilities(ctx, project)
+	if errors.Is(err, apperr.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return pc.Matrix, true, nil
+}
+
 // Options configures the mux. Ready is the /readyz probe (dependency reachability)
-// and RateLimit throttles mutating endpoints per user.
+// and RateLimit throttles mutating endpoints per user. Admin is the optional
+// Platform Admin onboarding plane; when nil its routes are simply not mounted.
 type Options struct {
-	Auth      *auth.Authenticator
-	Svc       *workspace.Service
-	StaticDir string
-	Ready     func(context.Context) error
-	RateLimit middleware.RateLimitConfig
+	Auth          *auth.Authenticator
+	Svc           *workspace.Service
+	Admin         *admin.Handlers
+	BaseTmpl      *basetmpladmin.Handlers    // optional; platform-admin base job-template plane
+	ProjectCreate *projectbootstrap.Handlers // optional; platform-admin project-create plane
+	ProjectRoles  *projectrole.Service       // optional; project-role plane
+	ProjectMCP    *projectadmin.Handlers     // optional; project MCP-deploy plane
+	ProjectTmpl   *projecttemplate.Handlers  // optional; project-template create plane
+	ProjectEng    *projectengines.Handlers   // optional; project engine-provision plane
+	Agents        *agents.Handlers           // optional; project AI-agents plane (ai-agents capability)
+	Store         store.Store                // nil only in tests; backs role + capability gating
+	StaticDir     string
+	Ready         func(context.Context) error
+	RateLimit     middleware.RateLimitConfig
 }
 
 // NewMux wires every route and returns the root handler.
 func NewMux(opts Options) http.Handler {
-	s := &server{auth: opts.Auth, svc: opts.Svc, ready: opts.Ready}
+	s := &server{auth: opts.Auth, svc: opts.Svc, roles: opts.ProjectRoles, ready: opts.Ready}
 	mux := http.NewServeMux()
+
+	// Project guard: role elevation checks (project-admin planes) and the
+	// role→capability matrix (workspace/agent actions). Built once; nil without a
+	// store, in which case capability gating is off (wsGate stays a passthrough).
+	var guard *rbac.Guard
+	wsGate := func(h http.Handler) http.Handler { return h }
+	if opts.Store != nil {
+		member := func(ctx context.Context, project string, groups []string) error {
+			_, err := opts.Svc.GetProject(ctx, project, groups)
+			return err
+		}
+		s.caps = capStore{st: opts.Store}
+		guard = rbac.NewGuard(opts.Store, s.caps, member)
+		wsGate = guard.RequireCapability(rbac.CapWorkspaces)
+	}
 
 	// Liveness/readiness — public, no secrets. /health is the Nomad service check.
 	mux.HandleFunc("GET /health", s.health)
@@ -50,19 +117,93 @@ func NewMux(opts Options) http.Handler {
 
 	rl := middleware.NewRateLimiter(opts.RateLimit)
 	protect := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(h) }
-	// mutate adds per-user rate limiting on top of auth for state-changing routes.
-	mutate := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(rl.Wrap(http.HandlerFunc(h))) }
+	// wsProtect/wsMutate gate workspace actions on the workspaces capability under
+	// the project's role→capability matrix (wsMutate also rate-limits per user).
+	// Listing routes stay membership-only — capability governs doing, not seeing.
+	wsProtect := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(wsGate(http.HandlerFunc(h))) }
+	wsMutate := func(h http.HandlerFunc) http.Handler {
+		return opts.Auth.Require(wsGate(rl.Wrap(http.HandlerFunc(h))))
+	}
 
 	mux.Handle("GET /api/me", protect(s.me))
 	mux.Handle("GET /api/workspaces", protect(s.listAllWorkspaces))
 	mux.Handle("GET /api/projects", protect(s.listProjects))
 	mux.Handle("GET /api/projects/{name}/workspaces", protect(s.listWorkspaces))
-	mux.Handle("POST /api/projects/{name}/workspaces", mutate(s.createWorkspace))
-	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/stop", mutate(s.stopWorkspace))
-	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/start", mutate(s.startWorkspace))
-	mux.Handle("GET /api/projects/{name}/workspaces/{ws}/logs", protect(s.workspaceLogs))
-	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/ssh-config", mutate(s.writeSSHConfig))
-	mux.Handle("DELETE /api/projects/{name}/workspaces/{ws}", mutate(s.destroyWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces", wsMutate(s.createWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/stop", wsMutate(s.stopWorkspace))
+	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/start", wsMutate(s.startWorkspace))
+	mux.Handle("GET /api/projects/{name}/workspaces/{ws}/logs", wsProtect(s.workspaceLogs))
+	mux.Handle("POST /api/projects/{name}/workspaces/{ws}/ssh-config", wsMutate(s.writeSSHConfig))
+	mux.Handle("DELETE /api/projects/{name}/workspaces/{ws}", wsMutate(s.destroyWorkspace))
+
+	// Project-user AI-agent instance plane (optional): browse published cards and
+	// spin up an isolated per-user instance. Gated on the ai-agents capability
+	// under the project's role→capability matrix (mutate also rate-limits); a
+	// member without the capability 403s. The project-admin template plane that
+	// authors these cards registers separately, under the project-admin gate.
+	agentGate := func(h http.Handler) http.Handler { return h }
+	if guard != nil {
+		agentGate = guard.RequireCapability(rbac.CapAIAgents)
+	}
+	if opts.Agents != nil {
+		agentProtect := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(agentGate(http.HandlerFunc(h))) }
+		agentMutate := func(h http.HandlerFunc) http.Handler {
+			return opts.Auth.Require(agentGate(rl.Wrap(http.HandlerFunc(h))))
+		}
+		opts.Agents.RegisterInstances(mux, agentProtect, agentMutate)
+	}
+
+	// Platform Admin onboarding plane (optional). Every route is gated by
+	// auth.Require + rbac.RequirePlatformAdmin; mutations also rate-limit per user.
+	adminProtect := func(h http.HandlerFunc) http.Handler {
+		return opts.Auth.Require(rbac.RequirePlatformAdmin(http.HandlerFunc(h)))
+	}
+	adminMutate := func(h http.HandlerFunc) http.Handler {
+		return opts.Auth.Require(rbac.RequirePlatformAdmin(rl.Wrap(http.HandlerFunc(h))))
+	}
+	if opts.Admin != nil {
+		opts.Admin.Register(mux, adminProtect, adminMutate)
+	}
+	// Base job-template plane — independent of the MCP/LLM admin plane (needs no
+	// gateway), so it registers on its own whenever wired.
+	if opts.BaseTmpl != nil {
+		opts.BaseTmpl.Register(mux, adminProtect, adminMutate)
+	}
+	if opts.ProjectCreate != nil {
+		opts.ProjectCreate.Register(mux, adminProtect, adminMutate)
+	}
+
+	// Project-role plane (optional): self-service grant/revoke gated on project-admin
+	// of the {name} project; platform-admins bootstrap the first admin.
+	if opts.ProjectRoles != nil && guard != nil {
+		prh := projectrole.NewHandlers(opts.ProjectRoles)
+		reqPA := guard.RequireProjectRole(rbac.RoleProjectAdmin)
+		paProtect := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(reqPA(http.HandlerFunc(h))) }
+		paMutate := func(h http.HandlerFunc) http.Handler { return opts.Auth.Require(reqPA(rl.Wrap(http.HandlerFunc(h)))) }
+
+		mux.Handle("GET /api/projects/{name}/roles", paProtect(prh.List))
+		mux.Handle("POST /api/projects/{name}/roles", paMutate(prh.Grant))
+		mux.Handle("DELETE /api/projects/{name}/roles/{subject}", paMutate(prh.Revoke))
+		mux.Handle("POST /api/admin/projects/{name}/roles", adminMutate(prh.Grant)) // platform-admin bootstrap
+		mux.Handle("GET /api/projects/{name}/capabilities", paProtect(prh.GetCapabilities))
+		mux.Handle("PUT /api/projects/{name}/capabilities", paMutate(prh.PutCapabilities))
+
+		if opts.ProjectMCP != nil {
+			opts.ProjectMCP.Register(mux, paProtect, paMutate)
+		}
+		if opts.ProjectTmpl != nil {
+			opts.ProjectTmpl.Register(mux, paProtect, paMutate)
+		}
+		if opts.ProjectEng != nil {
+			opts.ProjectEng.Register(mux, paProtect, paMutate)
+		}
+		// Agent TEMPLATE plane: project-admins author/deploy-test/publish agent cards.
+		// Authoring is a project-admin power (the sole author of what agents exist);
+		// project-users only instantiate published cards (the Phase 3 instance plane).
+		if opts.Agents != nil {
+			opts.Agents.Register(mux, paProtect, paMutate)
+		}
+	}
 
 	// The secured-ws:// helper download. Served from a sibling of the SPA dir so the
 	// frontend build (which empties ./web) never deletes it. Public, no secrets.
@@ -107,16 +248,107 @@ func toProjectDTO(d descriptor.Descriptor) projectDTO {
 	return projectDTO{Name: d.ProjectName, Namespace: d.Namespace, Flavors: fl}
 }
 
+type projectRoleDTO struct {
+	Project string `json:"project"`
+	Role    string `json:"role"`
+}
+
+// intersectProjectRoles keeps only grants for projects the user currently belongs
+// to, so a stale grant for a project the user has left never surfaces in the nav.
+func intersectProjectRoles(grants []store.ProjectRole, members map[string]bool) []projectRoleDTO {
+	out := []projectRoleDTO{}
+	for _, g := range grants {
+		if members[g.Project] {
+			out = append(out, projectRoleDTO{Project: g.Project, Role: g.Role})
+		}
+	}
+	return out
+}
+
 // ---- Handlers ----
 
 func (s *server) me(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
+	prs := s.projectRolesFor(r.Context(), u)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"email":     u.Email,
-		"handle":    u.Handle,
-		"groups":    u.Groups,
-		"local_ssh": s.svc.LocalSSHEnabled(),
+		"email":                u.Email,
+		"handle":               u.Handle,
+		"groups":               u.Groups,
+		"roles":                rbac.RolesFor(u.Groups),
+		"project_roles":        prs,
+		"project_capabilities": s.projectCapabilitiesFor(r.Context(), u, prs),
+		"local_ssh":            s.svc.LocalSSHEnabled(),
 	})
+}
+
+type projectCapsDTO struct {
+	Project      string   `json:"project"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// projectCapabilitiesFor computes the caller's effective capabilities for every
+// member project: explicit grants plus the implicit project-user baseline,
+// resolved against the project's matrix (stored row or defaults). Best-effort
+// like projectRolesFor — a failure logs and yields an empty list, never a 500.
+func (s *server) projectCapabilitiesFor(ctx context.Context, u auth.User, grants []projectRoleDTO) []projectCapsDTO {
+	if s.caps == nil {
+		return []projectCapsDTO{}
+	}
+	ds, err := s.svc.ListProjects(ctx, u.Groups)
+	if err != nil {
+		slog.Warn("me: project listing for capabilities failed", "err", err)
+		return []projectCapsDTO{}
+	}
+	byProject := map[string][]string{}
+	for _, g := range grants {
+		byProject[g.Project] = append(byProject[g.Project], g.Role)
+	}
+	out := []projectCapsDTO{}
+	for _, d := range ds {
+		roles := append(byProject[d.ProjectName], string(rbac.RoleProjectUser))
+		matrix, stored, err := s.caps.GetCapabilityMatrix(ctx, d.ProjectName)
+		if err != nil {
+			slog.Warn("me: capability matrix lookup failed", "project", d.ProjectName, "err", err)
+			continue
+		}
+		if !stored {
+			matrix = rbac.DefaultCapabilityMatrix()
+		}
+		out = append(out, projectCapsDTO{Project: d.ProjectName, Capabilities: rbac.EffectiveCapabilities(matrix, roles)})
+	}
+	return out
+}
+
+// projectRolesFor returns the caller's project roles, intersected with current
+// memberships. The common case (no grants) short-circuits before any Vault call.
+// If the membership listing fails, it logs and returns the un-intersected grants
+// rather than failing /api/me.
+func (s *server) projectRolesFor(ctx context.Context, u auth.User) []projectRoleDTO {
+	if s.roles == nil {
+		return []projectRoleDTO{}
+	}
+	grants, err := s.roles.ForSubject(ctx, u.Email)
+	if err != nil {
+		slog.Warn("me: project roles lookup failed", "err", err)
+		return []projectRoleDTO{}
+	}
+	if len(grants) == 0 {
+		return []projectRoleDTO{}
+	}
+	ds, err := s.svc.ListProjects(ctx, u.Groups)
+	if err != nil {
+		slog.Warn("me: membership filter unavailable; returning unfiltered project roles", "err", err)
+		members := map[string]bool{}
+		for _, g := range grants {
+			members[g.Project] = true
+		}
+		return intersectProjectRoles(grants, members)
+	}
+	members := make(map[string]bool, len(ds))
+	for _, d := range ds {
+		members[d.ProjectName] = true
+	}
+	return intersectProjectRoles(grants, members)
 }
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {

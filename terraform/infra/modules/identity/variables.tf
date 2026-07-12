@@ -30,3 +30,23 @@ variable "readonly_group_name" {
   type        = string
   default     = "secured-codespace-readonly"
 }
+
+# --- Developer Portal OIDC app (created only when the portal is deployed) ---
+
+variable "create_portal_app" {
+  description = "Create the Developer Portal's IBM Verify OIDC app. Gated on enable_developer_portal in the root; counts against the tenant's 5-app limit."
+  type        = bool
+  default     = false
+}
+
+variable "portal_redirect_url" {
+  description = "The portal's OIDC redirect URI (https://<nlb>:8443/auth/callback), derived in the root from the live NLB. Required when create_portal_app = true."
+  type        = string
+  default     = ""
+}
+
+variable "portal_audiences" {
+  description = "Access-token audiences for the portal app (e.g. the token-exchange client id the RFC 8693 OBO flow targets)."
+  type        = list(string)
+  default     = []
+}

@@ -37,16 +37,151 @@ func (n *Nomad) Ping(ctx context.Context) error {
 	return nil
 }
 
-// CreateHostVolume creates the persistent /home/dev dynamic host volume (mkdir
-// plugin, single-node-writer/file-system), mirroring the dev-workspace tier. The
-// volume is pinned to a specific ready node in the job's target node pool so it
-// materializes on a node the job can actually be placed on: a non-empty nodePool
-// (e.g. "gpu") selects a node there, and an empty nodePool means the implicit
-// "default" pool (the main node). Pinning to a resolved ready node (rather than
-// letting the server place by pool alone) is what keeps the default case off the
-// GPU node, and also skips any stale "down" node a GPU destroy/reprovision cycle
-// leaves in the pool — Nomad's pool placement does not filter those out and would
-// fail with "No path to node".
+// CreateNamespace registers (upserts) a Nomad namespace. Idempotent by nature —
+// Register overwrites an existing namespace of the same name.
+func (n *Nomad) CreateNamespace(name, description string) error {
+	_, err := n.c.Namespaces().Register(&napi.Namespace{Name: name, Description: description}, nil)
+	if err != nil {
+		return fmt.Errorf("nomad: register namespace %q: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteNamespace removes a Nomad namespace. Every job in it must already be
+// purged (Nomad refuses to delete a namespace with non-terminal jobs).
+func (n *Nomad) DeleteNamespace(name string) error {
+	if _, err := n.c.Namespaces().Delete(name, nil); err != nil {
+		return fmt.Errorf("nomad: delete namespace %q: %w", name, err)
+	}
+	return nil
+}
+
+// ListJobIDs returns the IDs of every job registered in namespace.
+func (n *Nomad) ListJobIDs(namespace string) ([]string, error) {
+	stubs, _, err := n.c.Jobs().List(&napi.QueryOptions{Namespace: namespace})
+	if err != nil {
+		return nil, fmt.Errorf("nomad: list jobs in %q: %w", namespace, err)
+	}
+	ids := make([]string, 0, len(stubs))
+	for _, s := range stubs {
+		ids = append(ids, s.ID)
+	}
+	return ids, nil
+}
+
+// ListCSIVolumeNames returns the names of every CSI volume in namespace. Used by
+// project delete to sweep workspace home volumes BEFORE the namespace is removed
+// — Nomad happily deletes a namespace that still holds volumes, which then become
+// undeletable orphans ("namespace does not exist") AND leak the backing EBS
+// volumes in AWS.
+func (n *Nomad) ListCSIVolumeNames(namespace string) ([]string, error) {
+	vols, _, err := n.c.CSIVolumes().List(&napi.QueryOptions{Namespace: namespace})
+	if err != nil {
+		return nil, fmt.Errorf("nomad: list CSI volumes in %q: %w", namespace, err)
+	}
+	names := make([]string, 0, len(vols))
+	for _, v := range vols {
+		names = append(names, v.Name)
+	}
+	return names, nil
+}
+
+// DeleteACLPolicy removes an ACL policy by name.
+func (n *Nomad) DeleteACLPolicy(name string) error {
+	if _, err := n.c.ACLPolicies().Delete(name, nil); err != nil {
+		return fmt.Errorf("nomad: delete acl policy %q: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteBindingRulesForPolicy removes every OIDC binding rule that binds the
+// given policy name (the inverse of CreateBindingRule). No-op when none match.
+func (n *Nomad) DeleteBindingRulesForPolicy(bindName string) error {
+	stubs, _, err := n.c.ACLBindingRules().List(nil)
+	if err != nil {
+		return fmt.Errorf("nomad: list binding rules: %w", err)
+	}
+	for _, s := range stubs {
+		r, _, err := n.c.ACLBindingRules().Get(s.ID, nil)
+		if err != nil {
+			return fmt.Errorf("nomad: get binding rule %q: %w", s.ID, err)
+		}
+		if r.BindName == bindName {
+			if _, err := n.c.ACLBindingRules().Delete(s.ID, nil); err != nil {
+				return fmt.Errorf("nomad: delete binding rule %q: %w", s.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// UpsertACLPolicy creates or replaces an ACL policy (upsert semantics).
+func (n *Nomad) UpsertACLPolicy(name, description, rulesHCL string) error {
+	_, err := n.c.ACLPolicies().Upsert(&napi.ACLPolicy{Name: name, Description: description, Rules: rulesHCL}, nil)
+	if err != nil {
+		return fmt.Errorf("nomad: upsert acl policy %q: %w", name, err)
+	}
+	return nil
+}
+
+// CreateBindingRule creates a policy binding rule on an OIDC auth method, binding
+// the selector to bindName. Idempotent: an equivalent rule (same auth method,
+// selector, and bind name) is left untouched rather than duplicated, since Nomad
+// binding-rule IDs are server-generated and Create is not upsert.
+func (n *Nomad) CreateBindingRule(authMethod, selector, bindName string) error {
+	stubs, _, err := n.c.ACLBindingRules().List(nil)
+	if err != nil {
+		return fmt.Errorf("nomad: list binding rules: %w", err)
+	}
+	for _, s := range stubs {
+		if s.AuthMethod != authMethod {
+			continue
+		}
+		rule, _, err := n.c.ACLBindingRules().Get(s.ID, nil)
+		if err != nil {
+			return fmt.Errorf("nomad: get binding rule %s: %w", s.ID, err)
+		}
+		if rule.Selector == selector && rule.BindName == bindName {
+			return nil // equivalent rule already present
+		}
+	}
+	_, _, err = n.c.ACLBindingRules().Create(&napi.ACLBindingRule{
+		AuthMethod: authMethod,
+		Selector:   selector,
+		BindType:   "policy",
+		BindName:   bindName,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("nomad: create binding rule (%s): %w", authMethod, err)
+	}
+	return nil
+}
+
+// CSI constants for the per-workspace durable EBS volume (AWS EBS CSI driver).
+const (
+	csiPluginID       = "aws-ebs"
+	homeVolumeSizeGiB = 20
+	// csiZoneTopologyKey is the AZ topology segment the AWS EBS CSI driver
+	// advertises/consumes; a volume is constrained to a node's AZ (EBS volumes
+	// are AZ-scoped) so it can only ever attach to clients in that zone.
+	csiZoneTopologyKey = "topology.ebs.csi.aws.com/zone"
+	// nodeAWSZoneAttr is the Nomad node fingerprint attribute holding the AWS AZ.
+	nodeAWSZoneAttr = "platform.aws.placement.availability-zone"
+	// workspaceVolumeBackupTag stamps every workspace EBS volume so the AWS Backup
+	// plan can select them by tag (key=value form for tagSpecification).
+	workspaceVolumeBackupTag = "backup=secured-workspace"
+)
+
+// CreateHostVolume provisions the persistent /home/dev volume as a durable AWS
+// EBS volume via the EBS CSI driver (aws-ebs plugin), replacing the node-local
+// mkdir host volume so workspace state survives node replacement / crash. The
+// name and signature are unchanged so workspace/service.go create/destroy are
+// untouched. The volume is constrained to the AZ of a ready node in the target
+// pool (EBS volumes are AZ-scoped) so it can later reattach to any healthy client
+// in that zone; on this single-AZ deployment that is always the one public
+// subnet's AZ. A non-empty nodePool (e.g. "gpu") selects a node there; empty
+// means the implicit "default" pool (the main node). readyNodeInPool also skips
+// any stale "down" node a pooled destroy/reprovision cycle leaves behind.
 func (n *Nomad) CreateHostVolume(namespace, name, nodePool string) error {
 	pool := nodePool
 	if pool == "" {
@@ -56,54 +191,80 @@ func (n *Nomad) CreateHostVolume(namespace, name, nodePool string) error {
 	if err != nil {
 		return err
 	}
-	vol := &napi.HostVolume{
-		Namespace: namespace,
-		Name:      name,
-		PluginID:  "mkdir",
-		NodePool:  pool,
-		NodeID:    nodeID,
-		RequestedCapabilities: []*napi.HostVolumeCapability{{
-			AccessMode:     napi.HostVolumeAccessModeSingleNodeWriter,
-			AttachmentMode: napi.HostVolumeAttachmentModeFilesystem,
-		}},
-	}
-	resp, _, err := n.c.HostVolumes().Create(&napi.HostVolumeCreateRequest{Volume: vol}, &napi.WriteOptions{Namespace: namespace})
+	zone, err := n.nodeZone(nodeID)
 	if err != nil {
-		return fmt.Errorf("nomad: create host volume %q: %w", name, err)
+		return err
 	}
-	// Create returns as soon as the request is accepted; the mkdir plugin then
-	// materializes the volume on the node asynchronously (pending -> ready). The
-	// scheduler excludes the node while the volume is pending, so a job registered
-	// in that window fails placement with "missing compatible host volumes" and
-	// lands in a blocked eval that a later volume-ready transition does not
-	// reliably re-trigger. Wait for ready here so the caller registers the job
-	// only once placement can actually succeed.
-	if err := n.waitHostVolumeReady(resp.Volume.ID, name, namespace); err != nil {
+	sizeBytes := int64(homeVolumeSizeGiB) * 1024 * 1024 * 1024
+	vol := &napi.CSIVolume{
+		ID:        name,
+		Name:      name,
+		Namespace: namespace,
+		PluginID:  csiPluginID,
+		RequestedCapabilities: []*napi.CSIVolumeCapability{{
+			AccessMode:     napi.CSIVolumeAccessModeSingleNodeWriter,
+			AttachmentMode: napi.CSIVolumeAttachmentModeFilesystem,
+		}},
+		RequestedCapacityMin: sizeBytes,
+		RequestedCapacityMax: sizeBytes,
+		MountOptions:         &napi.CSIMountOptions{FSType: "ext4"},
+		Parameters: map[string]string{
+			"type":      "gp3",
+			"encrypted": "true",
+			// tagSpecification_N tags the backing EBS volume at create time (the
+			// Nomad-native alternative to the k8s-only --extra-create-metadata):
+			// a human-readable Name for the console, and a stable selector the
+			// AWS Backup plan matches on.
+			"tagSpecification_1": "Name=" + name,
+			"tagSpecification_2": workspaceVolumeBackupTag,
+		},
+		RequestedTopologies: &napi.CSITopologyRequest{
+			Required: []*napi.CSITopology{{
+				Segments: map[string]string{csiZoneTopologyKey: zone},
+			}},
+		},
+	}
+	// Create both provisions the EBS volume through the controller AND registers
+	// it with Nomad in one call. The controller round-trip means the volume may
+	// not be flagged schedulable the instant Create returns, so wait for it before
+	// the caller registers the job (else placement fails "missing compatible CSI").
+	if _, _, err := n.c.CSIVolumes().Create(vol, &napi.WriteOptions{Namespace: namespace}); err != nil {
+		return fmt.Errorf("nomad: create CSI volume %q: %w", name, err)
+	}
+	if err := n.waitCSIVolumeSchedulable(name, namespace); err != nil {
 		return err
 	}
 	return nil
 }
 
-// waitHostVolumeReady polls a dynamic host volume until it reports ready, so the
-// workspace job is registered only after the volume can satisfy placement.
-// Bounded: a stuck/misconfigured plugin surfaces a clear error instead of hanging.
-func (n *Nomad) waitHostVolumeReady(id, name, namespace string) error {
+// nodeZone returns the AWS availability-zone of a node from its fingerprint, so a
+// CSI volume can be constrained (topology) to the zone where it will attach.
+func (n *Nomad) nodeZone(nodeID string) (string, error) {
+	node, _, err := n.c.Nodes().Info(nodeID, nil)
+	if err != nil {
+		return "", fmt.Errorf("nomad: node info %q: %w", nodeID, err)
+	}
+	if z := node.Attributes[nodeAWSZoneAttr]; z != "" {
+		return z, nil
+	}
+	return "", fmt.Errorf("nomad: node %q has no AWS availability-zone attribute", nodeID)
+}
+
+// waitCSIVolumeSchedulable polls a freshly-created CSI volume until Nomad marks
+// it schedulable (all plugin-health fields green), so the workspace job is
+// registered only once placement can actually claim it. Bounded: a stuck
+// controller surfaces a clear error instead of hanging.
+func (n *Nomad) waitCSIVolumeSchedulable(name, namespace string) error {
 	qo := &napi.QueryOptions{Namespace: namespace}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		vol, _, err := n.c.HostVolumes().Get(id, qo)
-		if err != nil {
-			return fmt.Errorf("nomad: get host volume %q: %w", name, err)
-		}
-		switch vol.State {
-		case napi.HostVolumeStateReady:
+		vol, _, err := n.c.CSIVolumes().Info(name, qo)
+		if err == nil && vol.Schedulable {
 			return nil
-		case napi.HostVolumeStateUnavailable:
-			return fmt.Errorf("nomad: host volume %q is unavailable", name)
 		}
 		time.Sleep(time.Second)
 	}
-	return fmt.Errorf("nomad: host volume %q not ready after 30s", name)
+	return fmt.Errorf("nomad: CSI volume %q not schedulable after 30s", name)
 }
 
 // readyNodeInPool returns the ID of a ready, eligible, non-draining client node
@@ -133,34 +294,72 @@ func (n *Nomad) readyNodeInPool(pool string) (string, error) {
 // a job whose node-pool/GPU-device constraints can't be met never places, and this
 // returns a clear error instead of guessing a host.
 func (n *Nomad) ResolvePlacementIP(namespace, jobID string) (string, error) {
+	ip, _, err := n.ResolvePlacement(namespace, jobID)
+	return ip, err
+}
+
+// ResolvePlacement waits for the job's current allocation to be placed and returns
+// the node's private IP plus the host port assigned to the "http" label. For a
+// static port the assigned value equals the declared port; for a Nomad-assigned
+// dynamic port (project-plane MCP jobs) it is the only way to learn the reachable
+// host port for the ContextForge peer URL. port is 0 if the allocation exposes no
+// "http" port.
+//
+// On a job UPDATE the list briefly contains both the stopping allocation and its
+// replacement (in no useful order — the API returns them by ID), so the placement
+// must be the newest run-desired allocation; picking the list head healed the
+// gateway peer to the dying alloc's port (observed live: peer pinned to the old
+// host port, deactivated by ContextForge after 3 failed health checks).
+func (n *Nomad) ResolvePlacement(namespace, jobID string) (ip string, port int, err error) {
 	qo := &napi.QueryOptions{Namespace: namespace}
-	var nodeID string
+	var alloc *napi.AllocationListStub
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		allocs, _, err := n.c.Jobs().Allocations(jobID, false, qo)
 		if err != nil {
-			return "", fmt.Errorf("nomad: list allocations for %q: %w", jobID, err)
+			return "", 0, fmt.Errorf("nomad: list allocations for %q: %w", jobID, err)
 		}
-		if len(allocs) > 0 && allocs[0].NodeID != "" {
-			nodeID = allocs[0].NodeID
+		for _, a := range allocs {
+			if a.DesiredStatus != "run" || a.NodeID == "" {
+				continue
+			}
+			if alloc == nil || a.CreateIndex > alloc.CreateIndex {
+				alloc = a
+			}
+		}
+		if alloc != nil {
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	if nodeID == "" {
-		return "", fmt.Errorf("nomad: job %q has no placement after 30s (node pool or GPU device unavailable?)", jobID)
+	if alloc == nil {
+		return "", 0, fmt.Errorf("nomad: job %q has no placement after 30s (node pool or GPU device unavailable?)", jobID)
 	}
-	node, _, err := n.c.Nodes().Info(nodeID, qo)
+	// The list stub never carries AllocatedResources on this endpoint (Nomad only
+	// honors resources=true on /v1/allocations), so read ports from the full alloc.
+	full, _, err := n.c.Allocations().Info(alloc.ID, qo)
 	if err != nil {
-		return "", fmt.Errorf("nomad: node info %q: %w", nodeID, err)
+		return "", 0, fmt.Errorf("nomad: allocation info %q: %w", alloc.ID, err)
 	}
-	if ip := node.Attributes["unique.platform.aws.local-ipv4"]; ip != "" {
-		return ip, nil
+	if full.AllocatedResources != nil {
+		for _, p := range full.AllocatedResources.Shared.Ports {
+			if p.Label == "http" {
+				port = p.Value
+				break
+			}
+		}
+	}
+	node, _, err := n.c.Nodes().Info(alloc.NodeID, qo)
+	if err != nil {
+		return "", 0, fmt.Errorf("nomad: node info %q: %w", alloc.NodeID, err)
+	}
+	if v := node.Attributes["unique.platform.aws.local-ipv4"]; v != "" {
+		return v, port, nil
 	}
 	if host, _, err := net.SplitHostPort(node.HTTPAddr); err == nil && host != "" {
-		return host, nil
+		return host, port, nil
 	}
-	return "", fmt.Errorf("nomad: could not resolve private IP for node %q", nodeID)
+	return "", 0, fmt.Errorf("nomad: could not resolve private IP for node %q", alloc.NodeID)
 }
 
 // RegisterJob parses the rendered HCL on the server (so HCL2 functions resolve
@@ -220,24 +419,39 @@ func (n *Nomad) PurgeJob(namespace, jobID string) error {
 	return nil
 }
 
-// DeleteHostVolume removes the named dynamic host volume in namespace. The
-// volume API deletes by id, so the name is resolved via a list. Idempotent: a
-// volume already gone is a no-op. Force handles a volume still releasing from a
-// just-purged allocation.
+// DeleteHostVolume deletes the named per-workspace CSI volume in namespace,
+// mirroring `nomad volume delete <id>`: Nomad resolves the provider id, deletes
+// the backing EBS volume through the controller, and drops its own registration.
+// Idempotent: a volume already gone is a no-op. Called from workspace Destroy
+// (single volume) and project teardown (sweep); workspace Stop leaves it intact.
 func (n *Nomad) DeleteHostVolume(namespace, name string) error {
-	vols, _, err := n.c.HostVolumes().List(&napi.HostVolumeListRequest{}, &napi.QueryOptions{Namespace: namespace})
+	vol, _, err := n.c.CSIVolumes().Info(name, &napi.QueryOptions{Namespace: namespace})
 	if err != nil {
-		return fmt.Errorf("nomad: list host volumes: %w", err)
-	}
-	for _, v := range vols {
-		if v.Name == name {
-			if _, _, err := n.c.HostVolumes().Delete(&napi.HostVolumeDeleteRequest{ID: v.ID, Force: true}, &napi.WriteOptions{Namespace: namespace}); err != nil {
-				return fmt.Errorf("nomad: delete host volume %q: %w", name, err)
-			}
+		if isNotFound(err) {
 			return nil
 		}
+		return fmt.Errorf("nomad: get CSI volume %q: %w", name, err)
+	}
+	// The delete endpoint takes the Nomad volume id (the request field is named
+	// ExternalVolumeID for historical reasons, but `nomad volume delete <id>`
+	// passes the Nomad id here and Nomad resolves the backing EBS volume).
+	if err := n.c.CSIVolumes().DeleteOpts(&napi.CSIVolumeDeleteRequest{ExternalVolumeID: vol.ID}, &napi.WriteOptions{Namespace: namespace}); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("nomad: delete CSI volume %q: %w", name, err)
 	}
 	return nil
+}
+
+// isNotFound reports whether a Nomad API error is a 404 / "not found", used to
+// keep volume deletes idempotent.
+func isNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not found") || strings.Contains(s, "404")
 }
 
 // JobExists reports whether a job of the given id already runs in namespace.

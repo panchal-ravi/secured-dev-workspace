@@ -7,11 +7,25 @@ import {
   SideNav,
   SideNavItems,
   SideNavLink,
+  SideNavDivider,
+  Dropdown,
 } from '@carbon/react'
-import { Logout, Dashboard, Folders, Application, Asleep, Light } from '@carbon/icons-react'
+import {
+  Logout,
+  Dashboard,
+  Folders,
+  Application,
+  Catalog,
+  DataStructured,
+  MachineLearningModel,
+  UserMultiple,
+  Bot,
+  Asleep,
+  Light,
+} from '@carbon/icons-react'
 import type { MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { logout, Me } from '../api/client'
+import { adminProjects, agentProjects, workspaceProjects, isPlatformAdmin, logout, Me } from '../api/client'
 
 export default function AppHeader({
   me,
@@ -36,11 +50,53 @@ export default function AppHeader({
     nav(path)
   }
 
-  const items = [
-    { label: 'Home', path: '/', icon: Dashboard, current: pathname === '/' },
-    { label: 'Projects', path: '/projects', icon: Folders, current: pathname.startsWith('/projects') },
-    { label: 'My Workspaces', path: '/workspaces', icon: Application, current: pathname.startsWith('/workspaces') },
+  const admin = adminProjects(me)
+  // Developer/consumer nav (Projects, My Workspaces, AI agents) is hidden from a
+  // platform-admin who holds no explicit project role. Platform-admins are
+  // group-members of projects (which grants the implicit project-user baseline),
+  // so gating on capabilities alone wouldn't hide these; we gate on an explicit
+  // project_roles grant. Non-platform-admins are unaffected — their group-based
+  // access stays as-is.
+  const hasProjectRole = (me.project_roles || []).length > 0
+  const showDeveloperNav = !isPlatformAdmin(me) || hasProjectRole
+  const items = [{ label: 'Home', path: '/', icon: Dashboard, current: pathname === '/' }]
+  if (showDeveloperNav) {
+    items.push({ label: 'Projects', path: '/projects', icon: Folders, current: pathname === '/projects' })
+  }
+  // Platform Admin onboarding plane — shown only to platform admins.
+  if (isPlatformAdmin(me)) {
+    items.push(
+      { label: 'Projects (admin)', path: '/admin/projects', icon: Folders, current: pathname.startsWith('/admin/projects') },
+      { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
+      { label: 'Base templates', path: '/admin/base-templates', icon: Catalog, current: pathname.startsWith('/admin/base-templates') },
+    )
+  }
+  // Developer project switcher — a per-project dropdown driving Workspaces + AI
+  // agents sub-links, mirroring the admin switcher below. Populated from the
+  // projects where the user holds a developer capability (workspaces or
+  // ai-agents), so a member of several projects can jump between them instead of
+  // being pinned to the first one. Each sub-link is shown only when the active
+  // project actually grants that capability.
+  const wsProjects = workspaceProjects(me)
+  const agentProjectList = agentProjects(me)
+  const devProjects = Array.from(new Set([...wsProjects, ...agentProjectList])).sort()
+  const devRouteMatch = pathname.match(/^\/projects\/([^/]+)(?:\/agents)?$/)
+  const activeDevProject = devRouteMatch ? decodeURIComponent(devRouteMatch[1]) : devProjects[0]
+
+  // Project admins get a single project SWITCHER (dropdown) + a fixed set of
+  // per-project sub-nav links, instead of one flat entry per (project × section).
+  // The active project is derived from the current route so deep-links stay in
+  // sync; it falls back to the first administered project. The dropdown navigates
+  // to the selected project's members page.
+  const projectSections = [
+    { key: 'members', label: 'members', icon: UserMultiple },
+    { key: 'mcp-servers', label: 'mcp servers', icon: Catalog },
+    { key: 'agent-templates', label: 'agent templates', icon: Bot },
+    { key: 'templates', label: 'workspace templates', icon: Catalog },
+    { key: 'github', label: 'github access', icon: DataStructured },
   ]
+  const routeMatch = pathname.match(/^\/projects\/([^/]+)\/(members|mcp-servers|agent-templates|templates|github)/)
+  const activeProject = routeMatch ? decodeURIComponent(routeMatch[1]) : admin[0]
 
   return (
     <Header aria-label="Secured Dev Workspace" className="cds--g100">
@@ -96,6 +152,78 @@ export default function AppHeader({
               {it.label}
             </SideNavLink>
           ))}
+          {showDeveloperNav && devProjects.length > 0 && activeDevProject && (
+            <>
+              <SideNavDivider />
+              <div style={{ padding: '0.5rem 1rem' }}>
+                <Dropdown
+                  id="dev-project-switcher"
+                  size="sm"
+                  titleText="Project"
+                  label="Select a project"
+                  items={devProjects}
+                  selectedItem={activeDevProject}
+                  itemToString={(p) => p ?? ''}
+                  onChange={({ selectedItem }) => {
+                    if (selectedItem) nav(`/projects/${encodeURIComponent(selectedItem)}`)
+                  }}
+                />
+              </div>
+              {wsProjects.includes(activeDevProject) && (
+                <SideNavLink
+                  renderIcon={Application}
+                  href={`/projects/${encodeURIComponent(activeDevProject)}`}
+                  isActive={pathname === `/projects/${encodeURIComponent(activeDevProject)}`}
+                  onClick={(e: MouseEvent) => go(e, `/projects/${encodeURIComponent(activeDevProject)}`)}
+                >
+                  workspaces
+                </SideNavLink>
+              )}
+              {agentProjectList.includes(activeDevProject) && (
+                <SideNavLink
+                  renderIcon={Bot}
+                  href={`/projects/${encodeURIComponent(activeDevProject)}/agents`}
+                  isActive={/^\/projects\/[^/]+\/agents/.test(pathname)}
+                  onClick={(e: MouseEvent) => go(e, `/projects/${encodeURIComponent(activeDevProject)}/agents`)}
+                >
+                  ai agents
+                </SideNavLink>
+              )}
+            </>
+          )}
+          {admin.length > 0 && activeProject && (
+            <>
+              <SideNavDivider />
+              <div style={{ padding: '0.5rem 1rem' }}>
+                <Dropdown
+                  id="project-switcher"
+                  size="sm"
+                  titleText="Administered project"
+                  label="Select a project"
+                  items={admin}
+                  selectedItem={activeProject}
+                  itemToString={(p) => p ?? ''}
+                  onChange={({ selectedItem }) => {
+                    if (selectedItem) nav(`/projects/${encodeURIComponent(selectedItem)}/members`)
+                  }}
+                />
+              </div>
+              {projectSections.map((s) => {
+                const path = `/projects/${encodeURIComponent(activeProject)}/${s.key}`
+                return (
+                  <SideNavLink
+                    key={s.key}
+                    renderIcon={s.icon}
+                    href={path}
+                    isActive={pathname === path}
+                    onClick={(e: MouseEvent) => go(e, path)}
+                  >
+                    {s.label}
+                  </SideNavLink>
+                )
+              })}
+            </>
+          )}
         </SideNavItems>
       </SideNav>
     </Header>

@@ -106,6 +106,66 @@ locals {
       }
     }
   }
+
+  # --- Developer Portal OIDC app (created only when create_portal_app) ----------
+  # Reproduces the previously hand-registered `secured-codespace-portal` app
+  # (captured byte-for-byte from the live tenant). Two differences from the
+  # Boundary/Nomad apps:
+  #   1. consentType = "dpcm" (Verify's data-privacy/consent mode, as configured).
+  #   2. It emits a `may_act` claim — an RFC 8693 actor assertion the agent OBO
+  #      flow consumes (see agent-identity.tf). That's a "Custom rule" mapping,
+  #      encoded as function.custom (vs function.name for built-ins like lowercase).
+  #      The custom value is the literal JSON block from the app's UI, reproduced
+  #      EXACTLY (whitespace included) so Verify's rule engine parses it identically.
+  portal_may_act_custom = "{\n    \"org\": \"ibm\",\n    \"bu\": \"platform\",\n    \"department\": \"secured-dev\",\n    \"service_group\": \"agent-platform\"\n}"
+
+  # Introspect / access-token mapping: groups (lowercased) + may_act. Set on the
+  # app via the post-create PUT (set_app_fields.py, TOKEN_ATTR_MAPPINGS) so the
+  # may_act custom rule never has to survive the restricted create body.
+  portal_token_attribute_mappings = [
+    { targetName = "groups", sourceId = "4", function = { name = "lowercase" } },
+    { targetName = "may_act", function = { custom = local.portal_may_act_custom } },
+  ]
+
+  # ID-token + userinfo mapping (the top-level attributeMappings the portal RP
+  # actually reads for group->role authz): groups, NO transform — matches the
+  # live app. Also set via the post-create PUT.
+  portal_idtoken_attribute_mappings = [
+    { targetName = "groups", sourceId = "4" },
+  ]
+
+  # Production redirect (NLB :8443) + the localhost dev callback, mirroring the app.
+  portal_redirect_uris = compact([
+    var.portal_redirect_url,
+    "http://localhost:8080/auth/callback",
+  ])
+
+  portal_app_body = {
+    name             = "secured-codespace-portal"
+    templateId       = "998"
+    applicationState = true # enabled at create; see boundary_app_body note above
+    providers = {
+      sso = { userOptions = "oidc" }
+      oidc = {
+        applicationUrl = trimsuffix(var.portal_redirect_url, "/auth/callback") # launchpad link = portal base URL
+        properties = {
+          grantTypes                = local.oidc_grant_types
+          redirectUris              = local.portal_redirect_uris
+          idTokenSigningAlg         = "RS256"
+          doNotGenerateClientSecret = "false"
+          consentType               = "dpcm"
+          accessTokenExpiry         = 3600
+        }
+        # Create body carries the proven groups-only mapping; the full set
+        # (groups + may_act) is applied by the post-create PUT below.
+        token = {
+          accessTokenType   = "jwt"
+          audiences         = var.portal_audiences
+          attributeMappings = local.group_attribute_mappings
+        }
+      }
+    }
+  }
 }
 
 # Verify's POST returns ONLY `{"_links":{"self":{"href":"/appaccess/v1.0/applications/<id>"}}}`
@@ -263,4 +323,80 @@ locals {
   boundary_client_secret = try(local.boundary_oidc.clientSecret, null)
   nomad_client_id        = try(local.nomad_oidc.clientId, null)
   nomad_client_secret    = try(local.nomad_oidc.clientSecret, null)
+}
+
+# ---------------------------------------------------------------------------
+# Developer Portal OIDC app — same create -> entitle -> PUT -> read-back flow as
+# Boundary/Nomad above, but count-gated on create_portal_app (the portal is
+# opt-in, and the tenant enforces a 5-application cap). All four resources share
+# the [0] index.
+# ---------------------------------------------------------------------------
+resource "restapi_object" "portal_app" {
+  count = var.create_portal_app ? 1 : 0
+  path  = "/v1.0/applications"
+  data  = jsonencode(local.portal_app_body)
+
+  id_attribute = "_links/self/href"
+  read_path    = "{id}"
+  update_path  = "{id}"
+  destroy_path = "{id}"
+}
+
+resource "terraform_data" "portal_entitlement" {
+  count            = var.create_portal_app ? 1 : 0
+  triggers_replace = restapi_object.portal_app[0].id
+
+  provisioner "local-exec" {
+    environment = { VERIFY_TOKEN = var.verify_access_token }
+    command     = <<-CMD
+      curl -fsS -X POST \
+        "${local.tenant_url}/v1.0/owner/applications/${reverse(split("/", restapi_object.portal_app[0].id))[0]}/entitlements" \
+        -H "Authorization: Bearer $VERIFY_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"birthRightAccess": true, "requestAccess": false}' -o /dev/null
+    CMD
+  }
+}
+
+# Post-create full-object PUT. Sets companyName + the top-level (ID token/userinfo)
+# attributeMappings like the other apps, AND — via TOKEN_ATTR_MAPPINGS — the
+# access-token mapping that carries the `may_act` custom rule, which is applied
+# here rather than in the restricted create body.
+resource "terraform_data" "portal_app_fields" {
+  count            = var.create_portal_app ? 1 : 0
+  triggers_replace = restapi_object.portal_app[0].id
+
+  provisioner "local-exec" {
+    environment = {
+      VERIFY_TOKEN        = var.verify_access_token
+      APP_URL             = "${local.tenant_url}/v1.0/applications/${reverse(split("/", restapi_object.portal_app[0].id))[0]}"
+      COMPANY_NAME        = local.company_name
+      ATTR_MAPPINGS       = jsonencode(local.portal_idtoken_attribute_mappings)
+      TOKEN_ATTR_MAPPINGS = jsonencode(local.portal_token_attribute_mappings)
+    }
+    command = "python3 ${path.module}/scripts/set_app_fields.py"
+  }
+}
+
+data "http" "portal_app" {
+  count = var.create_portal_app ? 1 : 0
+  url   = "${local.tenant_url}${restapi_object.portal_app[0].id}"
+  request_headers = {
+    Authorization = "Bearer ${var.verify_access_token}"
+    Accept        = "application/json"
+  }
+
+  lifecycle {
+    postcondition {
+      condition     = try(jsondecode(self.response_body).applicationState, false) == true
+      error_message = "secured-codespace-portal was created but is still DISABLED (applicationState != true). Verify did not honor applicationState in the create body; the app must be enabled via a separate call (PATCH returns 405 — try a full-object PUT to the app href)."
+    }
+  }
+}
+
+locals {
+  portal_app_json      = one(data.http.portal_app[*].response_body)
+  portal_oidc          = try(jsondecode(local.portal_app_json).providers.oidc.properties, {})
+  portal_client_id     = try(local.portal_oidc.clientId, null)
+  portal_client_secret = try(local.portal_oidc.clientSecret, null)
 }

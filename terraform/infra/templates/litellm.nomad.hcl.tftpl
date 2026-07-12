@@ -74,13 +74,13 @@ EOH
         change_mode = "restart"
         data        = <<EOH
 model_list:
-  - model_name: deepseek-v4-pro
+  - model_name: ${model_primary}
     litellm_params:
-      model: deepseek/deepseek-chat   # confirm the real id on the DeepSeek dashboard
+      model: ${model_backend}   # confirm the real id on the DeepSeek dashboard
       api_key: os.environ/DEEPSEEK_API_KEY
-  - model_name: deepseek-v4-flash
+  - model_name: ${model_fast}
     litellm_params:
-      model: deepseek/deepseek-chat   # point at a cheaper/faster id when available
+      model: ${model_backend}   # point at a cheaper/faster id when available
       api_key: os.environ/DEEPSEEK_API_KEY
 
 litellm_settings:
@@ -89,6 +89,9 @@ litellm_settings:
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   store_prompts_in_spend_logs: true   # audit: retain prompt/response in spend logs
+%{ if store_model_in_db ~}
+  store_model_in_db: true             # Platform Admin plane: models added via /model/new persist in Postgres
+%{ endif ~}
 EOH
       }
 

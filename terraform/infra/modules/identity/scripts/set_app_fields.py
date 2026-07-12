@@ -19,10 +19,16 @@ the full object preserves the generated clientId/clientSecret and every other
 field.
 
 Inputs via env (so the bearer token never lands in argv/ps):
-  APP_URL        full URL of the app, e.g. https://<tenant>/v1.0/applications/<id>
-  VERIFY_TOKEN   bootstrap bearer token
-  COMPANY_NAME   value for companyName
-  ATTR_MAPPINGS  JSON array for the top-level attributeMappings
+  APP_URL              full URL of the app, e.g. https://<tenant>/v1.0/applications/<id>
+  VERIFY_TOKEN         bootstrap bearer token
+  COMPANY_NAME         value for companyName
+  ATTR_MAPPINGS        JSON array for the top-level attributeMappings
+  TOKEN_ATTR_MAPPINGS  OPTIONAL JSON array for providers.oidc.token.attributeMappings
+                       (the access-token/introspect mapping). Set by the portal app
+                       to apply its `may_act` custom rule, which the restricted
+                       create body can't carry. Omitted by Boundary/Nomad, which set
+                       their access-token mapping in the create body — so their
+                       behavior is unchanged.
 Idempotent: re-running with the same values is a no-op PUT. Exits non-zero on any
 HTTP error so the Terraform apply fails loudly.
 """
@@ -30,6 +36,7 @@ import json, os, sys, urllib.request, urllib.error
 
 url, token = os.environ["APP_URL"], os.environ["VERIFY_TOKEN"]
 company, attr_mappings = os.environ["COMPANY_NAME"], json.loads(os.environ["ATTR_MAPPINGS"])
+token_attr_mappings = json.loads(os.environ["TOKEN_ATTR_MAPPINGS"]) if os.environ.get("TOKEN_ATTR_MAPPINGS") else None
 auth = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
 
@@ -45,7 +52,10 @@ try:
     app = json.loads(req("GET"))
     app.setdefault("providers", {}).setdefault("saml", {}).setdefault("properties", {})["companyName"] = company
     app["attributeMappings"] = attr_mappings
+    if token_attr_mappings is not None:
+        app.setdefault("providers", {}).setdefault("oidc", {}).setdefault("token", {})["attributeMappings"] = token_attr_mappings
     req("PUT", json.dumps(app).encode())
 except urllib.error.HTTPError as e:
     sys.exit(f"set app fields failed: {e.code} {e.read().decode()[:200]}")
-print(f"set companyName={company!r}, attributeMappings={[m.get('targetName') for m in attr_mappings]}")
+_tok = f", token.attributeMappings={[m.get('targetName') for m in token_attr_mappings]}" if token_attr_mappings is not None else ""
+print(f"set companyName={company!r}, attributeMappings={[m.get('targetName') for m in attr_mappings]}{_tok}")

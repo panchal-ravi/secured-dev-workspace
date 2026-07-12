@@ -56,10 +56,69 @@ Carbon React SPA  ──►  Go backend (trusted)  ──►  Vault   (read proj
 ## Layout
 
 ```
-backend/   Go module (cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api})
+backend/   Go module (cmd/portal + internal/{config,auth,hashistack,descriptor,portgen,jobrender,workspace,api}
+           + onboarding plane: rbac, store, mcpgw, llmgw, admin)
 frontend/  Vite + React + @carbon/react  (build output → backend/web, served by the binary)
 helper/    macOS secured-ws:// helper — runs the Boundary login + manages ~/.ssh/config (the Connect flow)
 ```
+
+## Platform Admin onboarding plane (optional)
+
+A Platform Admin (IBM Verify group `platform-admins`) can onboard *capabilities* into the platform:
+**deploy an existing MCP server** (internal/third-party, e.g. `hashicorp/vault-mcp-server`) **as a
+Nomad job**, and **onboard an LLM model** into the LiteLLM gateway. Each is verified the way a Project
+Admin consumes it:
+
+- **MCP** — deploy → portal renders + runs a Docker Nomad job in `infra-mcp` → registers a ContextForge
+  peer → composes a **virtual server + scoped token** → tool call returns **200** while the same token
+  on another server returns **403** (scope isolation) → **Publish** writes a Vault KV descriptor.
+- **LLM** — add model (provider key read from Vault at call time → `/model/new`) → mint a **scoped key
+  with a budget + rpm limit** → completion **200**, rpm breach **429**, revoke **401** → **Publish**.
+
+The plane is **additive and optional**: it mounts only when the gateway addresses are configured, its
+admin credentials come from Vault (never env), and a failed init disables the plane without affecting
+developer flows. Backend logic lives in a reusable service (`internal/admin`); the `/api/admin/*` routes
+(gated by `rbac.RequirePlatformAdmin`) are the contract a future programmatic onboarding API will
+formalize. UI: `frontend/src/pages/platformadmin/` (role-gated nav).
+
+**Enable it (cloud):** set `enable_platform_admin = true` in `terraform/infra` (creates the `infra-mcp`
+namespace, the `infra-platform-admin` Vault policy, flips LiteLLM to `STORE_MODEL_IN_DB`, and bootstraps
+the portal-admin key) and apply. Relevant portal env (set by the Nomad job when enabled):
+`PORTAL_MCP_GATEWAY_ADDR`, `PORTAL_LLM_GATEWAY_ADDR`, `PORTAL_MCP_NAMESPACE`, `PORTAL_AGENT_NODE_POOL`.
+
+> Persistence is in-memory for this slice (`internal/store`); the deployed Nomad jobs, ContextForge
+> peers, and LiteLLM models persist in their own systems. A Postgres-backed `store.Store` is a drop-in.
+
+## Project Admin — MCP deploy plane (optional)
+
+A **Project Admin** (a project member elevated in the Portal DB — see `internal/rbac`) can deploy a
+**published, blueprint-backed** MCP server type into *their own* project. Unlike the platform-admin
+plane (which deploys into the shared `infra-mcp` namespace), this runs against the **project's own Vault
++ Nomad namespace** (`descriptor.Namespace`) and brokers credentials through the platform-authored
+**credential blueprint** — the project-admin supplies parameters only, never HCL or pasted secrets.
+
+The flow (backend `internal/projectadmin`, gated by `rbac.RequireProjectRole("project-admin")` — which
+requires **both** live membership in the project's developer group and a Portal-DB grant):
+
+- **Deploy** — `POST /api/projects/{name}/mcp-servers {server_type, params}` → instantiate the server
+  type's blueprint into the project Vault namespace (`blueprint.Executor`) → render a Nomad job bound to
+  the **minted WIF role** with the blueprint's credential env-template (`mcpjob.Render` WIF variant) →
+  register the job. Any failure *after* a successful instantiate rolls back (`Deprovision`, no orphan
+  Vault state, no persisted row).
+- **Test** — `POST …/{server}/test` → register a ContextForge peer → compose a virtual server + scoped
+  token → tool call **200** while admin + a decoy server return **403** (consumption-mirror isolation).
+- **Delete** — `DELETE …/{server}` → purge the Nomad job, deregister the peer, then `Deprovision` the
+  persisted instance (**leases revoked before the engine is unmounted**) and drop the row.
+
+UI: `frontend/src/pages/projectadmin/McpServers.tsx` (per-project, nav gated on `/api/me.project_roles`).
+The portal's Vault grant is the **`portal-blueprint-provisioning`** policy attached to its root WIF role
+(`terraform/infra/portal-provisioning-policy.hcl`, gated on `enable_platform_admin`); see
+`terraform/infra/README.md` for the containment rationale. Deployed-server status is derived from the
+`project_mcp_servers` store rows + `nomad.JobExists` (the standalone discovery package is deferred).
+
+> **Live gate:** the marquee end-to-end walk is a build-tagged skip-stub
+> (`go test -tags live ./internal/projectadmin/ -run TestLiveDeployPostgresMCP`); it needs a reachable
+> `project-acme` namespace + `demo-db` and the provisioning policy attached. See the test file header.
 
 ## Prerequisites
 

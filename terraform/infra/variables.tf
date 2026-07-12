@@ -34,6 +34,36 @@ variable "gpu_root_volume_size" {
   default     = 60
 }
 
+variable "enable_agent_nodes" {
+  description = "Provision the standard-CPU agent worker EC2s (Nomad clients in node pool \"agents\") for the agent-platform tier. Off by default — opt in to schedule agent instances + wrapped MCP servers off the all-in-one node."
+  type        = bool
+  default     = false
+}
+
+variable "enable_default_spare" {
+  description = "TEMPORARY: add a second Nomad client to node pool \"default\" (same AZ as the all-in-one node) so a workspace can be forced to reschedule cross-node to verify the Boundary host-address sync. Off by default; destroy after the test."
+  type        = bool
+  default     = false
+}
+
+variable "agent_node_count" {
+  description = "Number of agent worker nodes to provision when enable_agent_nodes = true."
+  type        = number
+  default     = 1
+}
+
+variable "agent_instance_type" {
+  description = "EC2 instance type for each agent worker node (standard CPU)."
+  type        = string
+  default     = "t3.large"
+}
+
+variable "agent_root_volume_size" {
+  description = "Root EBS volume size (GiB) for each agent worker node."
+  type        = number
+  default     = 40
+}
+
 variable "enable_microvm_node" {
   description = "Provision the Kata microVM Nomad client EC2 (bare metal). Off by default — metal instances are costly, so opt in only when hardware-isolated microVM workspaces are needed."
   type        = bool
@@ -132,6 +162,12 @@ variable "mcp_gateway_image" {
   default     = "ghcr.io/ibm/mcp-context-forge:latest"
 }
 
+variable "ebs_csi_driver_image" {
+  description = "AWS EBS CSI driver image for the Nomad controller + node plugin jobs (ebs-csi.tf). Pin a concrete release tag."
+  type        = string
+  default     = "public.ecr.aws/ebs-csi-driver/aws-ebs-csi-driver:v1.44.0"
+}
+
 # --- LiteLLM AI Gateway (see llm-gateway.tf) ---
 
 variable "litellm_image" {
@@ -157,4 +193,96 @@ variable "deepseek_api_key" {
   EOT
   type        = string
   sensitive   = true
+}
+
+# --- Developer Portal (see developer-portal.tf) ---
+
+# Deploy the portal as a Nomad job? Off by default: it requires the image pushed
+# (portal/scripts/build-image.sh) and portal_oidc_issuer set. When true, the
+# identity module ALSO creates the portal's Verify OIDC app (no hand-registration)
+# — see modules/identity/verify.tf. The base stack + the NLB `:8443` listener
+# provision regardless; flip this true for the portal job + its Verify app.
+variable "enable_developer_portal" {
+  description = "Deploy the Developer Portal Nomad job AND create its IBM Verify OIDC app (needs the image + portal_oidc_issuer)."
+  type        = bool
+  default     = false
+}
+
+variable "developer_portal_image" {
+  description = "Developer Portal container image (amd64). Build/push with portal/scripts/build-image.sh and pin a concrete tag."
+  type        = string
+  default     = "panchalravi/developer-portal:poc"
+}
+
+variable "nomad_boundary_host_sync_image" {
+  description = "Nomad→Boundary host-sync container image (amd64). Build/push from /nomad-boundary-host-sync and pin a concrete tag."
+  type        = string
+  default     = "panchalravi/nomad-boundary-host-sync:poc"
+}
+
+variable "portal_oidc_issuer" {
+  description = "The portal's IBM Verify OIDC issuer (full endpoint, e.g. https://<tenant>.verify.ibm.com/oidc/endpoint/default). Required only when enable_developer_portal = true."
+  type        = string
+  default     = ""
+}
+
+# Access-token audiences stamped on the portal's Verify app. Typically the
+# token-exchange client id the RFC 8693 OBO flow targets. The portal's client
+# id/secret are NO LONGER vars — the identity module creates the app and surfaces
+# them as outputs.
+variable "portal_oidc_audiences" {
+  description = "Audiences for the portal Verify app's access token (e.g. the token-exchange app's client id)."
+  type        = list(string)
+  default     = ["7be9262c-f5c3-4174-a105-038a0892699f"]
+}
+
+# --- Platform Admin onboarding plane (see platform-admin.tf) ---
+
+variable "enable_platform_admin" {
+  description = "Enable the Platform Admin onboarding plane (MCP-server deploy + LLM-model onboarding in the portal). Requires enable_developer_portal and the MCP + LLM gateways; flips LiteLLM to STORE_MODEL_IN_DB and mints a portal-admin key."
+  type        = bool
+  default     = false
+}
+
+variable "platform_admin_mcp_node_pool" {
+  description = "Node pool for portal-deployed MCP servers. Defaults to \"agents\" (needs enable_agent_nodes); set to \"\" to run them on the all-in-one node instead."
+  type        = string
+  default     = "agents"
+}
+
+variable "portal_postgres_image" {
+  description = "Postgres image backing the portal's onboarding control plane (mcp_servers, llm_models, audit_events, blueprints). Deployed only when enable_platform_admin = true."
+  type        = string
+  default     = "postgres:16-alpine"
+}
+
+# --- Agent-platform identity (see agent-identity.tf) ---
+
+# Static org-context claims stamped into every actor JWT (overview §3 step 4).
+# Values are cosmetic identity context that Verify copies into the OBO `act`
+# claim; functionally inert. (Spike 2/3 used ibm/platform/secured-dev ad hoc —
+# these spec defaults supersede them.)
+variable "agent_identity_claims" {
+  type    = object({ org = string, bu = string, department = string, service_group = string })
+  default = { org = "ibm-demo", bu = "techsales", department = "advanced-sa", service_group = "agent-platform" }
+}
+
+# --- Vault GitHub secrets plugin (see vault-github-plugin.tf) ---
+
+variable "github_plugin_version" {
+  description = "vault-plugin-secrets-github release version (no leading v). Must match the AMI's baked binary."
+  type        = string
+  default     = "2.3.2"
+}
+
+variable "github_plugin_sha256" {
+  description = "SHA-256 of the baked linux-amd64 plugin binary. MUST match ami/base_image github_plugin_sha256."
+  type        = string
+  default     = "72cb1f2775ee2abf12ffb725e469d0377fe7bbb93cd7aaa6921c141eddecab87"
+}
+
+variable "enable_demo_db" {
+  description = "Deploy the throwaway demo Postgres (Nomad job, infra namespace, node-static :15432) used as the upstream DB for the Class A postgres-mcp blueprint E2E. No persistent volume — data re-seeds on every restart."
+  type        = bool
+  default     = false
 }

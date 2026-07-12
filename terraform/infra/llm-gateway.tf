@@ -19,7 +19,17 @@
 
 locals {
   litellm_port    = 4000  # gateway HTTP (Anthropic /v1/messages, admin /key/*, /v1/models)
-  litellm_pg_port = 15433 # node-static Postgres port (15432 is the project demo-db)
+  litellm_pg_port = 15433 # node-static Postgres port (15432 is the infra demo-db)
+
+  # Governed LLM models — the SINGLE source of the model names. Shared by the LiteLLM
+  # model_list (rendered below), the portal env (developer-portal.tf), and thus the
+  # per-project virtual keys' allowed set + the base templates' Claude Code model
+  # mapping. primary = opus/sonnet slot, fast = haiku/subagent slot. Swap DeepSeek for
+  # another backend by changing llm_model_backend here.
+  llm_model_primary = "deepseek-v4-pro"
+  llm_model_fast    = "deepseek-v4-flash"
+  llm_model_backend = "deepseek/deepseek-chat"
+  llm_model_names   = [local.llm_model_primary, local.llm_model_fast]
 }
 
 # Gateway secrets. 48-char alphanumerics (no special) so they are safe in an env
@@ -51,6 +61,16 @@ resource "vault_kv_secret_v2" "llm_gateway" {
     pg_password      = random_password.litellm_pg.result             # Postgres password (DB-backed keys/logs)
     deepseek_api_key = var.deepseek_api_key                          # the ONE provider key, never reaches a workspace
   })
+
+  # portal_admin_key is minted + merge-patched into this secret OUT-OF-BAND by
+  # scripts/litellm-portal-admin-key.sh (terraform_data.litellm_portal_admin_key).
+  # Without this, every plan tries to revert data_json to the four keys above and
+  # DROP that out-of-band portal_admin_key — breaking the portal's LLM onboarding.
+  # The four managed keys are generated/stable, so suppressing post-create drift on
+  # the blob is safe (a key rotation is a deliberate taint/replace, not a silent edit).
+  lifecycle {
+    ignore_changes = [data_json]
+  }
 }
 
 # WIF read policy + role: the gateway + Postgres jobs (Nomad workload identity) may
@@ -123,12 +143,18 @@ resource "nomad_job" "litellm_gateway" {
   purge_on_destroy = true
 
   jobspec = templatefile("${path.module}/templates/litellm.nomad.hcl.tftpl", {
-    namespace = nomad_namespace.infra.name
-    image     = var.litellm_image
-    port      = local.litellm_port
-    wif_role  = vault_jwt_auth_backend_role.infra_llm.role_name
-    kv_path   = "${vault_mount.kv.path}/data/infra/llm-gateway"
-    db_host   = "${module.secured_codespace.instance_private_ip}:${local.litellm_pg_port}"
+    namespace     = nomad_namespace.infra.name
+    image         = var.litellm_image
+    port          = local.litellm_port
+    wif_role      = vault_jwt_auth_backend_role.infra_llm.role_name
+    kv_path       = "${vault_mount.kv.path}/data/infra/llm-gateway"
+    db_host       = "${module.secured_codespace.instance_private_ip}:${local.litellm_pg_port}"
+    model_primary = local.llm_model_primary
+    model_fast    = local.llm_model_fast
+    model_backend = local.llm_model_backend
+    # Enable DB-stored models so the Platform Admin plane can add/manage models via
+    # the admin API. Off by default — config-list models are unchanged either way.
+    store_model_in_db = var.enable_platform_admin
   })
 
   depends_on = [nomad_job.litellm_postgres, vault_kv_secret_v2.llm_gateway]

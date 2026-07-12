@@ -49,6 +49,11 @@ output "gpu_instance_public_ip" {
   value       = one(aws_instance.gpu[*].public_ip)
 }
 
+output "agent_node_private_ips" {
+  description = "Private IPs of the agent worker nodes (node pool \"agents\"), or [] when enable_agent_nodes = false. The agent-platform tier places agent instances + wrapped MCP servers on these via node_pool = \"agents\"."
+  value       = aws_instance.agent[*].private_ip
+}
+
 output "ssh_private_key_path" {
   description = "Path to the generated SSH private key"
   value       = "${path.root}/generated/${local.ssh_key_filename}"

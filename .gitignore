@@ -17,6 +17,8 @@
 .terraform/
 *.tfstate
 *.tfstate.*
+# Saved plans embed resolved variable/secret values — never commit.
+*.tfplan
 crash.log
 crash.*.log
 override.tf

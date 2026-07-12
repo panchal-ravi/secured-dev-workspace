@@ -52,6 +52,36 @@ variable "gpu_root_volume_size" {
   default     = 60
 }
 
+variable "enable_agent_nodes" {
+  description = "Provision the standard-CPU agent worker EC2s (Nomad clients in node pool \"agents\"). Off by default — opt in only when the agent-platform tier needs to schedule agent instances + wrapped MCP servers off the all-in-one node."
+  type        = bool
+  default     = false
+}
+
+variable "enable_default_spare" {
+  description = "TEMPORARY: provision a single standard-CPU EC2 as a second Nomad client in node pool \"default\" (same AZ as the all-in-one node) so a workspace can be forced to reschedule cross-node to verify the Boundary host-address sync. Off by default; destroy after the test."
+  type        = bool
+  default     = false
+}
+
+variable "agent_node_count" {
+  description = "Number of agent worker nodes to provision when enable_agent_nodes = true."
+  type        = number
+  default     = 1
+}
+
+variable "agent_instance_type" {
+  description = "EC2 instance type for each agent worker node (standard CPU)."
+  type        = string
+  default     = "t3.large"
+}
+
+variable "agent_root_volume_size" {
+  description = "Root EBS volume size (GiB) for each agent worker node."
+  type        = number
+  default     = 40
+}
+
 variable "enable_microvm_node" {
   description = "Provision the Kata microVM Nomad client EC2 (bare metal). Off by default — metal instances are costly, so opt in only when hardware-isolated microVM workspaces are needed."
   type        = bool
@@ -143,4 +173,10 @@ variable "boundary_org_name" {
   description = "Name of the org scope created under global"
   type        = string
   default     = "primary-org"
+}
+
+variable "enable_workspace_backups" {
+  description = "Provision AWS Backup (daily, 30-day retention) for per-workspace EBS volumes, selected by the backup=secured-workspace tag."
+  type        = bool
+  default     = true
 }

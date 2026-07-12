@@ -8,6 +8,13 @@ module "secured_codespace" {
   gpu_instance_type    = var.gpu_instance_type
   gpu_root_volume_size = var.gpu_root_volume_size
 
+  enable_agent_nodes     = var.enable_agent_nodes
+  agent_node_count       = var.agent_node_count
+  agent_instance_type    = var.agent_instance_type
+  agent_root_volume_size = var.agent_root_volume_size
+
+  enable_default_spare = var.enable_default_spare
+
   enable_microvm_node      = var.enable_microvm_node
   microvm_instance_type    = var.microvm_instance_type
   microvm_root_volume_size = var.microvm_root_volume_size
@@ -42,6 +49,12 @@ module "identity" {
   nomad_addr          = module.secured_codespace.nomad_addr
   admin_group_name    = var.admin_group_name
   readonly_group_name = var.readonly_group_name
+
+  # Developer Portal OIDC app — created here (not hand-registered) only when the
+  # portal is deployed. The redirect URI is derived from the live NLB.
+  create_portal_app   = var.enable_developer_portal
+  portal_redirect_url = local.portal_redirect_url
+  portal_audiences    = var.portal_oidc_audiences
 }
 
 # Platform-tier Nomad↔Vault workload-identity federation: the single jwt-nomad

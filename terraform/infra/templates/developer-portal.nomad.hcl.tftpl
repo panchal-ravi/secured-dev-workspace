@@ -42,6 +42,30 @@ job "developer-portal" {
       vault {
         role = "${wif_role}"
       }
+%{ if enable_platform_admin ~}
+      # Second workload identity for the project-deploy plane: the portal exchanges
+      # this JWT (aud=vault-provisioner) at <project>/auth/jwt-nomad/login for a token
+      # NATIVE to the target project namespace, then provisions blueprints with it —
+      # no standing cross-namespace privilege. Written to secrets/nomad_vault_provisioner.jwt.
+      identity {
+        name = "vault_provisioner"
+        aud  = ["vault-provisioner"]
+        file = true
+        ttl  = "1h"
+      }
+%{ endif ~}
+%{ if enable_project_creator ~}
+      # Third workload identity for the project-CREATE plane: exchanged at the
+      # ROOT-namespace jwt-nomad backend (role project-creator) for a short-TTL token
+      # that creates a project's Vault namespace + bootstraps its auth, then discards
+      # it. Written to secrets/nomad_vault_creator.jwt.
+      identity {
+        name = "vault_creator"
+        aud  = ["vault-creator"]
+        file = true
+        ttl  = "1h"
+      }
+%{ endif ~}
 
       # Privileged provisioning creds + the portal's own OIDC/session secrets, from
       # Vault KV. env=true sources them as environment; change_mode=restart so a
@@ -57,6 +81,9 @@ PORTAL_SESSION_SECRET={{ .Data.data.session_secret }}
 PORTAL_BOUNDARY_LOGIN={{ .Data.data.boundary_login }}
 PORTAL_BOUNDARY_PASSWORD={{ .Data.data.boundary_password }}
 PORTAL_NOMAD_TOKEN={{ .Data.data.nomad_token }}
+%{ if enable_platform_admin ~}
+PORTAL_DB_DSN=postgres://portal:{{ .Data.data.pg_password }}@${db_host}/portal?sslmode=disable
+%{ endif ~}
 {{ end }}
 EOH
       }
@@ -76,6 +103,41 @@ EOH
 {{ with secret "${kv_path}" }}{{ .Data.data.tls_key }}{{ end }}
 EOH
       }
+%{ if enable_project_creator ~}
+      # Nomad JWKS CA (multi-line PEM → file) the creator installs into each new
+      # project namespace's jwt-nomad config.
+      template {
+        destination = "secrets/nomad_ca.pem"
+        change_mode = "restart"
+        data        = <<EOH
+${nomad_ca_pem}
+EOH
+      }
+%{ endif ~}
+%{ if enable_platform_admin ~}
+      # Platform Admin onboarding plane: resolve the MCP + LLM gateway base URLs from
+      # Nomad-native service discovery — the gateways register provider="nomad" services
+      # "mcp-gateway" / "llm-gateway", both in this job's "infra" namespace. This drops
+      # the loopback co-location requirement (the portal may run on any node). env=true
+      # publishes them as PORTAL_*_GATEWAY_ADDR. change_mode=noop (NOT restart): a
+      # flapping/failing gateway re-registers its service constantly, and restart here
+      # turns that into a portal restart-loop that resets the idle reaper and kills
+      # in-flight chats. The portal keeps the last-rendered addrs (gateways use stable
+      # host ports); a deliberate redeploy re-reads current addrs if one truly moves.
+      template {
+        destination = "secrets/gateways.env"
+        env         = true
+        change_mode = "noop"
+        data        = <<EOH
+{{ range nomadService "mcp-gateway" }}
+PORTAL_MCP_GATEWAY_ADDR=http://{{ .Address }}:{{ .Port }}
+{{ end }}
+{{ range nomadService "llm-gateway" }}
+PORTAL_LLM_GATEWAY_ADDR=http://{{ .Address }}:{{ .Port }}
+{{ end }}
+EOH
+      }
+%{ endif ~}
 
       env {
         PORTAL_LISTEN_ADDR             = ":${port}"
@@ -100,6 +162,41 @@ EOH
         # local SSH-config "Open in IDE" writes (the secured-ws:// helper drives that).
         PORTAL_SSH_CONFIG_PATH = ""
         PORTAL_LOG_LEVEL       = "info"
+%{ if enable_platform_admin ~}
+        # Platform Admin onboarding plane. Gateway base URLs (PORTAL_MCP_GATEWAY_ADDR /
+        # PORTAL_LLM_GATEWAY_ADDR) come from the Nomad service-discovery template block
+        # above — not co-location — so they are not set here.
+        PORTAL_AGENT_NODE_POOL    = "${agent_node_pool}"
+        # Project-deploy plane: broker a namespace-native provisioner token via the
+        # second workload identity above. Role/mount match terraform/project/portal-provisioner.tf.
+        PORTAL_PROVISIONER_JWT_PATH   = "$${NOMAD_SECRETS_DIR}/nomad_vault_provisioner.jwt"
+        PORTAL_PROVISIONER_ROLE       = "portal-provisioner"
+        PORTAL_PROVISIONER_AUTH_MOUNT = "jwt-nomad"
+        # Project engine-provision plane (Phase C): the node-private LiteLLM endpoint
+        # baked into project templates (llm_base_url) + used as the virtual key's
+        # base_url. PORTAL_VAULT_CRED_STORE_ADDR defaults to PORTAL_VAULT_ADDR and
+        # PORTAL_GITHUB_PLUGIN_VERSION to 2.3.2 (the registered plugin), so neither is
+        # set here unless they need to diverge.
+        PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT = "http://${instance_private_ip}:4000"
+        # Governed LLM models, single-sourced from terraform/infra (local.llm_model_*).
+        PORTAL_LLM_MODELS        = "${llm_models}"
+        PORTAL_LLM_MODEL_PRIMARY = "${llm_model_primary}"
+        PORTAL_LLM_MODEL_FAST    = "${llm_model_fast}"
+%{ endif ~}
+%{ if enable_project_creator ~}
+        # Project-create plane: broker a short-TTL creator token via the third
+        # workload identity, plus the coordinates baked into new project descriptors
+        # and child-namespace auth. Role/aud match the project_creator role above.
+        PORTAL_CREATOR_JWT_PATH             = "$${NOMAD_SECRETS_DIR}/nomad_vault_creator.jwt"
+        PORTAL_CREATOR_ROLE                 = "project-creator"
+        PORTAL_CREATOR_AUTH_MOUNT           = "jwt-nomad"
+        PORTAL_NOMAD_JWKS_URL               = "${nomad_jwks_url}"
+        PORTAL_NOMAD_CA_PEM_FILE            = "$${NOMAD_SECRETS_DIR}/nomad_ca.pem"
+        PORTAL_NOMAD_OIDC_AUTH_METHOD       = "${nomad_oidc_auth_method}"
+        PORTAL_BOUNDARY_ORG_SCOPE_ID        = "${boundary_org_scope_id}"
+        PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID = "${boundary_oidc_method_id}"
+        PORTAL_INSTANCE_PRIVATE_IP          = "${instance_private_ip}"
+%{ endif ~}
       }
 
       service {

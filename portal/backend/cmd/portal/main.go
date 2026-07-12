@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,12 +16,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/secured-dev-workspace/developer-portal/internal/admin"
+	"github.com/secured-dev-workspace/developer-portal/internal/agents"
 	"github.com/secured-dev-workspace/developer-portal/internal/api"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
+	"github.com/secured-dev-workspace/developer-portal/internal/basetmpladmin"
+	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
 	"github.com/secured-dev-workspace/developer-portal/internal/config"
 	"github.com/secured-dev-workspace/developer-portal/internal/hashistack"
+	"github.com/secured-dev-workspace/developer-portal/internal/jobtemplate"
+	"github.com/secured-dev-workspace/developer-portal/internal/llmgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/logging"
+	"github.com/secured-dev-workspace/developer-portal/internal/mcpgw"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectbootstrap"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectengines"
+	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
+	"github.com/secured-dev-workspace/developer-portal/internal/projecttemplate"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
 
@@ -28,6 +42,24 @@ func main() {
 	// Structured logging from the very first line so even config errors are JSON;
 	// run() re-installs the logger once the configured level is known.
 	slog.SetDefault(logging.New(os.Getenv("PORTAL_LOG_LEVEL")))
+
+	// One-shot maintenance subcommands (not the server).
+	if len(os.Args) > 1 && os.Args[1] == "backfill-from-vault" {
+		if err := runBackfill(); err != nil {
+			slog.Error("backfill exited", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "provision-project" {
+		if err := runProvision(); err != nil {
+			slog.Error("provision exited", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		slog.Error("portal exited", "err", err)
 		os.Exit(1)
@@ -64,23 +96,101 @@ func run() error {
 		return err
 	}
 
+	st, err := buildStore(startCtx, cfg)
+	if err != nil {
+		return err
+	}
+	if err := jobtemplate.SeedBaseTemplates(startCtx, st); err != nil {
+		return err
+	}
+	projectRoles := projectrole.New(st)
+
 	svc := workspace.New(workspace.Config{
 		BoundaryPublicAddr: cfg.BoundaryPublicAddr,
 		PortRange:          cfg.PortRange,
 		SSHConfigPath:      cfg.SSHConfigPath,
-	}, vault, nomad, bndry)
+	}, st, nomad, bndry)
 
 	staticDir := os.Getenv("PORTAL_STATIC_DIR")
 	if staticDir == "" {
 		staticDir = "./web"
 	}
 
+	// Platform Admin onboarding plane — additive and optional. Enabled only when
+	// the MCP/LLM gateway addresses are configured; its admin credentials are read
+	// from Vault at startup so no secret material lives in the portal's env.
+	var adminHandlers *admin.Handlers
+	var projectMCP *projectadmin.Handlers
+	var projectTmpl *projecttemplate.Handlers
+	var projectEng *projectengines.Handlers
+	var agentHandlers *agents.Handlers
+	var agentSvc *agents.Service
+	// engineProvisioner (nil unless the admin plane is on) auto-provisions the standard
+	// engines when a project is created via the project-create plane below.
+	var engineProvisioner projectbootstrap.EngineProvisioner
+	var gatewayCleaner projectbootstrap.GatewayCleaner
+	var llmKeyDeleter projectbootstrap.LLMKeyDeleter
+	if cfg.AdminEnabled() {
+		planes, perr := buildAdminPlane(startCtx, cfg, st, svc, vault, nomad, bndry)
+		if perr != nil {
+			return perr
+		}
+		adminHandlers, projectMCP = planes.admin, planes.projectMCP
+		projectTmpl, projectEng = planes.projectTmpl, planes.projectEng
+		agentHandlers = planes.agents
+		agentSvc = planes.agentSvc
+		if planes.engineSvc != nil {
+			engineProvisioner = planes.engineSvc
+		}
+		if planes.gateway != nil {
+			gatewayCleaner = planes.gateway
+		}
+		if planes.llm != nil {
+			llmKeyDeleter = planes.llm
+		}
+		logger.Info("platform-admin onboarding plane enabled", "mcp_gateway", cfg.MCPGatewayAddr, "llm_gateway", cfg.LLMGatewayAddr)
+	} else {
+		logger.Info("platform-admin onboarding plane disabled (set PORTAL_MCP_GATEWAY_ADDR and PORTAL_LLM_GATEWAY_ADDR to enable)")
+	}
+
+	// Project-create plane (platform-admin) — additive and optional. Enabled when
+	// the creator broker is configured (a third Nomad workload identity + the
+	// root-ns project-creator role, applied by terraform/infra). Independent of the
+	// MCP/LLM onboarding plane.
+	var projectCreate *projectbootstrap.Handlers
+	if cfg.CreatorJWTPath != "" {
+		vc := projectbootstrap.NewVaultCreator(vault.APIClient(),
+			projectbootstrap.CreatorConfig{JWTPath: cfg.CreatorJWTPath, Role: cfg.CreatorRole, AuthMount: cfg.CreatorAuthMount},
+			projectbootstrap.JWKSConfig{URL: cfg.NomadJWKSURL, CAPEM: cfg.NomadCAPEM})
+		// The descriptor is persisted to the Postgres control-plane store (st), not
+		// Vault KV — portal control-plane state lives in Postgres.
+		pbSvc := projectbootstrap.NewService(vc, nomad, bndry, st, projectRoles, engineProvisioner, gatewayCleaner, llmKeyDeleter, st, projectbootstrap.Config{
+			NomadOIDCAuthMethod:      cfg.NomadOIDCAuthMethodName,
+			BoundaryOrgScopeID:       cfg.BoundaryOrgScopeID,
+			BoundaryOIDCAuthMethodID: cfg.BoundaryOIDCAuthMethodID,
+			InstancePrivateIP:        cfg.InstancePrivateIP,
+		})
+		projectCreate = projectbootstrap.NewHandlers(pbSvc)
+		logger.Info("project-create plane enabled")
+	} else {
+		logger.Info("project-create plane disabled (set PORTAL_CREATOR_JWT_PATH to enable)")
+	}
+
 	mux := api.NewMux(api.Options{
-		Auth:      authn,
-		Svc:       svc,
-		StaticDir: staticDir,
-		Ready:     newReadinessCheck(vault, nomad),
-		RateLimit: middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
+		Auth:          authn,
+		Svc:           svc,
+		Admin:         adminHandlers,
+		BaseTmpl:      basetmpladmin.NewHandlers(basetmpladmin.New(st)),
+		ProjectCreate: projectCreate,
+		ProjectRoles:  projectRoles,
+		ProjectMCP:    projectMCP,
+		ProjectTmpl:   projectTmpl,
+		ProjectEng:    projectEng,
+		Agents:        agentHandlers,
+		Store:         st,
+		StaticDir:     staticDir,
+		Ready:         newReadinessCheck(vault, nomad),
+		RateLimit:     middleware.RateLimitConfig{RPS: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst},
 	})
 
 	// Cross-cutting middleware, outermost first: recover → request context (id) →
@@ -112,6 +222,27 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Idle-instance reaper: stops per-user agent instances left idle past the TTL
+	// (job purged, row kept so the next chat re-provisions). Ticks until shutdown.
+	if agentSvc != nil && cfg.AgentReapInterval > 0 {
+		go func() {
+			t := time.NewTicker(cfg.AgentReapInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if n, err := agentSvc.ReapIdle(ctx, cfg.AgentIdleTTL); err != nil {
+						logger.Warn("agent instance reaper", "err", err)
+					} else if n > 0 {
+						logger.Info("agent instance reaper stopped idle instances", "count", n)
+					}
+				}
+			}
+		}()
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("portal listening", "addr", cfg.ListenAddr, "tls", serveTLS, "static", staticDir)
@@ -134,6 +265,127 @@ func run() error {
 		defer cancel()
 		return srv.Shutdown(shutCtx)
 	}
+}
+
+// buildStore opens the durable control-plane store when a DSN is configured
+// (portal-postgres), otherwise the in-memory store. Both satisfy store.Store and
+// back both the admin plane and the project-role plane.
+func buildStore(ctx context.Context, cfg config.Config) (store.Store, error) {
+	if cfg.DBDSN == "" {
+		slog.Info("control-plane store: in-memory (set PORTAL_DB_DSN for durability)")
+		return store.NewMemory(), nil
+	}
+	pg, err := store.NewPostgres(ctx, cfg.DBDSN)
+	if err != nil {
+		return nil, fmt.Errorf("connect control-plane store: %w", err)
+	}
+	slog.Info("control-plane store: postgres")
+	return pg, nil
+}
+
+// onboardingPlanes bundles the optional project-onboarding HTTP handlers built
+// together because they share the gateway/LLM clients + the §5 Vault broker.
+type onboardingPlanes struct {
+	admin       *admin.Handlers
+	projectMCP  *projectadmin.Handlers
+	projectTmpl *projecttemplate.Handlers
+	projectEng  *projectengines.Handlers
+	agents      *agents.Handlers
+	// agentSvc is the agents Service (not just its handlers) so run() can drive the
+	// idle-instance reaper ticker.
+	agentSvc *agents.Service
+	// engineSvc is the engine-provision Service (not just its handlers) so the
+	// project-create plane can auto-provision engines at create via ProvisionAtCreate.
+	engineSvc *projectengines.Service
+	// gateway/llm are handed to the project-create plane for delete-time cleanup
+	// (ContextForge peers/tokens, LiteLLM virtual key).
+	gateway mcpgw.Client
+	llm     llmgw.Client
+}
+
+// buildAdminPlane wires the Platform Admin onboarding service: it reads the MCP
+// gateway admin JWT secret/email and the LiteLLM portal-admin key from Vault (the
+// portal never holds them in env), constructs the gateway/LLM clients over the
+// shared control-plane store, and returns the HTTP handlers. It also wires the
+// project-facing template + engine-provision planes, which reuse the same LLM client
+// and §5 Vault broker (vadmin) and the Boundary admin client.
+func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsvc *workspace.Service, vault *hashistack.Vault, nomad *hashistack.Nomad, bndry *hashistack.Boundary) (*onboardingPlanes, error) {
+	jwtSecret, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "jwt_secret_key")
+	if err != nil {
+		return nil, fmt.Errorf("admin plane: read mcp-gateway jwt secret: %w", err)
+	}
+	adminEmail, err := vault.ReadKVField(ctx, "infra/mcp-gateway", "admin_email")
+	if err != nil {
+		return nil, fmt.Errorf("admin plane: read mcp-gateway admin email: %w", err)
+	}
+	llmKey, err := vault.ReadKVField(ctx, "infra/llm-gateway", "portal_admin_key")
+	if err != nil {
+		return nil, fmt.Errorf("admin plane: read llm-gateway portal-admin key: %w", err)
+	}
+
+	gateway := mcpgw.New(cfg.MCPGatewayAddr, adminEmail, jwtSecret, nil)
+	llm := llmgw.New(cfg.LLMGatewayAddr, llmKey, nil)
+
+	vadmin := blueprint.NewVaultAdmin(vault.APIClient(), blueprint.ProvisionerConfig{
+		JWTPath:   cfg.ProvisionerJWTPath,
+		Role:      cfg.ProvisionerRole,
+		AuthMount: cfg.ProvisionerAuthMount,
+	})
+	executor := blueprint.NewExecutor(vadmin, blueprint.ExecutorConfig{
+		AuthPath: "jwt-nomad",
+		// Must match the Nomad agents' vault default_identity aud (config/nomad.hcl),
+		// or the task's jwt-nomad login fails with "invalid audience (aud)".
+		BoundAudience: "vault.io",
+		KVMount:       cfg.VaultKVMount,
+	})
+	adminSvc := admin.New(st, llm, vault, admin.Config{})
+	peSvc := projectengines.New(vadmin, bndry, llm, gateway, st, wsvc, st, projectengines.Config{
+		VaultCredStoreAddress:     cfg.VaultCredStoreAddress,
+		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
+		MCPGatewayEndpoint:        cfg.MCPGatewayAddr,
+		GithubPluginVersion:       cfg.GithubPluginVersion,
+		LLMModels:                 cfg.LLMModels,
+	})
+	// The engine service doubles as the deploy plane's wirer: a redeploy of a
+	// template-referenced server re-runs its workspace wiring automatically.
+	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, peSvc, projectadmin.Config{
+		NodePool: cfg.AgentNodePool,
+	})
+	// AI-agents plane: reuses the §5 Vault broker (vadmin), the LiteLLM client, and
+	// the shared ContextForge gateway client (for per-template tool-subset virtual
+	// servers). Its WIF role config matches the executor's so the agent job's
+	// jwt-nomad login succeeds.
+	agSvc := agents.New(st, wsvc, nomad, vadmin, llm, gateway, nil, agents.Config{
+		NodePool:                  cfg.AgentNodePool,
+		Image:                     cfg.AgentRuntimeImage,
+		LLMModels:                 cfg.LLMModels,
+		LLMMaxBudget:              25,
+		LLMRPMLimit:               60,
+		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
+		MCPGatewayEndpoint:        cfg.MCPGatewayAddr,
+		KVMount:                   cfg.VaultKVMount,
+		VaultAuthPath:             "jwt-nomad",
+		VaultBoundAudience:        "vault.io",
+		VaultUserClaim:            "nomad_job_id",
+	})
+	// The template plane reuses the engine service to (a) mount extra add-on engines
+	// and (b) wire MCP servers from the catalog into a flavor's rendered source.
+	ptSvc := projecttemplate.New(st, wsvc, st, peSvc, peSvc, projecttemplate.Config{
+		LLMGatewayPrivateEndpoint: cfg.LLMGatewayPrivateEndpoint,
+		LLMModelPrimary:           cfg.LLMModelPrimary,
+		LLMModelFast:              cfg.LLMModelFast,
+	})
+	return &onboardingPlanes{
+		admin:       admin.NewHandlers(adminSvc),
+		projectMCP:  projectadmin.NewHandlers(pmSvc),
+		projectTmpl: projecttemplate.NewHandlers(ptSvc),
+		projectEng:  projectengines.NewHandlers(peSvc),
+		agents:      agents.NewHandlers(agSvc),
+		agentSvc:    agSvc,
+		engineSvc:   peSvc,
+		gateway:     gateway,
+		llm:         llm,
+	}, nil
 }
 
 // newReadinessCheck returns a /readyz probe that pings Vault and Nomad, caching

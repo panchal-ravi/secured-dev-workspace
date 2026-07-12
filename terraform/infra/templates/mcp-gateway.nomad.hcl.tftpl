@@ -101,6 +101,11 @@ EOH
       env {
         HOST                         = "0.0.0.0"
         PORT                         = "${port}"
+        # ContextForge's run-gunicorn.sh defaults GUNICORN_WORKERS to "auto" = 2*CPU+1
+        # (capped at 16) based on the NODE's core count, each worker --preload'd. On a
+        # multi-core node that swarm OOM-kills the 1 GiB task (exit 137). This internal
+        # gateway needs no fleet — pin a small, deterministic worker count.
+        GUNICORN_WORKERS             = "2"
         MCPGATEWAY_ADMIN_API_ENABLED = "true"
         MCPGATEWAY_UI_ENABLED        = "true"
         AUTH_REQUIRED                = "true"
@@ -141,7 +146,7 @@ EOH
 
       resources {
         cpu    = 500
-        memory = 1024
+        memory = 2048
       }
     }
   }

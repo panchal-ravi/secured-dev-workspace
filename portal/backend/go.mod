@@ -6,8 +6,10 @@ require (
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/gorilla/sessions v1.4.0
 	github.com/hashicorp/boundary/api v0.0.61
+	github.com/hashicorp/hcl v1.0.1-vault-7
 	github.com/hashicorp/nomad/api v0.0.0-20260603175206-d50962821b45
 	github.com/hashicorp/vault/api v1.23.0
+	github.com/lib/pq v1.10.9
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.14.0
 )
@@ -33,7 +35,6 @@ require (
 	github.com/hashicorp/go-secure-stdlib/strutil v0.1.2 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
-	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect

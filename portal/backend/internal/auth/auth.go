@@ -185,7 +185,7 @@ func (a *Authenticator) Require(next http.Handler) http.Handler {
 			return
 		}
 		middleware.SetUser(r.Context(), u.Email)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, u)))
+		next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), u)))
 	})
 }
 
@@ -222,6 +222,13 @@ func (a *Authenticator) user(r *http.Request) (User, bool) {
 func UserFrom(ctx context.Context) (User, bool) {
 	u, ok := ctx.Value(ctxKey{}).(User)
 	return u, ok
+}
+
+// WithUser returns a copy of ctx carrying u, as Require installs it. Exposed so
+// downstream middleware (e.g. role gating) and tests can populate or assert the
+// authenticated user through the same context key.
+func WithUser(ctx context.Context, u User) context.Context {
+	return context.WithValue(ctx, ctxKey{}, u)
 }
 
 func randString() string {

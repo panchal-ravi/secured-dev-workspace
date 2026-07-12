@@ -68,6 +68,78 @@ type Config struct {
 	// Per-user rate limit on mutating endpoints. RPS<=0 disables.
 	RateLimitRPS   float64 // PORTAL_RATE_LIMIT_RPS (default 5)
 	RateLimitBurst int     // PORTAL_RATE_LIMIT_BURST (default 10)
+
+	// Platform Admin onboarding plane (all optional). The plane is enabled only
+	// when both gateway addresses are set; the admin JWT secret / admin email /
+	// LiteLLM portal-admin key are read from Vault at startup, not from env.
+	MCPGatewayAddr string // PORTAL_MCP_GATEWAY_ADDR (ContextForge admin URL, e.g. http://<node>:4444)
+	LLMGatewayAddr string // PORTAL_LLM_GATEWAY_ADDR (LiteLLM admin URL, e.g. http://<node>:4000)
+	AgentNodePool  string // PORTAL_AGENT_NODE_POOL (default "agents")
+	// AgentRuntimeImage is the container image a deployed AI agent runs (the
+	// deepagents FastAPI chat server). PORTAL_AGENT_RUNTIME_IMAGE.
+	AgentRuntimeImage string
+	// AgentIdleTTL is how long a per-user agent instance may sit idle before the
+	// reaper stops it; AgentReapInterval is the reaper's tick. Both in seconds
+	// (PORTAL_AGENT_IDLE_TTL / PORTAL_AGENT_REAP_INTERVAL); a zero interval disables.
+	AgentIdleTTL      time.Duration
+	AgentReapInterval time.Duration
+	DBDSN             string // PORTAL_DB_DSN (libpq DSN for the durable control-plane store; in-memory store if unset)
+
+	// Blueprint provisioner (project-deploy plane). The portal brokers a token
+	// native to each project namespace via a second Nomad workload identity, then
+	// provisions with it — no standing cross-namespace privilege. Empty JWTPath
+	// disables the broker (plane off / infra not applied); Instantiate then returns
+	// a 400 rather than a raw 403.
+	ProvisionerJWTPath   string // PORTAL_PROVISIONER_JWT_PATH (Nomad-written workload-identity JWT file)
+	ProvisionerRole      string // PORTAL_PROVISIONER_ROLE (default "portal-provisioner")
+	ProvisionerAuthMount string // PORTAL_PROVISIONER_AUTH_MOUNT (default "jwt-nomad")
+
+	// Project-creator broker (project-create plane). A third Nomad workload
+	// identity the portal exchanges at the ROOT-namespace jwt-nomad backend for a
+	// short-TTL token scoped to create child namespaces + bootstrap their auth.
+	// Empty JWTPath disables project creation (plane off / infra not applied).
+	CreatorJWTPath   string // PORTAL_CREATOR_JWT_PATH (Nomad-written workload-identity JWT file)
+	CreatorRole      string // PORTAL_CREATOR_ROLE (default "project-creator")
+	CreatorAuthMount string // PORTAL_CREATOR_AUTH_MOUNT (default "jwt-nomad")
+
+	// Nomad JWKS trust the creator installs into each new project namespace's
+	// jwt-nomad backend so project workloads can federate.
+	NomadJWKSURL   string // PORTAL_NOMAD_JWKS_URL (default "https://127.0.0.1:4646/.well-known/jwks.json")
+	NomadCAPEM     string // PORTAL_NOMAD_CA_PEM (PEM literal; may be empty)
+	NomadCAPEMFile string // PORTAL_NOMAD_CA_PEM_FILE (multi-line PEM is delivered as a file)
+
+	// NomadOIDCAuthMethodName is the Nomad OIDC auth method the per-project ACL
+	// binding rule attaches to. PORTAL_NOMAD_OIDC_AUTH_METHOD.
+	NomadOIDCAuthMethodName string
+
+	// BoundaryOIDCAuthMethodID is recorded in each project descriptor so the
+	// workspace connect flow knows which Boundary auth method to use.
+	BoundaryOIDCAuthMethodID string // PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID
+
+	// BoundaryOrgScopeID is the parent org scope under which project scopes are
+	// created. PORTAL_BOUNDARY_ORG_SCOPE_ID.
+	BoundaryOrgScopeID string
+
+	// InstancePrivateIP is written into each project descriptor (all-in-one node).
+	InstancePrivateIP string // PORTAL_INSTANCE_PRIVATE_IP
+
+	// Project engine-provisioning (Phase C). Values the portal bakes into project
+	// templates + uses when standing up per-project engines from the Portal.
+	LLMGatewayPrivateEndpoint string // PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT (node-ip:4000 — what a workspace uses as llm_base_url)
+	VaultCredStoreAddress     string // PORTAL_VAULT_CRED_STORE_ADDR (Vault addr Boundary reaches Vault at; defaults to VaultAddr)
+	GithubPluginVersion       string // PORTAL_GITHUB_PLUGIN_VERSION (default "2.3.2"; mounted as v<version>)
+
+	// Governed LLM models, defined once in terraform/infra (the LiteLLM model_list)
+	// and threaded here so the per-project virtual key's allowed set and the base
+	// templates' Claude Code model mapping reference the same names.
+	LLMModels       []string // PORTAL_LLM_MODELS (comma-separated; allowed models on a project virtual key)
+	LLMModelPrimary string   // PORTAL_LLM_MODEL_PRIMARY (opus/sonnet slot; baked as llm_model_primary)
+	LLMModelFast    string   // PORTAL_LLM_MODEL_FAST (haiku/subagent slot; baked as llm_model_fast)
+}
+
+// AdminEnabled reports whether the Platform Admin onboarding plane is configured.
+func (c Config) AdminEnabled() bool {
+	return c.MCPGatewayAddr != "" && c.LLMGatewayAddr != ""
 }
 
 // Load reads the configuration from the environment, returning an error that
@@ -100,6 +172,42 @@ func Load() (Config, error) {
 		TLSSkipVerify:        envBool("PORTAL_TLS_SKIP_VERIFY", true),
 		RateLimitRPS:         envFloat("PORTAL_RATE_LIMIT_RPS", 5),
 		RateLimitBurst:       envInt("PORTAL_RATE_LIMIT_BURST", 10),
+		MCPGatewayAddr:       os.Getenv("PORTAL_MCP_GATEWAY_ADDR"),
+		LLMGatewayAddr:       os.Getenv("PORTAL_LLM_GATEWAY_ADDR"),
+		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
+		AgentRuntimeImage:    env("PORTAL_AGENT_RUNTIME_IMAGE", "panchalravi/agent-runtime:agentv2"),
+		AgentIdleTTL:         time.Duration(envInt("PORTAL_AGENT_IDLE_TTL", 1800)) * time.Second,
+		AgentReapInterval:    time.Duration(envInt("PORTAL_AGENT_REAP_INTERVAL", 300)) * time.Second,
+		DBDSN:                os.Getenv("PORTAL_DB_DSN"),
+		ProvisionerJWTPath:   os.Getenv("PORTAL_PROVISIONER_JWT_PATH"),
+		ProvisionerRole:      env("PORTAL_PROVISIONER_ROLE", "portal-provisioner"),
+		ProvisionerAuthMount: env("PORTAL_PROVISIONER_AUTH_MOUNT", "jwt-nomad"),
+
+		CreatorJWTPath:   os.Getenv("PORTAL_CREATOR_JWT_PATH"),
+		CreatorRole:      env("PORTAL_CREATOR_ROLE", "project-creator"),
+		CreatorAuthMount: env("PORTAL_CREATOR_AUTH_MOUNT", "jwt-nomad"),
+
+		NomadJWKSURL:            env("PORTAL_NOMAD_JWKS_URL", "https://127.0.0.1:4646/.well-known/jwks.json"),
+		NomadCAPEM:              os.Getenv("PORTAL_NOMAD_CA_PEM"),
+		NomadCAPEMFile:          os.Getenv("PORTAL_NOMAD_CA_PEM_FILE"),
+		NomadOIDCAuthMethodName: os.Getenv("PORTAL_NOMAD_OIDC_AUTH_METHOD"),
+
+		BoundaryOIDCAuthMethodID: os.Getenv("PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID"),
+		BoundaryOrgScopeID:       os.Getenv("PORTAL_BOUNDARY_ORG_SCOPE_ID"),
+		InstancePrivateIP:        os.Getenv("PORTAL_INSTANCE_PRIVATE_IP"),
+
+		LLMGatewayPrivateEndpoint: os.Getenv("PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT"),
+		VaultCredStoreAddress:     os.Getenv("PORTAL_VAULT_CRED_STORE_ADDR"),
+		GithubPluginVersion:       env("PORTAL_GITHUB_PLUGIN_VERSION", "2.3.2"),
+
+		LLMModels:       splitList(env("PORTAL_LLM_MODELS", "deepseek-v4-pro,deepseek-v4-flash")),
+		LLMModelPrimary: env("PORTAL_LLM_MODEL_PRIMARY", "deepseek-v4-pro"),
+		LLMModelFast:    env("PORTAL_LLM_MODEL_FAST", "deepseek-v4-flash"),
+	}
+
+	// Boundary reaches Vault at the same address the portal does unless overridden.
+	if c.VaultCredStoreAddress == "" {
+		c.VaultCredStoreAddress = c.VaultAddr
 	}
 
 	// Secure cookies: explicit override, else inferred from the redirect scheme.
@@ -111,6 +219,16 @@ func Load() (Config, error) {
 	// only PORTAL_BOUNDARY_ADDR (already the NLB), so it falls through to that.
 	if c.BoundaryPublicAddr == "" {
 		c.BoundaryPublicAddr = c.BoundaryAddr
+	}
+
+	// Nomad JWKS CA is multi-line PEM, so it is delivered as a file the creator
+	// broker installs into each new project namespace's jwt-nomad config.
+	if c.NomadCAPEM == "" && c.NomadCAPEMFile != "" {
+		b, err := os.ReadFile(c.NomadCAPEMFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: read PORTAL_NOMAD_CA_PEM_FILE: %w", err)
+		}
+		c.NomadCAPEM = string(b)
 	}
 
 	// WIF deploy: the Vault token lives in a Nomad-managed file. Seed the initial
@@ -173,6 +291,17 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitList parses a comma-separated env value into a trimmed, non-empty slice.
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func envBool(key string, def bool) bool {

@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Button, InlineNotification, Loading } from '@carbon/react'
-import { Add } from '@carbon/icons-react'
-import { listWorkspaces, Project, Workspace } from '../api/client'
+import { Add, Bot } from '@carbon/icons-react'
+import { hasCapability, listWorkspaces, Project, Workspace } from '../api/client'
 import WorkspaceCard from '../components/WorkspaceCard'
 import CreateWorkspaceModal from '../components/CreateWorkspaceModal'
 import BoundaryAuth from '../components/BoundaryAuth'
+import { useMe } from '../me'
 
 export default function ProjectPage() {
   const { name } = useParams()
+  const nav = useNavigate()
+  const me = useMe()
+  // Backend enforces regardless; this only hides the affordance for roles whose
+  // matrix strips the workspaces capability from their roles.
+  const canCreate = hasCapability(me, name || '', 'workspaces')
+  const canAgents = hasCapability(me, name || '', 'ai-agents')
   const [project, setProject] = useState<Project | null>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [loading, setLoading] = useState(true)
@@ -45,9 +52,18 @@ export default function ProjectPage() {
     <div className="page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
         <h2>{name}</h2>
-        <Button renderIcon={Add} onClick={() => setOpen(true)}>
-          New workspace
-        </Button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {canAgents && (
+            <Button kind="tertiary" renderIcon={Bot} onClick={() => nav(`/projects/${encodeURIComponent(name || '')}/agents`)}>
+              AI agents
+            </Button>
+          )}
+          {canCreate && (
+            <Button renderIcon={Add} onClick={() => setOpen(true)}>
+              New workspace
+            </Button>
+          )}
+        </div>
       </div>
       {err && (
         <InlineNotification kind="error" title="Error" subtitle={err} lowContrast onClose={() => setErr('')} />

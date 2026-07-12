@@ -39,6 +39,7 @@ type Descriptor struct {
 	ProjectName              string   `json:"project_name"`
 	Namespace                string   `json:"namespace"`
 	ProjectScopeID           string   `json:"project_scope_id"`
+	BoundaryHostCatalogID    string   `json:"boundary_host_catalog_id"`
 	CredentialLibraryID      string   `json:"credential_library_id"`
 	DevelopersGroupName      string   `json:"developers_group_name"`
 	BoundaryOIDCAuthMethodID string   `json:"boundary_oidc_auth_method_id"`
@@ -46,6 +47,15 @@ type Descriptor struct {
 	WorkspaceUser            string   `json:"workspace_user"`
 	AliasSuffix              string   `json:"alias_suffix"`
 	Flavors                  []Flavor `json:"flavors"`
+	// GithubConfigured reports whether the project's GitHub App credentials have been
+	// set (the github mount always exists after provision; the App config is supplied
+	// later by a project-admin). Non-secret status flag — never the key material.
+	GithubConfigured bool `json:"github_configured,omitempty"`
+	// Non-secret GitHub App coordinates, persisted so the Engines page can prefill
+	// its form on revisit. The private key is write-only and never stored here.
+	GithubAppID             int      `json:"github_app_id,omitempty"`
+	GithubAppInstallationID int      `json:"github_app_installation_id,omitempty"`
+	GithubRepositories      []string `json:"github_repositories,omitempty"`
 }
 
 // Parse decodes the descriptor JSON string stored under the "descriptor" KV key.

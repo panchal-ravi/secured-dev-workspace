@@ -31,6 +31,9 @@ client {
 plugin "docker" {
   config {
     allow_runtimes = ["runc", "kata"]
+    # The EBS CSI node plugin runs privileged (it stages/mounts the block device
+    # backing a workspace's /home/dev CSI volume), so the driver must allow it.
+    allow_privileged = true
   }
 }
 

@@ -8,23 +8,28 @@ import (
 	bapi "github.com/hashicorp/boundary/api"
 	"github.com/hashicorp/boundary/api/aliases"
 	"github.com/hashicorp/boundary/api/authmethods"
+	"github.com/hashicorp/boundary/api/credentiallibraries"
+	"github.com/hashicorp/boundary/api/credentialstores"
 	"github.com/hashicorp/boundary/api/hostcatalogs"
 	"github.com/hashicorp/boundary/api/hosts"
 	"github.com/hashicorp/boundary/api/hostsets"
 	"github.com/hashicorp/boundary/api/managedgroups"
 	"github.com/hashicorp/boundary/api/roles"
+	"github.com/hashicorp/boundary/api/scopes"
 	"github.com/hashicorp/boundary/api/targets"
 )
 
 // Boundary wraps the Boundary controller API. The portal authenticates as the
-// admin password account and, per workspace, creates the per-workspace resources
-// (a static host catalog/host/host-set, an ssh target with injected SSH-cert
-// credentials, and an alias) while wiring access through PER-DEVELOPER objects: a
-// single OIDC managed group (email-filtered) and a single project-scope role bound
-// to it, to which each workspace only ADDS an authorize-session grant for its
-// target. One email => one managed group (so membership, evaluated at OIDC login,
-// is stable and needs no re-auth after each create) and one role whose grant set
-// tracks the developer's live targets.
+// admin password account. Per project it creates one shared static host catalog;
+// per workspace it creates a host-set (in that catalog), an ssh target with injected
+// SSH-cert credentials, and an alias — while wiring access through PER-DEVELOPER
+// objects: a single OIDC managed group (email-filtered) and a single project-scope
+// role bound to it, to which each workspace only ADDS an authorize-session grant for
+// its target. The host inside each host-set (the workspace's node address) is created
+// and kept current by the external Nomad→Boundary host-sync, so the target follows
+// the workspace across reschedules. One email => one managed group (membership
+// evaluated at OIDC login, stable, no re-auth per create) and one role whose grant
+// set tracks the developer's live targets.
 type Boundary struct {
 	c *bapi.Client
 }
@@ -56,11 +61,148 @@ func NewBoundary(ctx context.Context, addr, authMethodID, login, password string
 	return &Boundary{c: c}, nil
 }
 
+// CreateProjectScope creates a project scope under the org scope and returns its
+// id. Idempotent: an existing scope of the same name under orgScopeID is returned
+// as-is. auto_create_admin_role is left on (WithSkipAdminRoleCreation(false)),
+// matching the terraform/project boundary_scope resource.
+func (b *Boundary) CreateProjectScope(ctx context.Context, orgScopeID, name, description string) (string, error) {
+	sc := scopes.NewClient(b.c)
+	list, err := sc.List(ctx, orgScopeID)
+	if err != nil {
+		return "", fmt.Errorf("boundary: list scopes: %w", err)
+	}
+	for _, s := range list.Items {
+		if s.Name == name {
+			return s.Id, nil
+		}
+	}
+	res, err := sc.Create(ctx, orgScopeID,
+		scopes.WithName(name),
+		scopes.WithDescription(description),
+		scopes.WithSkipAdminRoleCreation(false),
+	)
+	if err != nil {
+		return "", fmt.Errorf("boundary: create scope %q: %w", name, err)
+	}
+	return res.Item.Id, nil
+}
+
+// DeleteScope removes a project scope and everything under it (Boundary scope
+// deletion is recursive: targets, credential stores/libraries, roles, aliases).
+// Idempotent: an already-deleted scope is a no-op.
+func (b *Boundary) DeleteScope(ctx context.Context, scopeID string) error {
+	if _, err := scopes.NewClient(b.c).Delete(ctx, scopeID); err != nil {
+		if apiErr := bapi.AsServerError(err); apiErr != nil && apiErr.Response().StatusCode() == 404 {
+			return nil
+		}
+		return fmt.Errorf("boundary: delete scope %q: %w", scopeID, err)
+	}
+	return nil
+}
+
+// DefaultHostCatalogName is the per-project shared static host-catalog name. Must match
+// projectbootstrap.boundaryHostCatalogName and the host-sync's SYNC_CATALOG_NAME default.
+const DefaultHostCatalogName = "dev-workspaces"
+
+// CreateHostCatalog ensures a static host catalog named name exists in the project
+// scope and returns its id (idempotent by name). One per project — the shared
+// container into which each workspace's host-set is placed. The external Nomad→Boundary
+// host-sync fills the hosts; the portal only ensures the catalog exists.
+func (b *Boundary) CreateHostCatalog(ctx context.Context, scopeID, name string) (string, error) {
+	if id, ok, err := b.findHostCatalogID(ctx, scopeID, name); err != nil || ok {
+		return id, err
+	}
+	res, err := hostcatalogs.NewClient(b.c).Create(ctx, "static", scopeID, hostcatalogs.WithName(name))
+	if err != nil {
+		return "", fmt.Errorf("boundary: create host catalog %q: %w", name, err)
+	}
+	return res.Item.Id, nil
+}
+
+// findHostCatalogID returns the id of the static host catalog named name in scopeID,
+// or ok=false if absent.
+func (b *Boundary) findHostCatalogID(ctx context.Context, scopeID, name string) (string, bool, error) {
+	list, err := hostcatalogs.NewClient(b.c).List(ctx, scopeID)
+	if err != nil {
+		return "", false, fmt.Errorf("boundary: list host catalogs: %w", err)
+	}
+	for _, c := range list.Items {
+		if c.Name == name {
+			return c.Id, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// CreateVaultCredentialStore creates (idempotently) a Vault credential store in the
+// project scope. Boundary authenticates to Vault with the project's dedicated
+// least-privilege periodic token. Ports terraform/project/boundary.tf's
+// boundary_credential_store_vault.this. On re-provision (store already exists) the
+// token is refreshed, since the periodic token is re-minted each provision.
+func (b *Boundary) CreateVaultCredentialStore(ctx context.Context, scopeID, name, vaultAddr, vaultNamespace, token string) (string, error) {
+	cl := credentialstores.NewClient(b.c)
+	list, err := cl.List(ctx, scopeID)
+	if err != nil {
+		return "", fmt.Errorf("boundary: list credential stores: %w", err)
+	}
+	for _, s := range list.Items {
+		if s.Name == name {
+			if _, err := cl.Update(ctx, s.Id, s.Version,
+				credentialstores.WithVaultCredentialStoreToken(token)); err != nil {
+				return "", fmt.Errorf("boundary: refresh credential store token: %w", err)
+			}
+			return s.Id, nil
+		}
+	}
+	res, err := cl.Create(ctx, "vault", scopeID,
+		credentialstores.WithName(name),
+		credentialstores.WithVaultCredentialStoreAddress(vaultAddr),
+		credentialstores.WithVaultCredentialStoreNamespace(vaultNamespace),
+		credentialstores.WithVaultCredentialStoreToken(token),
+		credentialstores.WithVaultCredentialStoreTlsSkipVerify(true), // base uses a self-signed cert
+	)
+	if err != nil {
+		return "", fmt.Errorf("boundary: create vault credential store %q: %w", name, err)
+	}
+	return res.Item.Id, nil
+}
+
+// CreateSSHCertLibrary creates (idempotently) an SSH-certificate credential library
+// in the given store and returns its id — the credential_library_id the workspace
+// Provision path consumes. Ports boundary_credential_library_vault_ssh_certificate:
+// path=ssh/sign/dev-workspace, key_type=ed25519, key_id="{{.User.Email}}" (passed
+// verbatim — a Boundary session template, not a Go template).
+func (b *Boundary) CreateSSHCertLibrary(ctx context.Context, storeID, name, path, username, keyID string) (string, error) {
+	cl := credentiallibraries.NewClient(b.c)
+	list, err := cl.List(ctx, storeID)
+	if err != nil {
+		return "", fmt.Errorf("boundary: list credential libraries: %w", err)
+	}
+	for _, l := range list.Items {
+		if l.Name == name {
+			return l.Id, nil
+		}
+	}
+	// The library subtype must be "vault-ssh-certificate" (the SDK's typed attribute
+	// helpers target that type); "ssh_certificate" is not a known Boundary type.
+	res, err := cl.Create(ctx, "vault-ssh-certificate", storeID,
+		credentiallibraries.WithName(name),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryPath(path),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryUsername(username),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryKeyType("ed25519"),
+		credentiallibraries.WithVaultSSHCertificateCredentialLibraryKeyId(keyID),
+	)
+	if err != nil {
+		return "", fmt.Errorf("boundary: create ssh-cert library %q: %w", name, err)
+	}
+	return res.Item.Id, nil
+}
+
 // ProvisionInput carries everything needed to wire one workspace's access.
 type ProvisionInput struct {
 	ScopeID             string // project scope
 	Name                string // ws-<handle>-<workspace>
-	HostAddress         string // node private IP
+	HostCatalogID       string // project's shared static host catalog
 	DefaultPort         uint32 // allocated SSH port
 	CredentialLibraryID string // shared per-project SSH-cert library
 	SessionMaxSeconds   uint32
@@ -76,22 +218,27 @@ type ProvisionResult struct {
 	AliasValue string
 }
 
-// Provision creates the full per-workspace Boundary graph.
+// Provision creates this workspace's per-workspace Boundary graph: a host-set in the
+// project's shared catalog (left empty — the external host-sync fills its single
+// host), an ssh target bound to that set with injected SSH-cert credentials, the
+// per-developer managed group / role / grant, and an alias.
 func (b *Boundary) Provision(ctx context.Context, in ProvisionInput) (ProvisionResult, error) {
-	hc, err := hostcatalogs.NewClient(b.c).Create(ctx, "static", in.ScopeID, hostcatalogs.WithName(in.Name))
-	if err != nil {
-		return ProvisionResult{}, fmt.Errorf("boundary: create host catalog: %w", err)
+	// Resolve the project's shared host catalog. Its id normally comes from the
+	// descriptor (created at project bootstrap); if empty — a project created before
+	// the shared-catalog change — self-heal by ensuring it here (idempotent by name).
+	catalogID := in.HostCatalogID
+	if catalogID == "" {
+		id, err := b.CreateHostCatalog(ctx, in.ScopeID, DefaultHostCatalogName)
+		if err != nil {
+			return ProvisionResult{}, err
+		}
+		catalogID = id
 	}
-	host, err := hosts.NewClient(b.c).Create(ctx, hc.Item.Id, hosts.WithStaticHostAddress(in.HostAddress), hosts.WithName(in.Name))
-	if err != nil {
-		return ProvisionResult{}, fmt.Errorf("boundary: create host: %w", err)
-	}
-	hs, err := hostsets.NewClient(b.c).Create(ctx, hc.Item.Id, hostsets.WithName(in.Name))
+	// Empty host-set inside the shared catalog. The Nomad→Boundary host-sync adds and
+	// refreshes the single host (node address), so the target follows the workspace.
+	hs, err := hostsets.NewClient(b.c).Create(ctx, catalogID, hostsets.WithName(in.Name))
 	if err != nil {
 		return ProvisionResult{}, fmt.Errorf("boundary: create host set: %w", err)
-	}
-	if _, err := hostsets.NewClient(b.c).AddHosts(ctx, hs.Item.Id, 0, []string{host.Item.Id}, hostsets.WithAutomaticVersioning(true)); err != nil {
-		return ProvisionResult{}, fmt.Errorf("boundary: add host to set: %w", err)
 	}
 
 	tgt, err := targets.NewClient(b.c).Create(ctx, "ssh", in.ScopeID,
@@ -156,15 +303,17 @@ func (b *Boundary) Provision(ctx context.Context, in ProvisionInput) (ProvisionR
 type DestroyInput struct {
 	ScopeID         string // project scope
 	Name            string // ws-<handle>-<workspace>
+	HostCatalogID   string // project's shared static host catalog
 	DeveloperHandle string // names the per-developer role whose grant we drop
 	AliasValue      string // <ws>.<handle>.<project>.<suffix>
 }
 
-// Destroy removes this workspace's per-workspace resources (target, host catalog,
-// alias) and drops just this target's authorize-session grant from the developer's
-// shared role. The managed group and the per-developer roles are left in place —
-// they are reused by the developer's other workspaces. Best-effort and idempotent:
-// resources are matched by name/id and skipped if already gone.
+// Destroy removes this workspace's per-workspace resources (target, host-set + its
+// host, alias) and drops just this target's authorize-session grant from the
+// developer's shared role. The project's shared host catalog, the managed group and
+// the per-developer roles are left in place — they are reused by the developer's
+// other workspaces. Best-effort and idempotent: resources are matched by name/id and
+// skipped if already gone.
 func (b *Boundary) Destroy(ctx context.Context, in DestroyInput) error {
 	// Find this workspace's target so we can drop its grant and delete it.
 	tgts, err := targets.NewClient(b.c).List(ctx, in.ScopeID)
@@ -193,14 +342,39 @@ func (b *Boundary) Destroy(ctx context.Context, in DestroyInput) error {
 		}
 	}
 
-	hcs, err := hostcatalogs.NewClient(b.c).List(ctx, in.ScopeID)
-	if err != nil {
-		return fmt.Errorf("boundary: list host catalogs: %w", err)
+	// Remove this workspace's host-set and its host from the project's shared catalog.
+	// Deleting a host-set does not cascade its hosts, so remove both; the shared catalog
+	// itself is per-project and left in place. The host is the host-sync-created leaf.
+	// Resolve the catalog id from the descriptor, or by name for pre-change projects.
+	catalogID := in.HostCatalogID
+	if catalogID == "" {
+		if id, ok, err := b.findHostCatalogID(ctx, in.ScopeID, DefaultHostCatalogName); err != nil {
+			return err
+		} else if ok {
+			catalogID = id
+		}
 	}
-	for _, hc := range hcs.Items {
-		if hc.Name == in.Name {
-			if _, err := hostcatalogs.NewClient(b.c).Delete(ctx, hc.Id); err != nil {
-				return fmt.Errorf("boundary: delete host catalog: %w", err)
+	if catalogID != "" {
+		hss, err := hostsets.NewClient(b.c).List(ctx, catalogID)
+		if err != nil {
+			return fmt.Errorf("boundary: list host sets: %w", err)
+		}
+		for _, hs := range hss.Items {
+			if hs.Name == in.Name {
+				if _, err := hostsets.NewClient(b.c).Delete(ctx, hs.Id); err != nil {
+					return fmt.Errorf("boundary: delete host set: %w", err)
+				}
+			}
+		}
+		hsts, err := hosts.NewClient(b.c).List(ctx, catalogID)
+		if err != nil {
+			return fmt.Errorf("boundary: list hosts: %w", err)
+		}
+		for _, h := range hsts.Items {
+			if h.Name == in.Name {
+				if _, err := hosts.NewClient(b.c).Delete(ctx, h.Id); err != nil {
+					return fmt.Errorf("boundary: delete host: %w", err)
+				}
 			}
 		}
 	}

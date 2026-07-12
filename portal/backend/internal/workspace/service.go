@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
@@ -16,6 +17,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/jobrender"
 	"github.com/secured-dev-workspace/developer-portal/internal/localssh"
 	"github.com/secured-dev-workspace/developer-portal/internal/portgen"
+	"github.com/secured-dev-workspace/developer-portal/internal/store"
 )
 
 const sessionMaxSeconds = 28800 // 8h, matching the workspace tier default
@@ -39,13 +41,53 @@ func (s *Service) LocalSSHEnabled() bool { return s.cfg.SSHConfigPath != "" }
 // Service performs workspace operations against a single HashiStack.
 type Service struct {
 	cfg   Config
-	vault *hashistack.Vault
+	store store.Store
 	nomad *hashistack.Nomad
 	bndry *hashistack.Boundary
+
+	// SSH ports are node-global and Create publishes its port to Nomad only
+	// after a ~30s CSI volume wait, so UsedPorts() alone leaves a wide window in
+	// which two concurrent creates pick the same port. mu + reserved close that
+	// window: a port is held in-flight from allocation until Create returns.
+	mu       sync.Mutex
+	reserved map[int]struct{}
 }
 
-func New(cfg Config, v *hashistack.Vault, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
-	return &Service{cfg: cfg, vault: v, nomad: n, bndry: b}
+func New(cfg Config, st store.Store, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
+	return &Service{cfg: cfg, store: st, nomad: n, bndry: b, reserved: map[int]struct{}{}}
+}
+
+// reservePort reads the live Nomad ports, then reserves a free one under the
+// lock. The returned release must be called (defer) when Create finishes: on
+// success the port is by then published to Nomad and covered by UsedPorts; on
+// failure releasing returns it to the free pool.
+func (s *Service) reservePort() (int, func(), error) {
+	used, err := s.nomad.UsedPorts()
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.reserve(used)
+}
+
+// reserve is the race-critical section: the reserved set is unioned with the
+// (possibly stale) used snapshot under mu so concurrent callers sharing that
+// snapshot never pick the same port.
+func (s *Service) reserve(used []int) (int, func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for p := range s.reserved {
+		used = append(used, p)
+	}
+	port, err := portgen.Allocate(s.cfg.PortRange, used)
+	if err != nil {
+		return 0, nil, err
+	}
+	s.reserved[port] = struct{}{}
+	return port, func() {
+		s.mu.Lock()
+		delete(s.reserved, port)
+		s.mu.Unlock()
+	}, nil
 }
 
 // CreateInput is the form payload plus the authenticated developer's identity.
@@ -83,17 +125,31 @@ type Workspace struct {
 }
 
 // ListProjects returns the descriptors the developer's groups may access.
+// Descriptors are read from the Postgres control-plane store (previously Vault
+// KV); a malformed row is skipped so one bad project can't hide the rest.
 func (s *Service) ListProjects(ctx context.Context, groups []string) ([]descriptor.Descriptor, error) {
-	all, err := s.vault.ListDescriptors(ctx)
+	rows, err := s.store.ListProjectDescriptors(ctx)
 	if err != nil {
 		return nil, err
+	}
+	all := make([]descriptor.Descriptor, 0, len(rows))
+	for _, row := range rows {
+		d, err := descriptor.Parse(string(row.Descriptor))
+		if err != nil {
+			continue
+		}
+		all = append(all, d)
 	}
 	return descriptor.Visible(all, groups), nil
 }
 
 // GetProject reads one descriptor and enforces group access.
 func (s *Service) GetProject(ctx context.Context, name string, groups []string) (descriptor.Descriptor, error) {
-	d, err := s.vault.ReadDescriptor(ctx, name)
+	row, err := s.store.GetProjectDescriptor(ctx, name)
+	if err != nil {
+		return descriptor.Descriptor{}, err
+	}
+	d, err := descriptor.Parse(string(row.Descriptor))
 	if err != nil {
 		return descriptor.Descriptor{}, err
 	}
@@ -143,6 +199,10 @@ func (s *Service) ListAllWorkspaces(ctx context.Context, groups []string, handle
 // Create provisions a new workspace end to end (Nomad volume + job, Boundary
 // access graph), mirroring terraform/workspace.
 func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in CreateInput) (Workspace, error) {
+	if err := requireProvisioned(d); err != nil {
+		return Workspace{}, err
+	}
+
 	// Flavor is optional when the project publishes exactly one.
 	if in.Flavor == "" && len(d.Flavors) == 1 {
 		in.Flavor = d.Flavors[0].Name
@@ -159,23 +219,22 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 		return Workspace{}, err
 	}
 
-	used, err := s.nomad.UsedPorts()
+	port, release, err := s.reservePort()
 	if err != nil {
 		return Workspace{}, err
 	}
-	port, err := portgen.Allocate(s.cfg.PortRange, used)
-	if err != nil {
-		return Workspace{}, err
-	}
+	// Hold the port until Create returns: by then RegisterJob has published it
+	// to Nomad (success) or we've bailed and it's free to reuse (failure).
+	defer release()
 
-	// The template already carries this project's static values (baked in at
-	// publish time, see terraform/project/kv.tf); the portal fills only the
-	// per-workspace placeholders.
-	jobspec, err := s.vault.ReadJobTemplate(ctx, d.ProjectName, in.Flavor)
+	// The project template already carries this project's static values (baked in
+	// at project-template create, pass-1); the portal fills only the per-workspace
+	// placeholders (pass-2). Read from the Postgres control-plane store.
+	pt, err := s.store.GetProjectTemplate(ctx, d.ProjectName, in.Flavor)
 	if err != nil {
 		return Workspace{}, err
 	}
-	rendered, err := jobrender.Render(jobspec, map[string]string{
+	rendered, err := jobrender.Render(pt.RenderedSource, map[string]string{
 		"job_name":        name,
 		"ssh_port":        strconv.Itoa(port),
 		"volume_name":     volume,
@@ -189,27 +248,19 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 	if err := s.nomad.CreateHostVolume(d.Namespace, volume, flavor.NodePool); err != nil {
 		return Workspace{}, err
 	}
-	jobID, err := s.nomad.RegisterJob(d.Namespace, rendered, in.Flavor)
-	if err != nil {
+	if _, err := s.nomad.RegisterJob(d.Namespace, rendered, in.Flavor); err != nil {
 		return Workspace{}, err
 	}
 
-	// Default to the main node; a pooled flavor (e.g. GPU) lands on a different
-	// node, so point Boundary at that node's IP resolved from the placed alloc.
-	hostAddr := d.InstancePrivateIP
-	if flavor.NodePool != "" {
-		ip, err := s.nomad.ResolvePlacementIP(d.Namespace, jobID)
-		if err != nil {
-			return Workspace{}, err
-		}
-		hostAddr = ip
-	}
-
+	// The Boundary host address is no longer set at create. The external
+	// Nomad→Boundary host-sync registers the workspace's current node address as the
+	// single host in its host-set and refreshes it across reschedules, so the target
+	// follows the workspace with no create-time IP resolution.
 	alias := fmt.Sprintf("%s.%s.%s.%s", wsName, in.Handle, d.ProjectName, d.AliasSuffix)
 	res, err := s.bndry.Provision(ctx, hashistack.ProvisionInput{
 		ScopeID:             d.ProjectScopeID,
 		Name:                name,
-		HostAddress:         hostAddr,
+		HostCatalogID:       d.BoundaryHostCatalogID,
 		DefaultPort:         uint32(port),
 		CredentialLibraryID: d.CredentialLibraryID,
 		SessionMaxSeconds:   sessionMaxSeconds,
@@ -317,6 +368,24 @@ func (s *Service) findWorkspace(ctx context.Context, d descriptor.Descriptor, ha
 		}
 	}
 	return Workspace{}, fmt.Errorf("workspace %q not found: %w", jobName, apperr.ErrNotFound)
+}
+
+// requireProvisioned blocks workspace creation until the project's secret
+// engines are fully set up. The workspace job template reads Vault secrets the
+// engines mint (GitHub PAT, LLM key, SSH cert), so launching earlier just
+// leaves the alloc blocked in "pending" on vault.read with no visible error —
+// fail fast here with a message naming the missing setup instead. Both flags
+// come from the project descriptor: CredentialLibraryID is written only after
+// engine provisioning completes, GithubConfigured only after the project-admin
+// submits the GitHub App credentials (the one manual step).
+func requireProvisioned(d descriptor.Descriptor) error {
+	if d.CredentialLibraryID == "" {
+		return fmt.Errorf("project %q is not fully provisioned — its secret engines and Boundary access are not set up yet; ask a project admin to complete project setup: %w", d.ProjectName, apperr.ErrConflict)
+	}
+	if !d.GithubConfigured {
+		return fmt.Errorf("project %q has no GitHub access configured — a project admin must submit the GitHub App credentials on the project's \"github access\" page before workspaces can start: %w", d.ProjectName, apperr.ErrConflict)
+	}
+	return nil
 }
 
 // requireOwned guards that jobName belongs to handle (named ws-<handle>-...), so

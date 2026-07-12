@@ -1,0 +1,76 @@
+# Nomad agent worker: a CLIENT-only agent that joins the all-in-one server over
+# the VPC and registers in node_pool "agents". Written to /etc/nomad.d/nomad.hcl
+# by bootstrap-agents.sh. Runs as root (config/nomad.service has no User=) so the
+# client's docker/exec drivers work. ${main_private_ip} is the all-in-one node's
+# private IP (aws_instance.this.private_ip); ${count_index} disambiguates the two
+# nodes' names.
+region     = "global"
+datacenter = "dc1"
+name       = "nomad-agent-client-${count_index}"
+data_dir   = "/opt/nomad/data"
+bind_addr  = "0.0.0.0"
+log_level  = "INFO"
+log_file   = "/var/log/nomad/nomad.log"
+
+# Client only — no server stanza. node_pool "agents" keeps agent-platform
+# workloads isolated: existing templates (dev-workspace, demo-db, gpu/microvm
+# workspaces) carry no "agents" node_pool and stay off this box; only the
+# agent-runtime and mcp-auth-wrapper task groups opt into this pool.
+client {
+  enabled   = true
+  node_pool = "agents"
+
+  server_join {
+    retry_join = ["${main_private_ip}:4647"]
+  }
+}
+
+# The EBS CSI node plugin runs privileged (it stages/mounts the block device
+# backing a workspace's /home/dev CSI volume), so the driver must allow it.
+plugin "docker" {
+  config {
+    allow_privileged = true
+  }
+}
+
+acl {
+  enabled = true
+}
+
+ports {
+  http = 4646
+  rpc  = 4647
+  serf = 4648
+}
+
+# Same self-signed cert (its own CA) as the server — the server.global.nomad /
+# client.global.nomad SANs are what verify_server_hostname checks for the RPC
+# between this client and the server. The cert is shared via bootstrap-agents.sh.
+tls {
+  http = true
+  rpc  = true
+
+  ca_file   = "/etc/nomad.d/tls/nomad.crt"
+  cert_file = "/etc/nomad.d/tls/nomad.crt"
+  key_file  = "/etc/nomad.d/tls/nomad.key"
+
+  verify_server_hostname = true
+  verify_https_client    = false
+}
+
+# Nomad↔Vault WIF: tasks placed on this client render their secrets (agent
+# templates, mcp-virtual refs, LLM keys, OBO actor JWT) by exchanging a
+# workload-identity JWT at the main node's Vault. Vault is on the all-in-one
+# node; reach it over the VPC at its private IP. Its cert SANs are
+# localhost/127.0.0.1/NLB-DNS (not this private IP), so skip verify.
+vault {
+  enabled               = true
+  address               = "https://${main_private_ip}:8200"
+  jwt_auth_backend_path = "jwt-nomad"
+  tls_skip_verify       = true
+
+  default_identity {
+    aud = ["vault.io"]
+    ttl = "1h"
+  }
+}
