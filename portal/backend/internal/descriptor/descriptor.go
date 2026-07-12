@@ -39,6 +39,7 @@ type Descriptor struct {
 	ProjectName              string   `json:"project_name"`
 	Namespace                string   `json:"namespace"`
 	ProjectScopeID           string   `json:"project_scope_id"`
+	BoundaryHostCatalogID    string   `json:"boundary_host_catalog_id"`
 	CredentialLibraryID      string   `json:"credential_library_id"`
 	DevelopersGroupName      string   `json:"developers_group_name"`
 	BoundaryOIDCAuthMethodID string   `json:"boundary_oidc_auth_method_id"`

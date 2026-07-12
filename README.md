@@ -66,7 +66,9 @@ workspaces.
 The AI coding assistant runs inside the workspace — never on the laptop — and reaches its
 tools and data through a central AI gateway. Each workspace can use only the tools and
 data approved for its project, and that access is controlled and audited in one place
-rather than wired into each workspace separately.
+rather than wired into each workspace separately. The AI models it can call are governed
+through the same kind of central gateway, so no AI-provider key is ever placed in the
+workspace.
 
 **Everything is auditable.**
 Every access is tied to a named person, so there's a clear record of who connected to
@@ -94,10 +96,11 @@ distinct security role:
   and places every project in its own separated space so workloads can't interfere with
   one another. The same approach runs equally on Kubernetes where that's the standard.
 
-- **AI / MCP gateway (IBM) — the AI control point.** A central gateway governs how the
-  in-workspace AI assistant reaches tools and data. Each workspace can use only the tools
-  and data approved for its project, controlled and audited in one place rather than wired
-  into each workspace separately.
+- **AI gateways — the AI control point.** Two central gateways govern what the in-workspace
+  AI assistant can reach. A tools-and-data gateway (IBM's MCP gateway) controls which
+  approved tools and data each workspace can use; a model gateway governs which AI models it
+  is allowed to call. Both are controlled and audited in one place rather than wired into
+  each workspace separately — and no AI-provider key is ever placed in the workspace itself.
 
 - **IBM Verify — single sign-on.** Identity comes from your company's existing single
   sign-on. IBM Verify is used here, but any standard identity provider works in its place.
@@ -122,14 +125,22 @@ No keys to copy. No tools to install. No source code to download. No tokens to p
 
 ## Self-service developer portal
 
-Workspaces can be set up by the platform team — and, increasingly, by developers
-themselves. A **self-service developer portal** (currently a working preview) lets
-developers request, start, stop, and manage their own secured workspaces from a simple
-web interface, choosing from ready-made workspace types — including **GPU-backed** ones for
-heavier workloads and **microVM-isolated** ones that run the AI agent's code behind a
-hardware-virtualization boundary — with no need to understand or run any of the underlying
-infrastructure tooling. The same security guarantees above apply automatically, whichever
-path is used.
+Workspaces are increasingly set up by developers themselves. A **self-service developer
+portal** lets developers request, start, stop, and manage their own secured workspaces from
+a simple web interface, choosing from ready-made workspace types — including **GPU-backed**
+ones for heavier workloads and **microVM-isolated** ones that run the AI agent's code behind
+a hardware-virtualization boundary — with no need to understand or run any of the underlying
+infrastructure tooling. Platform administrators onboard new AI models and create projects
+from the same portal; project leads set up their team's tools, source access, and member
+roles. The same security guarantees above apply automatically, whichever path is used.
 
-What's next: maturing the portal, durable storage so a workspace survives a full machine
-replacement, and making the hardware-isolated workspace the default.
+Beyond the in-workspace coding assistant, project teams can also configure and run their own
+**AI agents** from the portal — each connected only to that project's approved tools and
+models, and chatted with directly in the web interface.
+
+A workspace's files are kept on durable storage, so a developer's work survives even a full
+machine replacement, and each workspace stays reachable at the same address after it moves
+to new hardware.
+
+What's next: making the hardware-isolated workspace the default, and continuing to expand
+the self-service portal.

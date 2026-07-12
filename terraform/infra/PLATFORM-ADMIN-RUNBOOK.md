@@ -97,9 +97,10 @@ What this changes (all additive):
 
 ## 2. Confirm the plane initialized
 
-- Portal boot log: `admin plane: using in-memory control-plane store …` (or postgres,
-  once `PORTAL_DB_DSN` is wired — see the (c) follow-up). A warning + disabled plane
-  means a Vault read failed; check the `infra-platform-admin` policy attach.
+- Portal boot log: `control-plane store: postgres` (or `control-plane store: in-memory
+  (set PORTAL_DB_DSN for durability)` when the DSN is unset — see [Portal control-plane
+  store](#portal-control-plane-store-postgres--shipped)). A separate warning + disabled
+  plane means a Vault read failed; check the `infra-platform-admin` policy attach.
 - **Gateway service discovery** — the portal resolves the gateway addresses from Nomad
   services (not loopback). Confirm both resolve:
   ```bash
@@ -296,14 +297,25 @@ remain there but are no longer managed by the portal.
 
 ---
 
-## After verification — (c) follow-up to make the store durable
+## Portal control-plane store (Postgres) — shipped
 
-The onboarding plane currently uses the in-memory control-plane store (the Nomad jobs,
-gateway peers, and LiteLLM models persist in their own systems regardless). To make the
-portal's own state durable, the **`store.Postgres`** impl is already built and verified
-and is selected automatically when `PORTAL_DB_DSN` is set. The remaining infra is a
-`portal-postgres` Nomad job + a Vault DB dynamic role (`portal-app`) that renders the
-DSN into the portal job env — to be added next.
+The portal's own control-plane state (project descriptors, base/project templates,
+roles + capability matrices, MCP-server rows, audit events) is **durable in a dedicated
+`portal-postgres`** whenever the admin plane is on. `store.Postgres` is selected
+automatically when `PORTAL_DB_DSN` is set; without it the portal falls back to the
+in-memory store (the Nomad jobs, gateway peers, and LiteLLM models persist in their own
+systems regardless).
+
+Pieces: `portal-postgres.tf` (the `portal-postgres` Nomad job on :15434, KV
+`infra/portal-postgres`, a WIF read policy + role `infra-portal-postgres`, and the
+`portal-pg-data` host volume) + `templates/portal-postgres.nomad.hcl.tftpl`;
+`developer-portal.tf` copies the pg password into the portal's KV so the job assembles
+`PORTAL_DB_DSN=postgres://portal:…@<db_host>/portal` over its existing WIF read
+(`templates/developer-portal.nomad.hcl.tftpl`), and the portal job `depends_on =
+[nomad_job.portal_postgres]`. Gated on `enable_developer_portal && enable_platform_admin`.
+
+Verify: portal boot log `control-plane store: postgres`; `nomad job status -namespace
+infra portal-postgres` running.
 
 ## Durable workspace storage (EBS CSI)
 
@@ -375,3 +387,84 @@ nomad job restart -namespace infra -on-error=fail developer-portal
 Verified live 2026-07-10 (portal `:agentv14`): a Portal-created workspace produced CSI volume
 `home-alice-wmj4d` backed by EBS `vol-…` (gp3, 20 GiB, encrypted, `backup=secured-workspace`),
 mounted at `/home/dev` on `/dev/nvme1n1`.
+
+## Workspace reachability (Nomad→Boundary host-sync)
+
+Durable storage keeps a workspace's `/home/dev` alive across node replacement, but a
+rescheduled `count = 1` workspace also has to stay **reachable**: Boundary must point at the
+workspace's *new* node. Boundary Enterprise can't embed a custom dynamic-host plugin (its
+host-plugin set is compiled in), so an external reconciler — **`nomad-boundary-host-sync`**
+(job `nomad-boundary-host-sync`, namespace `infra`, `nomad-boundary-host-sync.tf`) — does the
+same job through Boundary's API.
+
+- **Topology:** the portal creates one shared static host catalog **`dev-workspaces`** per
+  project scope (at project creation), and per workspace a **host-set + ssh target** (the
+  target-id is stable — it's what the developer's `authorize-session` grant references). The
+  sync keeps the **single host** inside each host-set at the workspace's current node address,
+  driven by the workspace's Nomad-native service (`provider = "nomad"`, `address_mode = "host"`,
+  tags `service-type=workspace` + `project=<ns>`). It never creates/deletes structure.
+- **Creds:** Boundary admin (the same scoped `developer-portal` account) + a read-only Nomad
+  token (`nomad-boundary-host-sync-read`, `namespace "*" → list-jobs/read-job`), both read from
+  Vault KV `infra/nomad-boundary-host-sync` over WIF.
+
+**ACTION REQUIRED — build/push the sync image + redeploy the portal + re-seed base templates.**
+The tagged workspace `service{}` stanza lives in the portal's **embedded seed HCL** and the
+per-project catalog / slimmer per-workspace provision live in the portal backend, so a portal
+image built *before* this change won't register the service or create the shared catalog.
+
+```bash
+# 1. Build + push the sync image, pin the tag in *.auto.tfvars (nomad_boundary_host_sync_image):
+#    docker build -t panchalravi/nomad-boundary-host-sync:<tag> nomad-boundary-host-sync/ && docker push …
+# 2. Apply the sync job + its creds (in-place; no destroy):
+env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u VAULT_ADDR -u VAULT_TOKEN -u NOMAD_ADDR -u NOMAD_TOKEN \
+  terraform apply -target=nomad_job.nomad_boundary_host_sync
+# 3. Build/push a portal image carrying the B-changes, pin it, and redeploy + re-seed templates
+#    (same delete-base-rows → restart portal → recreate project templates dance as the CSI section).
+# 4. Verify: onboard a project → a `dev-workspaces` host catalog appears in its Boundary scope.
+#    Create a workspace → within a few seconds its host-set holds a host at the node IP:
+nomad service info -namespace <project> <ws-handle-name>   # Address = node IP, Port = static SSH port
+#    Open a Boundary SSH session (works). Drain/replace the node → the alloc reschedules, EBS
+#    reattaches in-AZ, the sync updates the host address → a FRESH session on the SAME target-id
+#    reconnects and `cat /home/dev/canary` shows prior contents. State + reachability both survive.
+```
+
+> Existing (pre-change) workspaces keep their old per-workspace catalogs and are **not**
+> address-synced; recreate them to move onto the new path. The sync only manages hosts inside
+> the portal-created `dev-workspaces` catalogs, so it never touches legacy objects.
+
+**Verified live 2026-07-12** (portal `:reachv2`, sync `:reachv2`): a workspace on `project-acme`
+registered its Nomad service, the sync created the host in the `dev-workspaces` catalog, and a
+**forced cross-node reschedule** (a temporary second `default`-pool node — see
+`enable_default_spare`) moved the workspace to a new node IP; the sync logged
+`updating workspace host address from 10.220.10.89 to 10.220.10.117`, Boundary's host followed,
+the **same** target-id stayed bound, and the `/home/dev` canary survived the EBS reattach (and
+followed back on the reverse move). Two operational notes:
+- **`:reachv2` fix** — the reconciler's host-set lookup must **Read** the set (Boundary's
+  host-set *List* API returns `host_ids: null`); the earlier List-only lookup never saw the
+  host it had created and looped on the unique-name collision. Fixed in `nomad-boundary-host-sync`.
+- **Benign hourly restart** — the sync job renews its 1h-TTL Vault-templated `sync.env`
+  (Boundary creds + Nomad token) with `change_mode = "restart"`, so it gracefully restarts
+  ~hourly (clean `shutting down`→`starting`, zero errors; the loop is level-triggered and
+  reconverges on boot). Optional tidy-up: `change_mode = "noop"` + a longer secret TTL.
+
+## AI-agents plane (deep-agents on Nomad)
+
+Any project member with the **`ai-agents`** capability can author a YAML deep-agent, deploy it
+as a Nomad service, and chat with it in the Portal — the same central tool/data + model
+governance a workspace gets. The platform-admin's only responsibility is the substrate:
+
+- **Enable the agents node pool** — `enable_agent_nodes = true` (`terraform.tfvars`) stands up
+  the standard-CPU worker(s) in Nomad node pool **`agents`** (`modules/secured-codespace/agent-nodes.tf`).
+  The portal places agent jobs there via `PORTAL_AGENT_NODE_POOL` (default `agents`), the same
+  pool as project-deployed MCP servers, so agents never load the all-in-one node.
+- **Agent identity foundation** — `agent-identity.tf` provisions the RFC 8693 token-exchange
+  plumbing for delegated agent identity.
+- **Runtime image** — deploys pull `agent-runtime` (deepagents + FastAPI); each deploy mints a
+  per-agent LiteLLM key, writes it to the project's Vault KV, grants the per-project `agents`
+  WIF role, and registers the Nomad service `agent-<project>-<name>`.
+
+Verify: `nomad node status` shows an `agents`-pool client ready; a project member with the
+`ai-agents` capability can Validate/Deploy an agent from **Projects → \<project\> → AI agents**,
+the row reaches **running**, and **Chat** streams tokens. Untick `ai-agents` on the project-user
+capability row to confirm the 403 gate. (Project-side authoring detail lives in the project-admin
+walkthrough.)

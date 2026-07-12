@@ -13,6 +13,8 @@ module "secured_codespace" {
   agent_instance_type    = var.agent_instance_type
   agent_root_volume_size = var.agent_root_volume_size
 
+  enable_default_spare = var.enable_default_spare
+
   enable_microvm_node      = var.enable_microvm_node
   microvm_instance_type    = var.microvm_instance_type
   microvm_root_volume_size = var.microvm_root_volume_size

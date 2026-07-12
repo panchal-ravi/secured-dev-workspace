@@ -1,0 +1,68 @@
+# Nomad→Boundary host-sync jobspec (platform tier). Rendered by terraform/infra/
+# nomad-boundary-host-sync.tf templatefile(). consul-template "{{ ... }}" is left
+# literal (a different delimiter from Terraform interpolation).
+#
+# Stateless single instance on the all-in-one node (host network) so its outbound
+# calls to Boundary/Nomad on 127.0.0.1 reach the node's services. Boundary admin
+# creds + a read-only Nomad token come from Vault KV over WIF.
+job "nomad-boundary-host-sync" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "service"
+
+  group "sync" {
+    count = 1
+
+    task "sync" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = true
+        # Share the host network namespace so calls to Boundary/Nomad on 127.0.0.1
+        # reach the all-in-one node's services (a bridged container's loopback is
+        # its own, not the host's).
+        network_mode = "host"
+      }
+
+      # WIF: exchange the Nomad task JWT for a short Vault token scoped to this job's
+      # own KV secret path (the infra-nomad-boundary-host-sync role/policy).
+      vault {
+        role = "${wif_role}"
+      }
+
+      # Boundary admin creds + the read-only Nomad token from Vault KV. env=true
+      # sources them as environment; change_mode=restart so a rotation restarts the
+      # sync. KV v2 ⇒ values are under .Data.data.*.
+      template {
+        destination = "secrets/sync.env"
+        env         = true
+        change_mode = "restart"
+        data        = <<EOH
+{{ with secret "${kv_path}" }}
+SYNC_BOUNDARY_LOGIN={{ .Data.data.boundary_login }}
+SYNC_BOUNDARY_PASSWORD={{ .Data.data.boundary_password }}
+SYNC_NOMAD_TOKEN={{ .Data.data.nomad_token }}
+{{ end }}
+EOH
+      }
+
+      env {
+        SYNC_NOMAD_ADDR              = "${nomad_addr}"
+        SYNC_BOUNDARY_ADDR           = "${boundary_addr}"
+        SYNC_BOUNDARY_AUTH_METHOD_ID = "${boundary_auth_method_id}"
+        SYNC_BOUNDARY_ORG_SCOPE_ID   = "${boundary_org_scope_id}"
+        # SYNC_CATALOG_NAME defaults to "dev-workspaces" (the name the portal gives the
+        # per-project shared host catalog at project bootstrap), so it is not set here.
+        # HashiStack is reached over loopback with self-signed certs — verification is
+        # skipped exactly as the node's own Nomad→Vault integration does.
+        SYNC_TLS_SKIP_VERIFY = "true"
+      }
+
+      resources {
+        cpu    = 200
+        memory = 128
+      }
+    }
+  }
+}

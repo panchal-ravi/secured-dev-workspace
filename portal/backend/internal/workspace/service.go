@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
@@ -43,10 +44,50 @@ type Service struct {
 	store store.Store
 	nomad *hashistack.Nomad
 	bndry *hashistack.Boundary
+
+	// SSH ports are node-global and Create publishes its port to Nomad only
+	// after a ~30s CSI volume wait, so UsedPorts() alone leaves a wide window in
+	// which two concurrent creates pick the same port. mu + reserved close that
+	// window: a port is held in-flight from allocation until Create returns.
+	mu       sync.Mutex
+	reserved map[int]struct{}
 }
 
 func New(cfg Config, st store.Store, n *hashistack.Nomad, b *hashistack.Boundary) *Service {
-	return &Service{cfg: cfg, store: st, nomad: n, bndry: b}
+	return &Service{cfg: cfg, store: st, nomad: n, bndry: b, reserved: map[int]struct{}{}}
+}
+
+// reservePort reads the live Nomad ports, then reserves a free one under the
+// lock. The returned release must be called (defer) when Create finishes: on
+// success the port is by then published to Nomad and covered by UsedPorts; on
+// failure releasing returns it to the free pool.
+func (s *Service) reservePort() (int, func(), error) {
+	used, err := s.nomad.UsedPorts()
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.reserve(used)
+}
+
+// reserve is the race-critical section: the reserved set is unioned with the
+// (possibly stale) used snapshot under mu so concurrent callers sharing that
+// snapshot never pick the same port.
+func (s *Service) reserve(used []int) (int, func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for p := range s.reserved {
+		used = append(used, p)
+	}
+	port, err := portgen.Allocate(s.cfg.PortRange, used)
+	if err != nil {
+		return 0, nil, err
+	}
+	s.reserved[port] = struct{}{}
+	return port, func() {
+		s.mu.Lock()
+		delete(s.reserved, port)
+		s.mu.Unlock()
+	}, nil
 }
 
 // CreateInput is the form payload plus the authenticated developer's identity.
@@ -178,14 +219,13 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 		return Workspace{}, err
 	}
 
-	used, err := s.nomad.UsedPorts()
+	port, release, err := s.reservePort()
 	if err != nil {
 		return Workspace{}, err
 	}
-	port, err := portgen.Allocate(s.cfg.PortRange, used)
-	if err != nil {
-		return Workspace{}, err
-	}
+	// Hold the port until Create returns: by then RegisterJob has published it
+	// to Nomad (success) or we've bailed and it's free to reuse (failure).
+	defer release()
 
 	// The project template already carries this project's static values (baked in
 	// at project-template create, pass-1); the portal fills only the per-workspace
@@ -208,27 +248,19 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 	if err := s.nomad.CreateHostVolume(d.Namespace, volume, flavor.NodePool); err != nil {
 		return Workspace{}, err
 	}
-	jobID, err := s.nomad.RegisterJob(d.Namespace, rendered, in.Flavor)
-	if err != nil {
+	if _, err := s.nomad.RegisterJob(d.Namespace, rendered, in.Flavor); err != nil {
 		return Workspace{}, err
 	}
 
-	// Default to the main node; a pooled flavor (e.g. GPU) lands on a different
-	// node, so point Boundary at that node's IP resolved from the placed alloc.
-	hostAddr := d.InstancePrivateIP
-	if flavor.NodePool != "" {
-		ip, err := s.nomad.ResolvePlacementIP(d.Namespace, jobID)
-		if err != nil {
-			return Workspace{}, err
-		}
-		hostAddr = ip
-	}
-
+	// The Boundary host address is no longer set at create. The external
+	// Nomad→Boundary host-sync registers the workspace's current node address as the
+	// single host in its host-set and refreshes it across reschedules, so the target
+	// follows the workspace with no create-time IP resolution.
 	alias := fmt.Sprintf("%s.%s.%s.%s", wsName, in.Handle, d.ProjectName, d.AliasSuffix)
 	res, err := s.bndry.Provision(ctx, hashistack.ProvisionInput{
 		ScopeID:             d.ProjectScopeID,
 		Name:                name,
-		HostAddress:         hostAddr,
+		HostCatalogID:       d.BoundaryHostCatalogID,
 		DefaultPort:         uint32(port),
 		CredentialLibraryID: d.CredentialLibraryID,
 		SessionMaxSeconds:   sessionMaxSeconds,

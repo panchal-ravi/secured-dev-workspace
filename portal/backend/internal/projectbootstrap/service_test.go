@@ -57,6 +57,10 @@ func (f *fakeBoundary) CreateProjectScope(_ context.Context, _, name, _ string) 
 	f.ops = append(f.ops, "create-scope "+name)
 	return "p_test", nil
 }
+func (f *fakeBoundary) CreateHostCatalog(_ context.Context, scopeID, name string) (string, error) {
+	f.ops = append(f.ops, "create-host-catalog "+scopeID+"/"+name)
+	return "hcst_test", nil
+}
 func (f *fakeBoundary) DeleteScope(_ context.Context, id string) error {
 	f.ops = append(f.ops, "delete-scope "+id)
 	return nil

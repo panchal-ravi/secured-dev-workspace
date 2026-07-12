@@ -1,0 +1,64 @@
+# TEMPORARY default-pool spare Nomad CLIENT — a clone of nomad-agents.hcl.tftpl
+# whose only difference is node_pool = "default". Exists so a workspace (which is
+# pinned to node_pool "default") can be forced to reschedule onto a SECOND node to
+# verify the Nomad->Boundary host-address sync updates the target on a cross-node
+# move. Gated by var.enable_default_spare (default false); destroyed after the test.
+# ${main_private_ip} is the all-in-one node's private IP (aws_instance.this.private_ip).
+region     = "global"
+datacenter = "dc1"
+name       = "nomad-default-spare"
+data_dir   = "/opt/nomad/data"
+bind_addr  = "0.0.0.0"
+log_level  = "INFO"
+log_file   = "/var/log/nomad/nomad.log"
+
+client {
+  enabled   = true
+  node_pool = "default"
+
+  server_join {
+    retry_join = ["${main_private_ip}:4647"]
+  }
+}
+
+# The EBS CSI node plugin (a system job) runs privileged to stage/mount the block
+# device backing a workspace's /home/dev CSI volume, so the driver must allow it.
+plugin "docker" {
+  config {
+    allow_privileged = true
+  }
+}
+
+acl {
+  enabled = true
+}
+
+ports {
+  http = 4646
+  rpc  = 4647
+  serf = 4648
+}
+
+tls {
+  http = true
+  rpc  = true
+
+  ca_file   = "/etc/nomad.d/tls/nomad.crt"
+  cert_file = "/etc/nomad.d/tls/nomad.crt"
+  key_file  = "/etc/nomad.d/tls/nomad.key"
+
+  verify_server_hostname = true
+  verify_https_client    = false
+}
+
+vault {
+  enabled               = true
+  address               = "https://${main_private_ip}:8200"
+  jwt_auth_backend_path = "jwt-nomad"
+  tls_skip_verify       = true
+
+  default_identity {
+    aud = ["vault.io"]
+    ttl = "1h"
+  }
+}

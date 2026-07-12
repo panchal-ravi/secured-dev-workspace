@@ -43,10 +43,41 @@ job "${job_name}" {
   group "workspace" {
     count = 1
 
+    # Recover onto a healthy node after node failure; the durable EBS home volume
+    # reattaches in-AZ. The external Nomad→Boundary host-sync then re-points this
+    # workspace's Boundary host at the replacement node.
+    reschedule {
+      unlimited      = true
+      delay          = "15s"
+      delay_function = "constant"
+    }
+    migrate {
+      max_parallel = 1
+      health_check = "task_states"
+    }
+
     network {
       port "ssh" {
         static = ${ssh_port}
         to     = 22
+      }
+    }
+
+    # Nomad-native service registration. address_mode=host advertises the node IP +
+    # the static host SSH port (not the bridge alloc IP). Tagged so the external
+    # Nomad→Boundary host-sync keeps this workspace's Boundary host address pointed
+    # at whatever node the alloc currently runs on across reschedules.
+    service {
+      name         = "${job_name}"
+      provider     = "nomad"
+      port         = "ssh"
+      address_mode = "host"
+      tags         = ["service-type=workspace", "project=${namespace}"]
+      check {
+        type     = "tcp"
+        port     = "ssh"
+        interval = "10s"
+        timeout  = "2s"
       }
     }
 

@@ -40,6 +40,12 @@ variable "enable_agent_nodes" {
   default     = false
 }
 
+variable "enable_default_spare" {
+  description = "TEMPORARY: add a second Nomad client to node pool \"default\" (same AZ as the all-in-one node) so a workspace can be forced to reschedule cross-node to verify the Boundary host-address sync. Off by default; destroy after the test."
+  type        = bool
+  default     = false
+}
+
 variable "agent_node_count" {
   description = "Number of agent worker nodes to provision when enable_agent_nodes = true."
   type        = number
@@ -206,6 +212,12 @@ variable "developer_portal_image" {
   description = "Developer Portal container image (amd64). Build/push with portal/scripts/build-image.sh and pin a concrete tag."
   type        = string
   default     = "panchalravi/developer-portal:poc"
+}
+
+variable "nomad_boundary_host_sync_image" {
+  description = "Nomad→Boundary host-sync container image (amd64). Build/push from /nomad-boundary-host-sync and pin a concrete tag."
+  type        = string
+  default     = "panchalravi/nomad-boundary-host-sync:poc"
 }
 
 variable "portal_oidc_issuer" {

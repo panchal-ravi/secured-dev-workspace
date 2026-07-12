@@ -19,6 +19,12 @@ import (
 // safe, lowercase, DNS-ish label.
 var projectNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`)
 
+// boundaryHostCatalogName is the fixed name of the per-project shared static host
+// catalog the portal creates at project bootstrap. Per-workspace host-sets/targets
+// live in it; the external Nomad→Boundary host-sync looks it up by this name in each
+// project scope to keep workspace host addresses current.
+const boundaryHostCatalogName = "dev-workspaces"
+
 // NomadNSClient is the Nomad control-plane surface a project create/delete needs
 // (satisfied by *hashistack.Nomad).
 type NomadNSClient interface {
@@ -38,6 +44,7 @@ type NomadNSClient interface {
 // *hashistack.Boundary). Scope deletion is recursive.
 type BoundaryScopeClient interface {
 	CreateProjectScope(ctx context.Context, orgScopeID, name, description string) (string, error)
+	CreateHostCatalog(ctx context.Context, scopeID, name string) (string, error)
 	DeleteScope(ctx context.Context, scopeID string) error
 }
 
@@ -181,10 +188,15 @@ func (s *Service) CreateProject(ctx context.Context, actor string, in CreateProj
 		return s.failf(ctx, actor, p, "nomad.binding-rule", err)
 	}
 
-	// 3. Boundary: project scope.
+	// 3. Boundary: project scope + the project's shared host catalog (one per project;
+	// per-workspace host-sets/targets live in it, the external host-sync fills the hosts).
 	scopeID, err := s.boundary.CreateProjectScope(ctx, s.cfg.BoundaryOrgScopeID, p, "Project scope for "+p)
 	if err != nil {
 		return s.failf(ctx, actor, p, "boundary.scope", err)
+	}
+	catalogID, err := s.boundary.CreateHostCatalog(ctx, scopeID, boundaryHostCatalogName)
+	if err != nil {
+		return s.failf(ctx, actor, p, "boundary.host-catalog", err)
 	}
 
 	// 4. Descriptor (Postgres control-plane store). credential_library_id + flavors
@@ -194,6 +206,7 @@ func (s *Service) CreateProject(ctx context.Context, actor string, in CreateProj
 		ProjectName:              p,
 		Namespace:                p,
 		ProjectScopeID:           scopeID,
+		BoundaryHostCatalogID:    catalogID,
 		DevelopersGroupName:      group,
 		BoundaryOIDCAuthMethodID: s.cfg.BoundaryOIDCAuthMethodID,
 		InstancePrivateIP:        s.cfg.InstancePrivateIP,

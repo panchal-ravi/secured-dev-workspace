@@ -58,6 +58,12 @@ variable "enable_agent_nodes" {
   default     = false
 }
 
+variable "enable_default_spare" {
+  description = "TEMPORARY: provision a single standard-CPU EC2 as a second Nomad client in node pool \"default\" (same AZ as the all-in-one node) so a workspace can be forced to reschedule cross-node to verify the Boundary host-address sync. Off by default; destroy after the test."
+  type        = bool
+  default     = false
+}
+
 variable "agent_node_count" {
   description = "Number of agent worker nodes to provision when enable_agent_nodes = true."
   type        = number
