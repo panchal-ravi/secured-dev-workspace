@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gorilla/sessions"
@@ -63,15 +64,32 @@ type Authenticator struct {
 	oauth    oauth2.Config
 	store    *sessions.CookieStore
 	secure   bool
+
+	// endSession is the issuer's OIDC end_session_endpoint (RP-initiated logout),
+	// read from discovery; postLogout is where Verify redirects the browser back to
+	// after ending the session. Both empty => sign-out clears only the local cookie.
+	endSession string
+	postLogout string
 }
 
 // New discovers the issuer and builds the authenticator. secureCookies should be
-// false for the local http://localhost PoC and true behind TLS.
-func New(ctx context.Context, issuer, clientID, clientSecret, redirectURL, sessionSecret string, secureCookies bool) (*Authenticator, error) {
+// false for the local http://localhost PoC and true behind TLS. postLogoutRedirect
+// is where Verify should return the browser after RP-initiated logout; leave it
+// empty unless that exact URL is registered as a post-logout redirect on the Verify
+// app (Verify rejects an unregistered one), in which case logout omits it and lands
+// on Verify's own signed-out page — the SSO session is ended either way.
+func New(ctx context.Context, issuer, clientID, clientSecret, redirectURL, sessionSecret, postLogoutRedirect string, secureCookies bool) (*Authenticator, error) {
 	provider, err := oidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, fmt.Errorf("auth: discover issuer: %w", err)
 	}
+	// end_session_endpoint isn't exposed on oidc.Provider, so read it off the raw
+	// discovery document. Best-effort: an issuer that advertises none leaves logout
+	// as a local-only cookie clear.
+	var meta struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	_ = provider.Claims(&meta)
 	store := sessions.NewCookieStore([]byte(sessionSecret))
 	store.Options = &sessions.Options{Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secureCookies, MaxAge: 8 * 3600}
 	return &Authenticator{
@@ -83,8 +101,10 @@ func New(ctx context.Context, issuer, clientID, clientSecret, redirectURL, sessi
 			RedirectURL:  redirectURL,
 			Scopes:       []string{oidc.ScopeOpenID, "email", "groups", "profile"},
 		},
-		store:  store,
-		secure: secureCookies,
+		store:      store,
+		secure:     secureCookies,
+		endSession: meta.EndSessionEndpoint,
+		postLogout: postLogoutRedirect,
 	}, nil
 }
 
@@ -159,6 +179,9 @@ func (a *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request) 
 	sess, _ := a.store.Get(r, sessionName)
 	b, _ := json.Marshal(u)
 	sess.Values["user"] = string(b)
+	// Keep the raw ID token to use as id_token_hint for RP-initiated logout, so
+	// signing out ends the shared IBM Verify SSO session (not just the portal cookie).
+	sess.Values["id_token"] = rawIDToken
 	if err := sess.Save(r, w); err != nil {
 		httpError(w, r, http.StatusInternalServerError, "session error", err)
 		return
@@ -166,12 +189,36 @@ func (a *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-// LogoutHandler clears the session.
+// LogoutHandler clears the portal session and returns the IBM Verify RP-initiated
+// logout URL the browser should navigate to next. Clearing the portal cookie alone
+// leaves the shared Verify SSO session alive, so a later `boundary authenticate
+// oidc` would silently re-authenticate the just-signed-out user; redirecting
+// through end_session_endpoint ends that session so Verify prompts again. When the
+// issuer advertises no end_session_endpoint, logout_url is "" and the caller falls
+// back to a local-only sign-out.
 func (a *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	sess, _ := a.store.Get(r, sessionName)
+	idToken, _ := sess.Values["id_token"].(string)
 	sess.Options.MaxAge = -1
 	_ = sess.Save(r, w)
-	w.WriteHeader(http.StatusNoContent)
+
+	logoutURL := ""
+	if a.endSession != "" {
+		q := url.Values{}
+		if idToken != "" {
+			q.Set("id_token_hint", idToken)
+		}
+		if a.postLogout != "" {
+			q.Set("post_logout_redirect_uri", a.postLogout)
+		}
+		logoutURL = a.endSession
+		if enc := q.Encode(); enc != "" {
+			logoutURL += "?" + enc
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"logout_url": logoutURL})
 }
 
 // Require is middleware that injects the user into the context, or 401s. It also

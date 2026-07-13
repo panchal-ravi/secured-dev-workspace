@@ -30,6 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=backend /portal /usr/local/bin/portal
 COPY --from=frontend --chown=10001:10001 /web /app/web
+# The secured-ws:// helper bundle, served at /helper/ from a sibling of the SPA dir
+# (see internal/api/api.go). Built by portal/helper/macos/build.sh before the image.
+COPY --chown=10001:10001 backend/helper-dist /app/helper-dist
 ENV PORTAL_STATIC_DIR=/app/web \
     PORTAL_LISTEN_ADDR=:8443
 EXPOSE 8443

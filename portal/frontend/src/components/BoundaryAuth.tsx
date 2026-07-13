@@ -77,7 +77,8 @@ export default function BoundaryAuth({
       <Accordion>
         <AccordionItem title="Connect to your workspaces">
           <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', margin: '0 0 0.75rem' }}>
-            Authenticate to Boundary once per terminal session before opening any workspace below.
+            Opening a workspace below signs you in to Boundary automatically, reusing your portal login — no separate
+            step. Use the button here only to pre-authenticate or if a connection reports a sign-in error.
           </p>
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 24rem', minWidth: '18rem' }}>

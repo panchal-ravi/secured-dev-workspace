@@ -22,12 +22,14 @@ resource "boundary_auth_method_oidc" "ibm_verify" {
   api_url_prefix     = local.boundary_addr
   claims_scopes      = ["email", "groups"]
 
-  # Send prompt=login so IBM Verify ALWAYS re-authenticates on every
-  # `boundary authenticate oidc` instead of silently reusing the browser SSO
-  # session. (select_account only *allows* account choice — Verify still reused
-  # the existing session; login forces fresh credential entry.) Required to
-  # switch between developers (the per-developer OIDC isolation negative test).
-  prompts = ["login"]
+  # No `prompts` override: IBM Verify silently reuses the SSO session the portal
+  # login already established, so a developer already signed in to the portal is
+  # authenticated to Boundary without re-entering credentials (single sign-on).
+  # A signed-out user has no Verify session — the portal sign-out performs
+  # RP-initiated Verify logout (see auth.go LogoutHandler) — so Verify prompts
+  # normally. Per-workspace target isolation is unaffected: it is enforced by the
+  # email-filtered managed groups + roles below, not by forcing re-auth. To force
+  # account switching for a negative test, use a private/incognito browser window.
 
   is_primary_for_scope = true
   state                = "active-public"

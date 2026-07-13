@@ -114,6 +114,26 @@ remove_ssh_config() {
   mv "$tmp" "$SSH_CONFIG"
 }
 
+# ensure_boundary_token makes sure a usable Boundary token is cached before the
+# IDE opens (VSCode's ProxyCommand runs `boundary connect`, which needs one). It
+# pre-flights with a cheap authenticated read; only on failure (no token / expired)
+# does it run the OIDC login. With a live IBM Verify SSO session — established by
+# the developer's portal login — that login completes silently in the browser (no
+# credential entry); with no session, Verify prompts normally. Runs in the
+# foreground so the token exists before we hand off to the IDE. GUI-launched apps
+# get a minimal PATH, so we prepend the usual Homebrew/local locations to find the
+# `boundary` binary (mirrors the ProxyCommand's PATH in write_ssh_config).
+ensure_boundary_token() {
+  local addr="$1" amid="$2" target="$3"
+  local PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
+  export BOUNDARY_ADDR="$addr"
+  if boundary targets read -id "$target" -tls-insecure >/dev/null 2>&1; then
+    return 0
+  fi
+  boundary authenticate oidc -auth-method-id "$amid" -tls-insecure >/dev/null 2>&1 \
+    || die "Boundary sign-in failed — try the Authenticate button, then Open again"
+}
+
 open_ide() {
   local ide="$1" host="$2"
   local target="vscode-remote/ssh-remote+${host}/home/dev/project"
@@ -145,11 +165,13 @@ case "$verb" in
     ;;
   connect)
     host="$(getp host)"; user="$(getp user)"; target="$(getp target_id)"
-    addr="$(getp addr)"; ide="$(getp ide)"
+    addr="$(getp addr)"; ide="$(getp ide)"; amid="$(getp auth_method_id)"
     [[ "$host" =~ ^[A-Za-z0-9._-]+$ ]]          || die "invalid host"
     [[ "$user" =~ ^[A-Za-z0-9._-]+$ ]]          || die "invalid user"
     [[ "$addr" =~ ^https://[A-Za-z0-9._:-]+$ ]] || die "invalid Boundary address"
     [[ "$target" =~ ^tssh_[A-Za-z0-9]+$ ]]      || die "invalid target id"
+    [[ "$amid" =~ ^am[a-z]+_[A-Za-z0-9]+$ ]]    || die "invalid auth-method id"
+    ensure_boundary_token "$addr" "$amid" "$target"
     write_ssh_config "$host" "$user" "$addr" "$target"
     open_ide "$ide" "$host"
     ;;
