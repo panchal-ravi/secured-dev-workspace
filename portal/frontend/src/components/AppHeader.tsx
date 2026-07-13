@@ -123,8 +123,10 @@ export default function AppHeader({
           aria-label="Sign out"
           tooltipAlignment="end"
           onClick={async () => {
-            await logout()
-            window.location.assign('/')
+            // Navigate to Verify's RP-initiated logout so the shared SSO session
+            // ends too (not just the portal cookie); fall back home if unavailable.
+            const { logout_url } = await logout()
+            window.location.assign(logout_url || '/')
           }}
         >
           <Logout />

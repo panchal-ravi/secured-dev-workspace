@@ -25,6 +25,12 @@ type Config struct {
 	OIDCClientSecret string // PORTAL_OIDC_CLIENT_SECRET
 	OIDCRedirectURL  string // PORTAL_OIDC_REDIRECT_URL
 	SessionSecret    string // PORTAL_SESSION_SECRET (cookie signing key)
+	// OIDCPostLogoutRedirect, when set, is passed as post_logout_redirect_uri on
+	// RP-initiated logout so Verify returns the browser to the portal after ending
+	// the SSO session. Leave empty unless this exact URL is registered as a
+	// post-logout redirect on the Verify app (Verify rejects an unregistered one);
+	// logout ends the session regardless. PORTAL_OIDC_POST_LOGOUT_REDIRECT.
+	OIDCPostLogoutRedirect string
 
 	// Boundary (admin password auth for provisioning).
 	BoundaryAddr         string // PORTAL_BOUNDARY_ADDR (server-side API client; loopback on the node)
@@ -146,42 +152,43 @@ func (c Config) AdminEnabled() bool {
 // lists every missing required variable at once.
 func Load() (Config, error) {
 	c := Config{
-		ListenAddr:           env("PORTAL_LISTEN_ADDR", ":8080"),
-		OIDCIssuer:           os.Getenv("PORTAL_OIDC_ISSUER"),
-		OIDCClientID:         os.Getenv("PORTAL_OIDC_CLIENT_ID"),
-		OIDCClientSecret:     os.Getenv("PORTAL_OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:      env("PORTAL_OIDC_REDIRECT_URL", "http://localhost:8080/auth/callback"),
-		SessionSecret:        os.Getenv("PORTAL_SESSION_SECRET"),
-		BoundaryAddr:         os.Getenv("PORTAL_BOUNDARY_ADDR"),
-		BoundaryPublicAddr:   os.Getenv("PORTAL_BOUNDARY_PUBLIC_ADDR"),
-		BoundaryAuthMethodID: os.Getenv("PORTAL_BOUNDARY_AUTH_METHOD_ID"),
-		BoundaryLogin:        os.Getenv("PORTAL_BOUNDARY_LOGIN"),
-		BoundaryPassword:     os.Getenv("PORTAL_BOUNDARY_PASSWORD"),
-		NomadAddr:            os.Getenv("PORTAL_NOMAD_ADDR"),
-		NomadToken:           os.Getenv("PORTAL_NOMAD_TOKEN"),
-		VaultAddr:            os.Getenv("PORTAL_VAULT_ADDR"),
-		VaultToken:           os.Getenv("PORTAL_VAULT_TOKEN"),
-		VaultTokenFile:       os.Getenv("PORTAL_VAULT_TOKEN_FILE"),
-		VaultKVMount:         env("PORTAL_VAULT_KV_MOUNT", "secret"),
-		PortRange:            portgen.DefaultRange,
-		LogLevel:             env("PORTAL_LOG_LEVEL", "info"),
-		ShutdownTimeout:      time.Duration(envInt("PORTAL_SHUTDOWN_TIMEOUT", 15)) * time.Second,
-		TLSCertFile:          os.Getenv("PORTAL_TLS_CERT_FILE"),
-		TLSKeyFile:           os.Getenv("PORTAL_TLS_KEY_FILE"),
-		HashiCACertPath:      os.Getenv("PORTAL_HASHISTACK_CA_CERT"),
-		TLSSkipVerify:        envBool("PORTAL_TLS_SKIP_VERIFY", true),
-		RateLimitRPS:         envFloat("PORTAL_RATE_LIMIT_RPS", 5),
-		RateLimitBurst:       envInt("PORTAL_RATE_LIMIT_BURST", 10),
-		MCPGatewayAddr:       os.Getenv("PORTAL_MCP_GATEWAY_ADDR"),
-		LLMGatewayAddr:       os.Getenv("PORTAL_LLM_GATEWAY_ADDR"),
-		AgentNodePool:        env("PORTAL_AGENT_NODE_POOL", "agents"),
-		AgentRuntimeImage:    env("PORTAL_AGENT_RUNTIME_IMAGE", "panchalravi/agent-runtime:agentv2"),
-		AgentIdleTTL:         time.Duration(envInt("PORTAL_AGENT_IDLE_TTL", 1800)) * time.Second,
-		AgentReapInterval:    time.Duration(envInt("PORTAL_AGENT_REAP_INTERVAL", 300)) * time.Second,
-		DBDSN:                os.Getenv("PORTAL_DB_DSN"),
-		ProvisionerJWTPath:   os.Getenv("PORTAL_PROVISIONER_JWT_PATH"),
-		ProvisionerRole:      env("PORTAL_PROVISIONER_ROLE", "portal-provisioner"),
-		ProvisionerAuthMount: env("PORTAL_PROVISIONER_AUTH_MOUNT", "jwt-nomad"),
+		ListenAddr:             env("PORTAL_LISTEN_ADDR", ":8080"),
+		OIDCIssuer:             os.Getenv("PORTAL_OIDC_ISSUER"),
+		OIDCClientID:           os.Getenv("PORTAL_OIDC_CLIENT_ID"),
+		OIDCClientSecret:       os.Getenv("PORTAL_OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:        env("PORTAL_OIDC_REDIRECT_URL", "http://localhost:8080/auth/callback"),
+		SessionSecret:          os.Getenv("PORTAL_SESSION_SECRET"),
+		OIDCPostLogoutRedirect: os.Getenv("PORTAL_OIDC_POST_LOGOUT_REDIRECT"),
+		BoundaryAddr:           os.Getenv("PORTAL_BOUNDARY_ADDR"),
+		BoundaryPublicAddr:     os.Getenv("PORTAL_BOUNDARY_PUBLIC_ADDR"),
+		BoundaryAuthMethodID:   os.Getenv("PORTAL_BOUNDARY_AUTH_METHOD_ID"),
+		BoundaryLogin:          os.Getenv("PORTAL_BOUNDARY_LOGIN"),
+		BoundaryPassword:       os.Getenv("PORTAL_BOUNDARY_PASSWORD"),
+		NomadAddr:              os.Getenv("PORTAL_NOMAD_ADDR"),
+		NomadToken:             os.Getenv("PORTAL_NOMAD_TOKEN"),
+		VaultAddr:              os.Getenv("PORTAL_VAULT_ADDR"),
+		VaultToken:             os.Getenv("PORTAL_VAULT_TOKEN"),
+		VaultTokenFile:         os.Getenv("PORTAL_VAULT_TOKEN_FILE"),
+		VaultKVMount:           env("PORTAL_VAULT_KV_MOUNT", "secret"),
+		PortRange:              portgen.DefaultRange,
+		LogLevel:               env("PORTAL_LOG_LEVEL", "info"),
+		ShutdownTimeout:        time.Duration(envInt("PORTAL_SHUTDOWN_TIMEOUT", 15)) * time.Second,
+		TLSCertFile:            os.Getenv("PORTAL_TLS_CERT_FILE"),
+		TLSKeyFile:             os.Getenv("PORTAL_TLS_KEY_FILE"),
+		HashiCACertPath:        os.Getenv("PORTAL_HASHISTACK_CA_CERT"),
+		TLSSkipVerify:          envBool("PORTAL_TLS_SKIP_VERIFY", true),
+		RateLimitRPS:           envFloat("PORTAL_RATE_LIMIT_RPS", 5),
+		RateLimitBurst:         envInt("PORTAL_RATE_LIMIT_BURST", 10),
+		MCPGatewayAddr:         os.Getenv("PORTAL_MCP_GATEWAY_ADDR"),
+		LLMGatewayAddr:         os.Getenv("PORTAL_LLM_GATEWAY_ADDR"),
+		AgentNodePool:          env("PORTAL_AGENT_NODE_POOL", "agents"),
+		AgentRuntimeImage:      env("PORTAL_AGENT_RUNTIME_IMAGE", "panchalravi/agent-runtime:agentv2"),
+		AgentIdleTTL:           time.Duration(envInt("PORTAL_AGENT_IDLE_TTL", 1800)) * time.Second,
+		AgentReapInterval:      time.Duration(envInt("PORTAL_AGENT_REAP_INTERVAL", 300)) * time.Second,
+		DBDSN:                  os.Getenv("PORTAL_DB_DSN"),
+		ProvisionerJWTPath:     os.Getenv("PORTAL_PROVISIONER_JWT_PATH"),
+		ProvisionerRole:        env("PORTAL_PROVISIONER_ROLE", "portal-provisioner"),
+		ProvisionerAuthMount:   env("PORTAL_PROVISIONER_AUTH_MOUNT", "jwt-nomad"),
 
 		CreatorJWTPath:   os.Getenv("PORTAL_CREATOR_JWT_PATH"),
 		CreatorRole:      env("PORTAL_CREATOR_ROLE", "project-creator"),

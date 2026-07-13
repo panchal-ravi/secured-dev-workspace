@@ -25,10 +25,11 @@ const IDES = [
 ]
 
 // Two connection methods on the workspace card: the ProxyCommand path (no Client
-// Agent, better speed) and the transparent-session path. Both need a one-time
-// Boundary SSO login (see the Connect panel above the cards). With a remote
-// backend, the ProxyCommand "Open" hands a secured-ws://connect link to the local
-// helper, which writes ~/.ssh/config and launches the IDE.
+// Agent, better speed) and the transparent-session path. With a remote backend,
+// the ProxyCommand "Open" hands a secured-ws://connect link to the local helper,
+// which signs in to Boundary on demand (reusing the portal's Verify SSO session,
+// no re-login), writes ~/.ssh/config, and launches the IDE — one click. The
+// transparent path still needs the Boundary Client Agent + a manual SSO login.
 export default function ConnectTabs({ ws }: { ws: Workspace }) {
   const [ide, setIde] = useState(IDES[0])
   const running = ws.status === 'running'
@@ -41,6 +42,7 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
         targetId: ws.target_id,
         addr: ws.boundary_addr,
         ide: ide.id,
+        authMethodId: ws.boundary_auth_method_id,
       }),
     )
   }
@@ -55,8 +57,8 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
         <TabPanel>
           <OrderedList style={{ margin: '0.5rem 0' }}>
             <ListItem>
-              Open it directly — the Secured Workspace helper writes the SSH config to <code>~/.ssh/config</code> and
-              launches your IDE:
+              Open it directly — the Secured Workspace helper signs you in to Boundary if needed (reusing your portal
+              login), writes the SSH config to <code>~/.ssh/config</code>, and launches your IDE:
             </ListItem>
           </OrderedList>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>

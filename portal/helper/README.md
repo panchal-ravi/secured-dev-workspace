@@ -10,17 +10,22 @@ every command/SSH block itself from validated parameters; a link can never make 
 run an arbitrary command or write arbitrary SSH config.
 
 - `secured-ws://authenticate?addr=&auth_method_id=&terminal=`
-  → opens your terminal running `boundary authenticate oidc …` (one-time SSO; the
-    token caches in your OS keyring for `boundary connect`).
-- `secured-ws://connect?host=&user=&target_id=&addr=&ide=`
-  → upserts the workspace's managed `Host` block in `~/.ssh/config`, then opens your IDE.
+  → opens your terminal running `boundary authenticate oidc …` (manual SSO login;
+    the token caches in your OS keyring for `boundary connect`). Optional now —
+    `connect` signs in on demand; kept as a pre-authenticate / troubleshooting path.
+- `secured-ws://connect?host=&user=&target_id=&addr=&ide=&auth_method_id=`
+  → signs you in to Boundary if no valid token is cached (runs `boundary
+    authenticate oidc`, which reuses the live IBM Verify SSO session from your
+    portal login and completes silently — no re-login), then upserts the
+    workspace's managed `Host` block in `~/.ssh/config` and opens your IDE.
 - `secured-ws://disconnect?host=`
   → removes the workspace's managed `Host` block from `~/.ssh/config` (fired when the
     workspace is destroyed); no-ops if the block was never written.
 
 Parameter validation (rejected otherwise): `addr` must be `https://…`,
-`auth_method_id` `am*_*`, `target_id` `tssh_*`, `host`/`user` alphanumeric-ish,
-`terminal` ∈ {terminal,iterm}, `ide` ∈ {vscode,vscode-insiders,cursor,windsurf}.
+`auth_method_id` `am*_*` (required on `connect` too), `target_id` `tssh_*`,
+`host`/`user` alphanumeric-ish, `terminal` ∈ {terminal,iterm},
+`ide` ∈ {vscode,vscode-insiders,cursor,windsurf}.
 
 ## macOS (built & shipped)
 
@@ -56,8 +61,17 @@ codesign --force --deep --sign - ~/Applications/SecuredWS.app   # re-seal if nee
 xattr -dr com.apple.quarantine ~/Applications/SecuredWS.app
 ```
 
-After that, **Authenticate** and **Open** in the portal work with one click. Requires
-the `boundary` CLI on your `PATH` (already needed for `boundary connect`).
+After that, **Open** in the portal works with one click — it signs you in to Boundary
+automatically (reusing your portal login) and launches the IDE. Requires the
+`boundary` CLI on your `PATH` (already needed for `boundary connect`; the helper also
+looks in `/usr/local/bin` and `/opt/homebrew/bin`).
+
+> **Log into the portal in a normal browser window — not incognito/private.** The
+> silent Boundary sign-in works by reusing the IBM Verify session your portal login
+> created. `boundary authenticate oidc` opens your OS **default browser in a normal
+> window**; an incognito/private session's cookies are isolated from it, so if you
+> logged into the portal in incognito, Boundary can't see that Verify session and you
+> get a full re-login. Use a normal window (the same browser context Boundary opens).
 
 **Self-test** the logic without launching anything: `bash macos/selftest.sh`.
 

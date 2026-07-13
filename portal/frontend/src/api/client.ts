@@ -205,6 +205,7 @@ export function connectLink(p: {
   targetId: string
   addr: string
   ide: string
+  authMethodId: string
 }): string {
   const q = new URLSearchParams({
     host: p.host,
@@ -212,6 +213,9 @@ export function connectLink(p: {
     target_id: p.targetId,
     addr: p.addr,
     ide: p.ide,
+    // The helper signs in to Boundary on demand (reusing the live Verify SSO
+    // session) if no valid token is cached, so connecting is a single click.
+    auth_method_id: p.authMethodId,
   })
   return `${SCHEME}://connect?${q.toString()}`
 }
@@ -224,8 +228,12 @@ export function disconnectLink(host: string): string {
   return `${SCHEME}://disconnect?${q.toString()}`
 }
 
-export function logout(): Promise<Response> {
-  return fetch('/auth/logout', { method: 'POST', credentials: 'include' })
+// logout clears the portal session and returns the IBM Verify RP-initiated logout
+// URL to navigate to (empty when the issuer advertises no end_session_endpoint, in
+// which case the caller just returns home). Redirecting through it ends the shared
+// Verify SSO session so a signed-out user is prompted again at Boundary.
+export function logout(): Promise<{ logout_url: string }> {
+  return fetch('/auth/logout', { method: 'POST', credentials: 'include' }).then(asJSON)
 }
 
 // ---- Platform Admin onboarding plane ----

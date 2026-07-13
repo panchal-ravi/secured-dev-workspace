@@ -6,7 +6,6 @@
 frontend/node_modules
 backend/web
 backend/portal
-backend/helper-dist
 helper
 scripts
 *.md

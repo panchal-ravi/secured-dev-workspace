@@ -43,8 +43,16 @@ pb "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string secured-ws" 2>/dev/null 
 codesign --force --deep --sign - "$app"
 codesign -v "$app"   # fail the build if it didn't seal cleanly
 
-# 5. Zip it (ditto preserves the bundle structure macOS expects).
+# 5. Zip it with `zip -X` — NOT ditto. ditto externalizes each file's resource
+#    fork / provenance xattr as an AppleDouble `._` member (14 of them here); a
+#    developer who expands the download with command-line `unzip` (not Finder's
+#    Archive Utility) gets those `._` files written into the bundle, which breaks
+#    the code seal ("a sealed resource is missing or invalid") and macOS then
+#    silently refuses to launch the app from a secured-ws:// URL — the click does
+#    nothing. `zip -r -X` stores no AppleDouble/__MACOSX, so any unzip tool yields
+#    an intact, correctly-sealed bundle. (-X drops the metadata; the ad-hoc seal
+#    lives in the Mach-O + _CodeSignature file, both preserved byte-for-byte.)
 rm -f "$out_dir/SecuredWS-macos.zip"
-ditto -c -k --keepParent "$app" "$out_dir/SecuredWS-macos.zip"
+( cd "$here/build" && zip -r -X -q "$out_dir/SecuredWS-macos.zip" SecuredWS.app )
 
 echo "built: $out_dir/SecuredWS-macos.zip"

@@ -77,7 +77,7 @@ func run() error {
 	startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	authn, err := auth.New(startCtx, cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCClientSecret, cfg.OIDCRedirectURL, cfg.SessionSecret, cfg.SecureCookies)
+	authn, err := auth.New(startCtx, cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCClientSecret, cfg.OIDCRedirectURL, cfg.SessionSecret, cfg.OIDCPostLogoutRedirect, cfg.SecureCookies)
 	if err != nil {
 		return err
 	}
