@@ -61,6 +61,7 @@ portal/helper/macos/build/
 .env
 portal/backend/portal
 
+skills-lock.json
 
 # ── OS / editor cruft ──────────────────────────────────────────────────
 .DS_Store
