@@ -34,6 +34,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/projectengines"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/projecttemplate"
+	"github.com/secured-dev-workspace/developer-portal/internal/sharedvolume"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
@@ -123,6 +124,7 @@ func run() error {
 	var projectMCP *projectadmin.Handlers
 	var projectTmpl *projecttemplate.Handlers
 	var projectEng *projectengines.Handlers
+	var sharedVolume *sharedvolume.Handlers
 	var agentHandlers *agents.Handlers
 	var agentSvc *agents.Service
 	// engineProvisioner (nil unless the admin plane is on) auto-provisions the standard
@@ -137,6 +139,7 @@ func run() error {
 		}
 		adminHandlers, projectMCP = planes.admin, planes.projectMCP
 		projectTmpl, projectEng = planes.projectTmpl, planes.projectEng
+		sharedVolume = planes.sharedVolume
 		agentHandlers = planes.agents
 		agentSvc = planes.agentSvc
 		if planes.engineSvc != nil {
@@ -186,6 +189,7 @@ func run() error {
 		ProjectMCP:    projectMCP,
 		ProjectTmpl:   projectTmpl,
 		ProjectEng:    projectEng,
+		SharedVolumes: sharedVolume,
 		Agents:        agentHandlers,
 		Store:         st,
 		StaticDir:     staticDir,
@@ -286,11 +290,12 @@ func buildStore(ctx context.Context, cfg config.Config) (store.Store, error) {
 // onboardingPlanes bundles the optional project-onboarding HTTP handlers built
 // together because they share the gateway/LLM clients + the §5 Vault broker.
 type onboardingPlanes struct {
-	admin       *admin.Handlers
-	projectMCP  *projectadmin.Handlers
-	projectTmpl *projecttemplate.Handlers
-	projectEng  *projectengines.Handlers
-	agents      *agents.Handlers
+	admin        *admin.Handlers
+	projectMCP   *projectadmin.Handlers
+	projectTmpl  *projecttemplate.Handlers
+	projectEng   *projectengines.Handlers
+	sharedVolume *sharedvolume.Handlers
+	agents       *agents.Handlers
 	// agentSvc is the agents Service (not just its handlers) so run() can drive the
 	// idle-instance reaper ticker.
 	agentSvc *agents.Service
@@ -351,6 +356,12 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 	pmSvc := projectadmin.New(st, wsvc, executor, nomad, gateway, peSvc, projectadmin.Config{
 		NodePool: cfg.AgentNodePool,
 	})
+	// Per-project shared volumes (EFS). Reuses the workspace service as the project
+	// lookup and the same Nomad client that provisions per-workspace EBS volumes.
+	svSvc := sharedvolume.New(st, wsvc, nomad, sharedvolume.Config{
+		Enabled:      cfg.SharedVolumeEnabled,
+		FilesystemID: cfg.SharedEFSFilesystemID,
+	})
 	// AI-agents plane: reuses the §5 Vault broker (vadmin), the LiteLLM client, and
 	// the shared ContextForge gateway client (for per-template tool-subset virtual
 	// servers). Its WIF role config matches the executor's so the agent job's
@@ -376,15 +387,16 @@ func buildAdminPlane(ctx context.Context, cfg config.Config, st store.Store, wsv
 		LLMModelFast:              cfg.LLMModelFast,
 	})
 	return &onboardingPlanes{
-		admin:       admin.NewHandlers(adminSvc),
-		projectMCP:  projectadmin.NewHandlers(pmSvc),
-		projectTmpl: projecttemplate.NewHandlers(ptSvc),
-		projectEng:  projectengines.NewHandlers(peSvc),
-		agents:      agents.NewHandlers(agSvc),
-		agentSvc:    agSvc,
-		engineSvc:   peSvc,
-		gateway:     gateway,
-		llm:         llm,
+		admin:        admin.NewHandlers(adminSvc),
+		projectMCP:   projectadmin.NewHandlers(pmSvc),
+		projectTmpl:  projecttemplate.NewHandlers(ptSvc),
+		projectEng:   projectengines.NewHandlers(peSvc),
+		sharedVolume: sharedvolume.NewHandlers(svSvc),
+		agents:       agents.NewHandlers(agSvc),
+		agentSvc:     agSvc,
+		engineSvc:    peSvc,
+		gateway:      gateway,
+		llm:          llm,
 	}, nil
 }
 

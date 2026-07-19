@@ -15,6 +15,7 @@ import BaseTemplates from './pages/platformadmin/BaseTemplates'
 import AdminProjects from './pages/platformadmin/Projects'
 import Members from './pages/projectadmin/Members'
 import ProjectMcpServers from './pages/projectadmin/McpServers'
+import SharedVolumes from './pages/projectadmin/SharedVolumes'
 import AgentTemplates from './pages/projectadmin/AgentTemplates'
 import ProjectTemplates from './pages/projectadmin/Templates'
 import GithubAccess from './pages/projectadmin/GithubAccess'
@@ -83,6 +84,7 @@ export default function App() {
           {isPlatformAdmin(me) && <Route path="/admin/base-templates" element={<BaseTemplates />} />}
           <Route path="/projects/:name/members" element={<Members />} />
           <Route path="/projects/:name/mcp-servers" element={<ProjectMcpServers />} />
+          <Route path="/projects/:name/shared-volumes" element={<SharedVolumes />} />
           <Route path="/projects/:name/agent-templates" element={<AgentTemplates />} />
           <Route path="/projects/:name/templates" element={<ProjectTemplates />} />
           <Route path="/projects/:name/github" element={<GithubAccess />} />

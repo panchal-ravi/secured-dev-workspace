@@ -162,6 +162,11 @@ EOH
         # local SSH-config "Open in IDE" writes (the secured-ws:// helper drives that).
         PORTAL_SSH_CONFIG_PATH = ""
         PORTAL_LOG_LEVEL       = "info"
+        # Per-project shared volumes (EFS). When enabled, project-admins can create
+        # named shared volumes and the portal provisions one EFS access point each
+        # against this filesystem via the Nomad CSI API. Empty id when off.
+        PORTAL_SHARED_VOLUME_ENABLED     = "${shared_volume_enabled}"
+        PORTAL_SHARED_EFS_FILESYSTEM_ID  = "${shared_efs_filesystem_id}"
 %{ if enable_platform_admin ~}
         # Platform Admin onboarding plane. Gateway base URLs (PORTAL_MCP_GATEWAY_ADDR /
         # PORTAL_LLM_GATEWAY_ADDR) come from the Nomad service-discovery template block

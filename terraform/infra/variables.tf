@@ -168,6 +168,18 @@ variable "ebs_csi_driver_image" {
   default     = "public.ecr.aws/ebs-csi-driver/aws-ebs-csi-driver:v1.44.0"
 }
 
+variable "efs_csi_driver_image" {
+  description = "AWS EFS CSI driver image for the Nomad monolith plugin job (efs-csi.tf). Pin a concrete release tag verified to exist at apply."
+  type        = string
+  default     = "public.ecr.aws/efs-csi-driver/amazon/aws-efs-csi-driver:v2.1.11"
+}
+
+variable "enable_shared_volume" {
+  description = "Provision AWS EFS + the EFS CSI driver + node IAM for per-project shared volumes (package/build caches + datasets mounted into workspaces). Additive; off by default = zero diff vs the shipped deployment."
+  type        = bool
+  default     = false
+}
+
 # --- LiteLLM AI Gateway (see llm-gateway.tf) ---
 
 variable "litellm_image" {

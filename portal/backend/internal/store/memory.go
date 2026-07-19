@@ -19,6 +19,7 @@ type Memory struct {
 	projectRoles map[string]ProjectRole          // key: project\x00subject\x00role
 	projectCaps  map[string]ProjectCapabilities  // key: project
 	projectMCP   map[string]ProjectMCPServer     // key: project\x00name
+	sharedVol    map[string]SharedVolume         // key: project\x00name
 	projectAgent map[string]ProjectAgent         // key: project\x00name
 	projectTmplA map[string]ProjectAgentTemplate // key: project\x00name
 	projectInstA map[string]ProjectAgentInstance // key: project\x00template\x00subject
@@ -37,6 +38,7 @@ func NewMemory() *Memory {
 		projectRoles: map[string]ProjectRole{},
 		projectCaps:  map[string]ProjectCapabilities{},
 		projectMCP:   map[string]ProjectMCPServer{},
+		sharedVol:    map[string]SharedVolume{},
 		projectAgent: map[string]ProjectAgent{},
 		projectTmplA: map[string]ProjectAgentTemplate{},
 		projectInstA: map[string]ProjectAgentInstance{},
@@ -158,6 +160,56 @@ func (m *Memory) ProjectRolesForSubject(_ context.Context, subject string) ([]Pr
 }
 
 func pmsKey(project, name string) string { return project + "\x00" + name }
+
+func (m *Memory) CreateSharedVolume(_ context.Context, v SharedVolume) (SharedVolume, error) {
+	if v.Project == "" || v.Name == "" {
+		return SharedVolume{}, fmt.Errorf("store: shared volume requires project and name: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := pmsKey(v.Project, v.Name)
+	if _, ok := m.sharedVol[k]; ok {
+		return SharedVolume{}, fmt.Errorf("store: shared volume %s/%s already exists: %w", v.Project, v.Name, apperr.ErrConflict)
+	}
+	now := m.now()
+	v.CreatedAt, v.UpdatedAt = now, now
+	m.sharedVol[k] = v
+	return v, nil
+}
+
+func (m *Memory) GetSharedVolume(_ context.Context, project, name string) (SharedVolume, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.sharedVol[pmsKey(project, name)]
+	if !ok {
+		return SharedVolume{}, fmt.Errorf("store: shared volume %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return v, nil
+}
+
+func (m *Memory) ListSharedVolumes(_ context.Context, project string) ([]SharedVolume, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []SharedVolume{}
+	for _, v := range m.sharedVol {
+		if v.Project == project {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (m *Memory) DeleteSharedVolume(_ context.Context, project, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := pmsKey(project, name)
+	if _, ok := m.sharedVol[k]; !ok {
+		return fmt.Errorf("store: shared volume %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	delete(m.sharedVol, k)
+	return nil
+}
 
 func (m *Memory) UpsertProjectMCPServer(_ context.Context, s ProjectMCPServer) (ProjectMCPServer, error) {
 	if s.Project == "" || s.Name == "" {

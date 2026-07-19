@@ -20,6 +20,7 @@ import {
   MachineLearningModel,
   UserMultiple,
   Bot,
+  VolumeFileStorage,
   Asleep,
   Light,
 } from '@carbon/icons-react'
@@ -93,9 +94,12 @@ export default function AppHeader({
     { key: 'mcp-servers', label: 'mcp servers', icon: Catalog },
     { key: 'agent-templates', label: 'agent templates', icon: Bot },
     { key: 'templates', label: 'workspace templates', icon: Catalog },
+    { key: 'shared-volumes', label: 'shared volumes', icon: VolumeFileStorage },
     { key: 'github', label: 'github access', icon: DataStructured },
   ]
-  const routeMatch = pathname.match(/^\/projects\/([^/]+)\/(members|mcp-servers|agent-templates|templates|github)/)
+  const routeMatch = pathname.match(
+    /^\/projects\/([^/]+)\/(members|mcp-servers|agent-templates|templates|shared-volumes|github)/,
+  )
   const activeProject = routeMatch ? decodeURIComponent(routeMatch[1]) : admin[0]
 
   return (

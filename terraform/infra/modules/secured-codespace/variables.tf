@@ -64,6 +64,12 @@ variable "enable_default_spare" {
   default     = false
 }
 
+variable "enable_shared_volume" {
+  description = "Provision the shared EFS filesystem + mount targets + NFS SG + EFS-CSI IAM for per-project shared volumes (package/build caches + datasets mounted into workspaces). Additive; off by default = no EFS resources at all."
+  type        = bool
+  default     = false
+}
+
 variable "agent_node_count" {
   description = "Number of agent worker nodes to provision when enable_agent_nodes = true."
   type        = number

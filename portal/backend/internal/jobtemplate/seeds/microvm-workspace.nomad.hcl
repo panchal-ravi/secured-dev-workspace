@@ -95,6 +95,12 @@ job "${job_name}" {
       attachment_mode = "file-system"
     }
 
+    # Per-project shared volumes (EFS) the developer selected at launch, each a
+    # multi-node-multi-writer CSI volume. Empty when none selected. NOTE: mounting
+    # NFS-backed EFS inside a Kata microVM guest is UNVERIFIED (S1 covers dev+gpu);
+    # the job registers regardless, but the mount may not surface in the guest.
+    ${shared_volume_defs}
+
     task "workspace" {
       driver = "docker"
 
@@ -111,6 +117,9 @@ job "${job_name}" {
         destination = "/home/dev"
         read_only   = false
       }
+
+      # Mounts for the developer's selected shared volumes (empty when none).
+      ${shared_volume_mounts}
 
       # Workload-identity federation: Nomad signs a per-task JWT (aud=vault.io from
       # the agent default_identity) and exchanges it at Vault's jwt-nomad auth
@@ -237,6 +246,22 @@ sudo -u dev git config --global 'credential.https://github.com.helper' /local/gi
 # and idempotently; a failure WARNs without aborting the workspace (a missing MCP tool
 # must never cost the developer their SSH session). The base template registers none.
 # @project-addons:entrypoint
+
+# Point package/build caches at a shared volume when a project-admin has created
+# one mounted at /shared/cache and the developer kept it selected. Guarded on the
+# directory existing, so a workspace with no shared cache volume is unaffected. The
+# EFS access point overrides POSIX ids, so every workspace sharing the volume reads
+# and writes the same warm cache.
+if [ -d /shared/cache ]; then
+  sudo -u dev mkdir -p /shared/cache/go /shared/cache/go-build /shared/cache/npm /shared/cache/pip
+  cat > /etc/profile.d/shared-cache.sh <<'CACHEENV'
+export GOMODCACHE=/shared/cache/go
+export GOCACHE=/shared/cache/go-build
+export npm_config_cache=/shared/cache/npm
+export PIP_CACHE_DIR=/shared/cache/pip
+CACHEENV
+  chmod 0644 /etc/profile.d/shared-cache.sh
+fi
 
 # Clone the project repo on first boot only. Private repos work: the credential
 # helper supplies the GitHub App token for the HTTPS github.com clone.

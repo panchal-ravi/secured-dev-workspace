@@ -237,6 +237,53 @@ func (n *Nomad) CreateHostVolume(namespace, name, nodePool string) error {
 	return nil
 }
 
+// efsPluginID is the AWS EFS CSI driver plugin (efs-csi.tf), distinct from the
+// per-workspace EBS plugin. It backs per-project SHARED volumes.
+const efsPluginID = "aws-efs"
+
+// CreateSharedVolume provisions a per-project SHARED volume as an AWS EFS access
+// point via the EFS CSI driver (aws-efs plugin), mounted into workspaces at
+// /shared alongside their per-workspace EBS /home/dev. Unlike the EBS home volume
+// it is MULTI-node-multi-writer (many workspaces across nodes read/write it at
+// once) and carries NO AZ topology constraint (EFS is regional, not AZ-scoped).
+// The driver dynamically carves one access point per volume under basePath "/name"
+// on the shared filesystem; the access point's enforced POSIX identity + root path
+// is the per-project tenant boundary and lets every mounter share the same files.
+// capacity is ignored by EFS but still required by the CSI Volume API.
+func (n *Nomad) CreateSharedVolume(namespace, name, fileSystemID string) error {
+	vol := &napi.CSIVolume{
+		ID:        name,
+		Name:      name,
+		Namespace: namespace,
+		PluginID:  efsPluginID,
+		RequestedCapabilities: []*napi.CSIVolumeCapability{{
+			AccessMode:     napi.CSIVolumeAccessModeMultiNodeMultiWriter,
+			AttachmentMode: napi.CSIVolumeAttachmentModeFilesystem,
+		}},
+		RequestedCapacityMin: 1 * 1024 * 1024,        // 1 MiB — ignored by EFS, required by the API
+		RequestedCapacityMax: 1 * 1024 * 1024 * 1024, // 1 GiB
+		Parameters: map[string]string{
+			"provisioningMode": "efs-ap",
+			"fileSystemId":     fileSystemID,
+			// The access point's root dir is created with these perms and owned by a
+			// gid the driver allocates from the range below; EFS then OVERRIDES every
+			// mounter's POSIX id with that identity, so all workspaces sharing the
+			// volume act as the same owner (shared read/write) regardless of node.
+			"directoryPerms": "0755",
+			"gidRangeStart":  "1000",
+			"gidRangeEnd":    "2000",
+			"basePath":       "/" + name,
+		},
+	}
+	if _, _, err := n.c.CSIVolumes().Create(vol, &napi.WriteOptions{Namespace: namespace}); err != nil {
+		return fmt.Errorf("nomad: create shared CSI volume %q: %w", name, err)
+	}
+	if err := n.waitCSIVolumeSchedulable(name, namespace); err != nil {
+		return err
+	}
+	return nil
+}
+
 // nodeZone returns the AWS availability-zone of a node from its fingerprint, so a
 // CSI volume can be constrained (topology) to the zone where it will attach.
 func (n *Nomad) nodeZone(nodeID string) (string, error) {

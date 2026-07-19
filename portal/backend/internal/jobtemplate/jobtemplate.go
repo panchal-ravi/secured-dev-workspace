@@ -23,8 +23,11 @@ var ProjectStaticPlaceholders = []string{
 }
 
 // PerWorkspacePlaceholders are filled by jobrender.Render at workspace launch (pass-2).
+// shared_volume_defs / shared_volume_mounts hold the HCL for the developer's selected
+// shared volumes (empty when none), rendered per-workspace since selection is per-launch.
 var PerWorkspacePlaceholders = []string{
 	"job_name", "ssh_port", "volume_name", "developer_email", "git_user_name",
+	"shared_volume_defs", "shared_volume_mounts",
 }
 
 // allowedPlaceholders is the union set a template may reference.
@@ -40,7 +43,7 @@ func allowedPlaceholders() map[string]bool {
 }
 
 // ValidatePlaceholders is the correctness gate for a template's source: every
-// ${...} token must be one of the 15 known placeholders. An unknown token would
+// ${...} token must be one of the 17 known placeholders. An unknown token would
 // survive both passes and make jobrender.Render fail at launch (a token that is
 // never substituted), so it is rejected at author/publish time instead. Returns
 // ErrBadRequest naming the offending tokens.

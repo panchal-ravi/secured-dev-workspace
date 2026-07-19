@@ -49,6 +49,11 @@ output "gpu_instance_public_ip" {
   value       = one(aws_instance.gpu[*].public_ip)
 }
 
+output "efs_filesystem_id" {
+  description = "ID of the shared-volume EFS filesystem, or \"\" when enable_shared_volume = false. The portal passes this to the EFS CSI driver as the fileSystemId when dynamically provisioning per-project shared volumes."
+  value       = var.enable_shared_volume ? aws_efs_file_system.shared[0].id : ""
+}
+
 output "agent_node_private_ips" {
   description = "Private IPs of the agent worker nodes (node pool \"agents\"), or [] when enable_agent_nodes = false. The agent-platform tier places agent instances + wrapped MCP servers on these via node_pool = \"agents\"."
   value       = aws_instance.agent[*].private_ip

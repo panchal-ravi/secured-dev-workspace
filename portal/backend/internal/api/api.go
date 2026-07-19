@@ -26,6 +26,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/projectrole"
 	"github.com/secured-dev-workspace/developer-portal/internal/projecttemplate"
 	"github.com/secured-dev-workspace/developer-portal/internal/rbac"
+	"github.com/secured-dev-workspace/developer-portal/internal/sharedvolume"
 	"github.com/secured-dev-workspace/developer-portal/internal/store"
 	"github.com/secured-dev-workspace/developer-portal/internal/workspace"
 )
@@ -80,6 +81,7 @@ type Options struct {
 	ProjectMCP    *projectadmin.Handlers     // optional; project MCP-deploy plane
 	ProjectTmpl   *projecttemplate.Handlers  // optional; project-template create plane
 	ProjectEng    *projectengines.Handlers   // optional; project engine-provision plane
+	SharedVolumes *sharedvolume.Handlers     // optional; per-project shared EFS volumes
 	Agents        *agents.Handlers           // optional; project AI-agents plane (ai-agents capability)
 	Store         store.Store                // nil only in tests; backs role + capability gating
 	StaticDir     string
@@ -196,6 +198,13 @@ func NewMux(opts Options) http.Handler {
 		}
 		if opts.ProjectEng != nil {
 			opts.ProjectEng.Register(mux, paProtect, paMutate)
+		}
+		// Shared volumes: listing is membership-only (a developer populates the
+		// workspace-create selection), create/delete are project-admin powers.
+		if opts.SharedVolumes != nil {
+			mux.Handle("GET /api/projects/{name}/shared-volumes", protect(opts.SharedVolumes.List))
+			mux.Handle("POST /api/projects/{name}/shared-volumes", paMutate(opts.SharedVolumes.Create))
+			mux.Handle("DELETE /api/projects/{name}/shared-volumes/{vol}", paMutate(opts.SharedVolumes.Delete))
 		}
 		// Agent TEMPLATE plane: project-admins author/deploy-test/publish agent cards.
 		// Authoring is a project-admin power (the sole author of what agents exist);
@@ -398,19 +407,21 @@ func (s *server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Flavor string `json:"flavor"`
+		Flavor        string   `json:"flavor"`
+		SharedVolumes []string `json:"shared_volumes"`
 	}
-	// The only field is flavor, optional for single-flavor projects, so an empty
-	// body is valid; reject only malformed JSON.
+	// Flavor is optional for single-flavor projects and shared_volumes may be empty,
+	// so an empty body is valid; reject only malformed JSON.
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "invalid request body", middleware.RequestID(r.Context()))
 		return
 	}
 	ws, err := s.svc.Create(r.Context(), d, workspace.CreateInput{
-		Flavor:  body.Flavor,
-		Email:   u.Email,
-		Handle:  u.Handle,
-		GitName: u.GitName,
+		Flavor:        body.Flavor,
+		Email:         u.Email,
+		Handle:        u.Handle,
+		GitName:       u.GitName,
+		SharedVolumes: body.SharedVolumes,
 	})
 	if err != nil {
 		s.fail(w, r, err)

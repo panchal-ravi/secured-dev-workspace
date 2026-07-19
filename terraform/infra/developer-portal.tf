@@ -258,6 +258,12 @@ resource "nomad_job" "developer_portal" {
     llm_models        = join(",", local.llm_model_names)
     llm_model_primary = local.llm_model_primary
     llm_model_fast    = local.llm_model_fast
+
+    # Per-project shared volumes (EFS). When enabled, the portal dynamically
+    # provisions one EFS access point per named shared volume against this
+    # filesystem via the Nomad CSI API. Empty id when the feature is off.
+    shared_volume_enabled    = var.enable_shared_volume
+    shared_efs_filesystem_id = module.secured_codespace.efs_filesystem_id
   })
 
   depends_on = [

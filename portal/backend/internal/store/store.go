@@ -353,6 +353,22 @@ type AuditEvent struct {
 	At      time.Time      `json:"at"`
 }
 
+// SharedVolume is a per-project shared EFS volume a project-admin created for
+// package/build caches or datasets. It mounts into a project's workspaces at
+// MountPath (read-only when ReadOnly); the portal provisions one EFS access point
+// per volume via the Nomad CSI API. VolumeID is the Nomad CSI volume id
+// (shared-<project>-<name>). No secret material is stored.
+type SharedVolume struct {
+	Project   string    `json:"project"`
+	Name      string    `json:"name"`
+	MountPath string    `json:"mount_path"`
+	ReadOnly  bool      `json:"read_only"`
+	VolumeID  string    `json:"volume_id"`
+	CreatedBy string    `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Store is the control-plane persistence the admin plane depends on.
 type Store interface {
 	// MCP server deploy definitions.
@@ -382,6 +398,12 @@ type Store interface {
 	GetProjectMCPServer(ctx context.Context, project, name string) (ProjectMCPServer, error)
 	ListProjectMCPServers(ctx context.Context, project string) ([]ProjectMCPServer, error)
 	DeleteProjectMCPServer(ctx context.Context, project, name string) error
+
+	// Per-project shared volumes (EFS caches/datasets).
+	CreateSharedVolume(ctx context.Context, v SharedVolume) (SharedVolume, error)
+	GetSharedVolume(ctx context.Context, project, name string) (SharedVolume, error)
+	ListSharedVolumes(ctx context.Context, project string) ([]SharedVolume, error)
+	DeleteSharedVolume(ctx context.Context, project, name string) error
 
 	// Project-deployed AI agents (YAML-configured deep agents).
 	UpsertProjectAgent(ctx context.Context, a ProjectAgent) (ProjectAgent, error)

@@ -129,6 +129,12 @@ type Config struct {
 	// InstancePrivateIP is written into each project descriptor (all-in-one node).
 	InstancePrivateIP string // PORTAL_INSTANCE_PRIVATE_IP
 
+	// Per-project shared volumes (EFS). When enabled, project-admins can create
+	// named shared volumes and the portal provisions one EFS access point each
+	// against SharedEFSFilesystemID via the Nomad CSI API.
+	SharedVolumeEnabled   bool   // PORTAL_SHARED_VOLUME_ENABLED (default false)
+	SharedEFSFilesystemID string // PORTAL_SHARED_EFS_FILESYSTEM_ID (fileSystemId for efs-ap provisioning)
+
 	// Project engine-provisioning (Phase C). Values the portal bakes into project
 	// templates + uses when standing up per-project engines from the Portal.
 	LLMGatewayPrivateEndpoint string // PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT (node-ip:4000 — what a workspace uses as llm_base_url)
@@ -202,6 +208,9 @@ func Load() (Config, error) {
 		BoundaryOIDCAuthMethodID: os.Getenv("PORTAL_BOUNDARY_OIDC_AUTH_METHOD_ID"),
 		BoundaryOrgScopeID:       os.Getenv("PORTAL_BOUNDARY_ORG_SCOPE_ID"),
 		InstancePrivateIP:        os.Getenv("PORTAL_INSTANCE_PRIVATE_IP"),
+
+		SharedVolumeEnabled:   envBool("PORTAL_SHARED_VOLUME_ENABLED", false),
+		SharedEFSFilesystemID: os.Getenv("PORTAL_SHARED_EFS_FILESYSTEM_ID"),
 
 		LLMGatewayPrivateEndpoint: os.Getenv("PORTAL_LLM_GATEWAY_PRIVATE_ENDPOINT"),
 		VaultCredStoreAddress:     os.Getenv("PORTAL_VAULT_CRED_STORE_ADDR"),

@@ -1,0 +1,51 @@
+# AWS EFS CSI driver — MONOLITH plugin. Rendered by terraform/infra/efs-csi.tf.
+# type = "system" so every Nomad client (default, gpu, microvm, agents) can stage
+# and mount an EFS access point for a workspace's /shared volume. Runs PRIVILEGED:
+# it performs the NFS mount, which needs host mount access (the node configs enable
+# allow_privileged for the docker driver). The single binary serves Identity +
+# Controller + Node, so csi_plugin type = "monolith" — the controller half calls
+# the EFS API (CreateAccessPoint / DeleteAccessPoint) via the node IAM instance
+# profile (modules/secured-codespace/iam.tf); no static creds.
+job "efs-csi" {
+  namespace   = "${namespace}"
+  datacenters = ["dc1"]
+  type        = "system"
+  # Run on EVERY node pool — a system job defaults to "default" only, which would
+  # leave gpu/microvm/agents workspaces without the node plugin to mount /shared.
+  node_pool = "all"
+
+  group "efs" {
+    task "plugin" {
+      driver = "docker"
+
+      config {
+        image      = "${image}"
+        force_pull = false
+        privileged = true
+
+        args = [
+          "--endpoint=unix://csi/csi.sock",
+          "--logtostderr",
+          "--v=2",
+        ]
+      }
+
+      # Region for the EFS API client. The instance profile supplies credentials
+      # via IMDS; AWS_REGION is set explicitly so it never depends on an IMDS hop.
+      env {
+        AWS_REGION = "${aws_region}"
+      }
+
+      csi_plugin {
+        id        = "aws-efs"
+        type      = "monolith"
+        mount_dir = "/csi"
+      }
+
+      resources {
+        cpu    = 200
+        memory = 256
+      }
+    }
+  }
+}

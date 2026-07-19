@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS project_mcp_servers (
     data       JSONB       NOT NULL,
     PRIMARY KEY (project, name)
 );
+CREATE TABLE IF NOT EXISTS shared_volumes (
+    project    TEXT        NOT NULL,
+    name       TEXT        NOT NULL,
+    created_by TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    data       JSONB       NOT NULL,
+    PRIMARY KEY (project, name)
+);
 CREATE TABLE IF NOT EXISTS project_agents (
     project    TEXT        NOT NULL,
     name       TEXT        NOT NULL,
@@ -418,6 +427,89 @@ func (p *Postgres) DeleteProjectMCPServer(ctx context.Context, project, name str
 		return fmt.Errorf("store: project mcp server %s/%s: %w", project, name, apperr.ErrNotFound)
 	}
 	return nil
+}
+
+// ---- project shared volumes ----
+
+func (p *Postgres) CreateSharedVolume(ctx context.Context, v SharedVolume) (SharedVolume, error) {
+	if v.Project == "" || v.Name == "" {
+		return SharedVolume{}, fmt.Errorf("store: shared volume requires project and name: %w", apperr.ErrBadRequest)
+	}
+	now := p.now()
+	v.CreatedAt, v.UpdatedAt = now, now
+	blob, err := json.Marshal(v)
+	if err != nil {
+		return SharedVolume{}, fmt.Errorf("store: marshal shared volume: %w", err)
+	}
+	const q = `
+INSERT INTO shared_volumes (project, name, created_by, created_at, updated_at, data)
+VALUES ($1, $2, $3, $4, $4, $5)
+RETURNING created_by, created_at, updated_at`
+	row := p.db.QueryRowContext(ctx, q, v.Project, v.Name, v.CreatedBy, now, blob)
+	if err := row.Scan(&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		return SharedVolume{}, fmt.Errorf("store: create shared volume: %w", err)
+	}
+	return v, nil
+}
+
+func (p *Postgres) GetSharedVolume(ctx context.Context, project, name string) (SharedVolume, error) {
+	const q = `SELECT data, created_by, created_at, updated_at FROM shared_volumes WHERE project = $1 AND name = $2`
+	return p.scanSharedVolume(p.db.QueryRowContext(ctx, q, project, name), project, name)
+}
+
+func (p *Postgres) ListSharedVolumes(ctx context.Context, project string) ([]SharedVolume, error) {
+	const q = `SELECT data, created_by, created_at, updated_at FROM shared_volumes WHERE project = $1 ORDER BY name`
+	rows, err := p.db.QueryContext(ctx, q, project)
+	if err != nil {
+		return nil, fmt.Errorf("store: list shared volumes: %w", err)
+	}
+	defer rows.Close()
+	out := []SharedVolume{}
+	for rows.Next() {
+		v, err := p.scanSharedVolume(rows, "", "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) DeleteSharedVolume(ctx context.Context, project, name string) error {
+	res, err := p.db.ExecContext(ctx, `DELETE FROM shared_volumes WHERE project = $1 AND name = $2`, project, name)
+	if err != nil {
+		return fmt.Errorf("store: delete shared volume: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete shared volume rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: shared volume %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	return nil
+}
+
+func (p *Postgres) scanSharedVolume(row scanRow, project, name string) (SharedVolume, error) {
+	var (
+		v         SharedVolume
+		blob      []byte
+		createdBy string
+		createdAt time.Time
+		updatedAt time.Time
+	)
+	err := row.Scan(&blob, &createdBy, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SharedVolume{}, fmt.Errorf("store: shared volume %s/%s: %w", project, name, apperr.ErrNotFound)
+	}
+	if err != nil {
+		return SharedVolume{}, fmt.Errorf("store: get shared volume: %w", err)
+	}
+	if err := json.Unmarshal(blob, &v); err != nil {
+		return SharedVolume{}, fmt.Errorf("store: unmarshal shared volume: %w", err)
+	}
+	v.CreatedBy, v.CreatedAt, v.UpdatedAt = createdBy, createdAt, updatedAt
+	return v, nil
 }
 
 func (p *Postgres) scanProjectMCP(row scanRow, project, name string) (ProjectMCPServer, error) {

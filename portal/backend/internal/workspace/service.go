@@ -99,6 +99,10 @@ type CreateInput struct {
 	Email   string
 	Handle  string
 	GitName string
+	// SharedVolumes are the names of this project's shared volumes the developer
+	// chose to mount (pre-selected in the UI). Each is looked up in THIS project, so
+	// a name from another project simply isn't found — the isolation boundary holds.
+	SharedVolumes []string
 }
 
 // Workspace is the UI view of one workspace, including ready-to-use connection
@@ -198,6 +202,28 @@ func (s *Service) ListAllWorkspaces(ctx context.Context, groups []string, handle
 
 // Create provisions a new workspace end to end (Nomad volume + job, Boundary
 // access graph), mirroring terraform/workspace.
+// renderSharedVolumes builds the group-level volume{} defs and task-level
+// volume_mount{} blocks for the developer's selected shared volumes, filling the
+// ${shared_volume_defs} / ${shared_volume_mounts} placeholders. Each name is
+// resolved in THIS project (a foreign or stale name errors), so a workspace can
+// only ever mount volumes that belong to its own project.
+func (s *Service) renderSharedVolumes(ctx context.Context, project string, names []string) (defs, mounts string, err error) {
+	if len(names) == 0 {
+		return "", "", nil
+	}
+	var db, mb strings.Builder
+	for _, name := range names {
+		v, err := s.store.GetSharedVolume(ctx, project, name)
+		if err != nil {
+			return "", "", fmt.Errorf("shared volume %q: %w", name, err)
+		}
+		label := "sv-" + v.Name
+		fmt.Fprintf(&db, "    volume %q {\n      type            = \"csi\"\n      source          = %q\n      read_only       = %t\n      access_mode     = \"multi-node-multi-writer\"\n      attachment_mode = \"file-system\"\n    }\n", label, v.VolumeID, v.ReadOnly)
+		fmt.Fprintf(&mb, "      volume_mount {\n        volume      = %q\n        destination = %q\n        read_only   = %t\n      }\n", label, v.MountPath, v.ReadOnly)
+	}
+	return db.String(), mb.String(), nil
+}
+
 func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in CreateInput) (Workspace, error) {
 	if err := requireProvisioned(d); err != nil {
 		return Workspace{}, err
@@ -234,12 +260,18 @@ func (s *Service) Create(ctx context.Context, d descriptor.Descriptor, in Create
 	if err != nil {
 		return Workspace{}, err
 	}
+	svDefs, svMounts, err := s.renderSharedVolumes(ctx, d.ProjectName, in.SharedVolumes)
+	if err != nil {
+		return Workspace{}, err
+	}
 	rendered, err := jobrender.Render(pt.RenderedSource, map[string]string{
-		"job_name":        name,
-		"ssh_port":        strconv.Itoa(port),
-		"volume_name":     volume,
-		"developer_email": in.Email,
-		"git_user_name":   in.GitName,
+		"job_name":             name,
+		"ssh_port":             strconv.Itoa(port),
+		"volume_name":          volume,
+		"developer_email":      in.Email,
+		"git_user_name":        in.GitName,
+		"shared_volume_defs":   svDefs,
+		"shared_volume_mounts": svMounts,
 	})
 	if err != nil {
 		return Workspace{}, err

@@ -136,7 +136,10 @@ export function listAllWorkspaces(): Promise<Workspace[]> {
     .then((d) => (d.workspaces as Workspace[]) || [])
 }
 
-export function createWorkspace(name: string, body: { flavor?: string }): Promise<Workspace> {
+export function createWorkspace(
+  name: string,
+  body: { flavor?: string; shared_volumes?: string[] },
+): Promise<Workspace> {
   return fetch(`/api/projects/${encodeURIComponent(name)}/workspaces`, {
     method: 'POST',
     credentials: 'include',
@@ -603,6 +606,40 @@ export function updateProjectMcpServer(
 
 export function deleteProjectMcp(project: string, name: string): Promise<void> {
   return fetch(`/api/projects/${encodeURIComponent(project)}/mcp-servers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).then(expectOK)
+}
+
+// ---- Per-project shared volumes (EFS caches/datasets) ----
+
+export interface SharedVolume {
+  project: string
+  name: string
+  mount_path: string
+  read_only: boolean
+  volume_id: string
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateSharedVolumeInput {
+  name: string
+  mount_path?: string
+  read_only?: boolean
+}
+
+export function listSharedVolumes(project: string): Promise<SharedVolume[]> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/shared-volumes`, { credentials: 'include' }).then(asJSON)
+}
+
+export function createSharedVolume(project: string, input: CreateSharedVolumeInput): Promise<SharedVolume> {
+  return post(`/api/projects/${encodeURIComponent(project)}/shared-volumes`, input)
+}
+
+export function deleteSharedVolume(project: string, name: string): Promise<void> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/shared-volumes/${encodeURIComponent(name)}`, {
     method: 'DELETE',
     credentials: 'include',
   }).then(expectOK)

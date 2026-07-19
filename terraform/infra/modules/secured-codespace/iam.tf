@@ -68,6 +68,32 @@ resource "aws_iam_role_policy" "ebs_csi" {
   policy = data.aws_iam_policy_document.ebs_csi.json
 }
 
+# EFS access-point lifecycle for the EFS CSI driver (efs-csi.tf) — dynamic
+# provisioning creates/deletes one access point per shared volume. Only attached
+# when the shared-volume feature is on, so the flag-off deployment is unchanged.
+data "aws_iam_policy_document" "efs_csi" {
+  statement {
+    sid    = "EFSAccessPointLifecycle"
+    effect = "Allow"
+    actions = [
+      "elasticfilesystem:DescribeAccessPoints",
+      "elasticfilesystem:DescribeFileSystems",
+      "elasticfilesystem:DescribeMountTargets",
+      "elasticfilesystem:CreateAccessPoint",
+      "elasticfilesystem:DeleteAccessPoint",
+      "elasticfilesystem:TagResource",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "efs_csi" {
+  count  = var.enable_shared_volume ? 1 : 0
+  name   = "efs-csi"
+  role   = aws_iam_role.instance.id
+  policy = data.aws_iam_policy_document.efs_csi.json
+}
+
 resource "aws_iam_instance_profile" "instance" {
   name = "${local.name}-node"
   role = aws_iam_role.instance.name
