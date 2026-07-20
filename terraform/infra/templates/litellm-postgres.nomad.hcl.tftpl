@@ -79,8 +79,13 @@ job "litellm-postgres" {
       # WIF: read ONLY the gateway secret path (the infra-llm-gateway role/policy)
       # for the Postgres password. (The volume is pre-chowned to uid 70 by the
       # init-data-perms prestart task above.)
+      #
+      # change_mode=noop: the vault block defaults to "restart", so each hourly Vault
+      # token re-acquisition would bounce Postgres (~5s of refused connections). The
+      # password is only read at initdb — a renewed token must not restart the DB.
       vault {
-        role = "${wif_role}"
+        role        = "${wif_role}"
+        change_mode = "noop"
       }
 
       template {
