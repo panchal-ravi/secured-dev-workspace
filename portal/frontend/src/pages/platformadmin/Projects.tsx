@@ -184,6 +184,10 @@ export default function Projects() {
                 setDeleteFor(detail)
                 setConfirmName('')
                 setDeleteErr('')
+                // Close the Details modal so only the confirm modal is open — two stacked
+                // Carbon Modals leave the first modal's focus-trap active, which blocks the
+                // confirm TextInput from receiving focus/typing until it is reopened.
+                setDetail(null)
               }}
             >
               Delete project…
