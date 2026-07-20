@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
@@ -325,9 +326,17 @@ func (s *Service) Start(ctx context.Context, d descriptor.Descriptor, handle, jo
 	return s.nomad.StartJob(d.Namespace, jobName)
 }
 
-// Destroy tears a workspace down completely: purge the Nomad job, delete its
-// home volume, and remove the Boundary graph. The volume and alias names derive
-// from the job name exactly as allocateName built them.
+// Destroy tears a workspace down completely: stop the Nomad job, delete its
+// home volume, purge the job, and remove the Boundary graph. The volume and
+// alias names derive from the job name exactly as allocateName built them.
+//
+// Order matters. We STOP (not purge) first so the alloc releases its EBS home
+// volume and the CSI driver detaches the disk from the node; then delete the
+// volume; then purge the job. Purging first would (a) fire DeleteVolume before
+// the detach completed → EC2 VolumeInUse, and (b) remove the job from the list
+// so a mid-teardown failure would orphan the volume with no way to retry from
+// the UI. With this order a failure leaves the (dead) job listed and the whole
+// Destroy is safe to re-run to convergence.
 func (s *Service) Destroy(ctx context.Context, d descriptor.Descriptor, handle, jobName string) error {
 	if err := requireOwned(handle, jobName); err != nil {
 		return err
@@ -336,10 +345,13 @@ func (s *Service) Destroy(ctx context.Context, d descriptor.Descriptor, handle, 
 	volume := "home-" + handle + "-" + wsName
 	alias := fmt.Sprintf("%s.%s.%s.%s", wsName, handle, d.ProjectName, d.AliasSuffix)
 
-	if err := s.nomad.PurgeJob(d.Namespace, jobName); err != nil {
+	if err := s.nomad.StopJob(d.Namespace, jobName); err != nil {
 		return err
 	}
-	if err := s.nomad.DeleteHostVolume(d.Namespace, volume); err != nil {
+	if err := s.deleteHomeVolume(ctx, d.Namespace, volume); err != nil {
+		return err
+	}
+	if err := s.nomad.PurgeJob(d.Namespace, jobName); err != nil {
 		return err
 	}
 	if err := s.bndry.Destroy(ctx, hashistack.DestroyInput{
@@ -356,6 +368,40 @@ func (s *Service) Destroy(ctx context.Context, d descriptor.Descriptor, handle, 
 		_ = localssh.Remove(s.cfg.SSHConfigPath, jobName)
 	}
 	return nil
+}
+
+// deleteHomeVolume deletes a workspace's home CSI volume, tolerating the window
+// where the EBS disk is still detaching from the node after the job stopped: EC2
+// rejects DeleteVolume with VolumeInUse until the CSI driver finishes detaching,
+// which lags the alloc stop by a few seconds. Retry only that condition (any
+// other error surfaces immediately), backing off until the detach completes or
+// the budget (~50s) is spent, honoring ctx cancellation.
+func (s *Service) deleteHomeVolume(ctx context.Context, namespace, volume string) error {
+	const attempts = 10
+	const backoff = 5 * time.Second
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = s.nomad.DeleteHostVolume(namespace, volume); err == nil || !isVolumeInUse(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return err
+}
+
+// isVolumeInUse reports whether a CSI delete failed only because the backing EBS
+// volume is still attached to the node (the transient detach race) — matched on
+// the EC2 error text Nomad surfaces, so the retry never masks a real failure.
+func isVolumeInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "volumeinuse") || strings.Contains(msg, "currently attached")
 }
 
 // Logs returns the tail of the workspace job's stdout or stderr.

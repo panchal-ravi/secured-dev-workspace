@@ -118,3 +118,29 @@ func TestReserve_ReleaseFreesPort(t *testing.T) {
 		t.Fatalf("released port %d not reused (got %d)", p1, p3)
 	}
 }
+
+// TestIsVolumeInUse pins the retry gate for the workspace-Destroy home-volume
+// delete: only the transient EBS detach race (EC2 VolumeInUse) is retried; any
+// other CSI/Nomad error must surface immediately, never masked by the backoff.
+func TestIsVolumeInUse(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		// The exact wrapped error Nomad surfaces during the detach race.
+		{"ec2 volume-in-use", errors.New(`nomad: delete CSI volume "home-alice-x": Unexpected response code: 500 (controller delete volume: rpc error: VolumeInUse: Volume vol-049a is currently attached to i-043b)`), true},
+		{"attached phrasing only", errors.New("Volume vol-1 is currently attached to i-2"), true},
+		{"volumeinuse token only", errors.New("api error VolumeInUse"), true},
+		{"unrelated 500", errors.New("controller plugin returned an internal error: connection refused"), false},
+		{"not found", errors.New("volume not found"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isVolumeInUse(c.err); got != c.want {
+				t.Fatalf("isVolumeInUse(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
