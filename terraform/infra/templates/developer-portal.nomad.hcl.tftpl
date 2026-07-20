@@ -114,30 +114,14 @@ ${nomad_ca_pem}
 EOH
       }
 %{ endif ~}
-%{ if enable_platform_admin ~}
-      # Platform Admin onboarding plane: resolve the MCP + LLM gateway base URLs from
-      # Nomad-native service discovery — the gateways register provider="nomad" services
-      # "mcp-gateway" / "llm-gateway", both in this job's "infra" namespace. This drops
-      # the loopback co-location requirement (the portal may run on any node). env=true
-      # publishes them as PORTAL_*_GATEWAY_ADDR. change_mode=noop (NOT restart): a
-      # flapping/failing gateway re-registers its service constantly, and restart here
-      # turns that into a portal restart-loop that resets the idle reaper and kills
-      # in-flight chats. The portal keeps the last-rendered addrs (gateways use stable
-      # host ports); a deliberate redeploy re-reads current addrs if one truly moves.
-      template {
-        destination = "secrets/gateways.env"
-        env         = true
-        change_mode = "noop"
-        data        = <<EOH
-{{ range nomadService "mcp-gateway" }}
-PORTAL_MCP_GATEWAY_ADDR=http://{{ .Address }}:{{ .Port }}
-{{ end }}
-{{ range nomadService "llm-gateway" }}
-PORTAL_LLM_GATEWAY_ADDR=http://{{ .Address }}:{{ .Port }}
-{{ end }}
-EOH
-      }
-%{ endif ~}
+      # NOTE: the onboarding-plane gateway URLs are set STATICALLY in the env{} block
+      # below (PORTAL_MCP/LLM_GATEWAY_ADDR from instance_private_ip). They were formerly
+      # rendered from a `nomadService` discovery template with env=true — but an
+      # env-injected template is re-snapshotted on every portal task-restart, and if the
+      # gateways happened not to be registered at that instant the plane booted DISABLED
+      # (silently skipping project engine auto-provision). The gateways are pinned to this
+      # node at fixed host ports, so a static endpoint is correct and immune to restart
+      # timing.
 
       env {
         PORTAL_LISTEN_ADDR             = ":${port}"
@@ -168,9 +152,13 @@ EOH
         PORTAL_SHARED_VOLUME_ENABLED     = "${shared_volume_enabled}"
         PORTAL_SHARED_EFS_FILESYSTEM_ID  = "${shared_efs_filesystem_id}"
 %{ if enable_platform_admin ~}
-        # Platform Admin onboarding plane. Gateway base URLs (PORTAL_MCP_GATEWAY_ADDR /
-        # PORTAL_LLM_GATEWAY_ADDR) come from the Nomad service-discovery template block
-        # above — not co-location — so they are not set here.
+        # Platform Admin onboarding plane. Gateway base URLs are pinned to the all-in-one
+        # node's stable host ports (MCP 4444 / LLM 4000) via instance_private_ip — the
+        # presence of BOTH enables the plane (project engine auto-provision, model
+        # onboarding). Static, not service discovery, so a portal restart can never boot
+        # the plane disabled (see the note where the template block used to be).
+        PORTAL_MCP_GATEWAY_ADDR   = "http://${instance_private_ip}:4444"
+        PORTAL_LLM_GATEWAY_ADDR   = "http://${instance_private_ip}:4000"
         PORTAL_AGENT_NODE_POOL    = "${agent_node_pool}"
         # Project-deploy plane: broker a namespace-native provisioner token via the
         # second workload identity above. Role/mount match terraform/project/portal-provisioner.tf.
