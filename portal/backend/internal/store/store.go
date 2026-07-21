@@ -277,7 +277,8 @@ type BaseJobTemplate struct {
 	Image           string    `json:"image,omitempty"`  // container image baked into project templates (portal-admin owned)
 	Features        []Feature `json:"features,omitempty"`
 	DefaultNodePool string    `json:"default_node_pool,omitempty"`
-	Runtime         string    `json:"runtime,omitempty"` // "", "nvidia", "kata" (informational)
+	Runtime         string    `json:"runtime,omitempty"`      // "", "nvidia", "kata" (informational)
+	CodingAgent     string    `json:"coding_agent,omitempty"` // "claude" (default) | "bob"; selects how MCP is wired into the workspace
 	CreatedBy       string    `json:"created_by,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -308,6 +309,7 @@ type ProjectTemplate struct {
 	Image          string    `json:"image,omitempty"`
 	GitRepoURL     string    `json:"git_repo_url,omitempty"`
 	NodePool       string    `json:"node_pool,omitempty"`
+	CodingAgent    string    `json:"coding_agent,omitempty"` // snapshot of the base template's coding agent; drives MCP wiring at inject time
 	Features       []Feature `json:"features,omitempty"`
 	// Addons is the project-admin's structured extension of the base template: MCP
 	// servers (from the catalog) and extra secret engines wired into the workspace.

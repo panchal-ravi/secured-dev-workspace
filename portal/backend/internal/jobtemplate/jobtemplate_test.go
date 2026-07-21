@@ -28,8 +28,11 @@ func TestValidatePlaceholders(t *testing.T) {
 func TestSeedsAreValidAndComplete(t *testing.T) {
 	// Every shipped seed must reference only known placeholders and must include
 	// the full set EXCEPT mcp_kv_path, which is reserved for add-on injection
-	// (C-R.6) — the base body carries no MCP wiring.
+	// (C-R.6) — the base body carries no MCP wiring. The llm_* placeholders wire the
+	// governed LiteLLM gateway and are Claude-agent-only; the IBM Bob Shell seed
+	// intentionally omits them (Bob's model is IBM-hosted, not gateway-governed).
 	notInBaseBody := map[string]bool{"mcp_kv_path": true}
+	llmOnly := map[string]bool{"llm_kv_path": true, "llm_base_url": true, "llm_model_primary": true, "llm_model_fast": true}
 	for name, meta := range seeds {
 		src, err := seedFS.ReadFile(meta.file)
 		if err != nil {
@@ -41,6 +44,13 @@ func TestSeedsAreValidAndComplete(t *testing.T) {
 		s := string(src)
 		for _, ph := range append(append([]string{}, ProjectStaticPlaceholders...), PerWorkspacePlaceholders...) {
 			if notInBaseBody[ph] {
+				continue
+			}
+			if meta.codingAgent == "bob" && llmOnly[ph] {
+				// The Bob seed must NOT carry LLM wiring — assert its absence.
+				if strings.Contains(s, "${"+ph+"}") {
+					t.Errorf("bob seed %q should not reference LLM placeholder ${%s}", name, ph)
+				}
 				continue
 			}
 			if !strings.Contains(s, "${"+ph+"}") {
@@ -57,12 +67,19 @@ func TestSeedBaseTemplatesIdempotentAndNonDestructive(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	list, _ := st.ListBaseJobTemplates(ctx)
-	if len(list) != 3 {
-		t.Fatalf("want 3 seeded templates, got %d", len(list))
+	if len(list) != 4 {
+		t.Fatalf("want 4 seeded templates, got %d", len(list))
 	}
 	dev, err := st.GetBaseJobTemplate(ctx, "dev-workspace")
 	if err != nil || dev.Status != store.StatusPublished || dev.Version != 1 || dev.ContentHash == "" {
 		t.Fatalf("seeded dev-workspace wrong: %+v err=%v", dev, err)
+	}
+	if dev.CodingAgent != "claude" {
+		t.Fatalf("dev-workspace should be a claude agent, got %q", dev.CodingAgent)
+	}
+	bob, err := st.GetBaseJobTemplate(ctx, "bobshell-workspace")
+	if err != nil || bob.CodingAgent != "bob" || bob.Image != "panchalravi/bobshell-workspace:poc" {
+		t.Fatalf("seeded bobshell-workspace wrong: %+v err=%v", bob, err)
 	}
 
 	// Simulate an admin edit, then re-seed: the edit must survive.

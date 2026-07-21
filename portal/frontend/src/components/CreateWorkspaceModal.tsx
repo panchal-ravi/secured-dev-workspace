@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Checkbox, InlineNotification, Modal, RadioTile, TileGroup } from '@carbon/react'
 import { createWorkspace, listSharedVolumes, Project, SharedVolume, Workspace } from '../api/client'
 import FeatureTags from './FeatureTags'
+import AgentBadge, { agentMeta } from './AgentBadge'
 
 // CreateWorkspaceModal lets the developer pick a TEMPLATE from selectable detail
 // cards (one RadioTile per flavor) showing the template's label, purpose, the git
@@ -85,7 +86,19 @@ export default function CreateWorkspaceModal({
       >
         {project.flavors.map((f) => (
           <RadioTile key={f.name} id={`flavor-${f.name}`} value={f.name}>
-            <div style={{ fontWeight: 600 }}>{f.label || f.name}</div>
+            <div style={{ borderLeft: `4px solid ${agentMeta(f.coding_agent).accent}`, paddingLeft: '0.75rem' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  justifyContent: 'space-between',
+                  marginBottom: '0.25rem',
+                }}
+              >
+                <span style={{ fontWeight: 600 }}>{f.label || f.name}</span>
+                <AgentBadge codingAgent={f.coding_agent} />
+              </div>
             {f.description && (
               <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', margin: '0.25rem 0' }}>
                 {f.description}
@@ -99,7 +112,8 @@ export default function CreateWorkspaceModal({
             {f.image && (
               <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.75rem', margin: 0 }}>image: {f.image}</p>
             )}
-            <FeatureTags features={f.features} />
+              <FeatureTags features={f.features} />
+            </div>
           </RadioTile>
         ))}
       </TileGroup>

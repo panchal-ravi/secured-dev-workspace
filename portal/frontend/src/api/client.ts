@@ -14,6 +14,7 @@ export interface Flavor {
   git_repo_url?: string
   image?: string
   node_pool?: string
+  coding_agent?: string // "claude" (default) | "bob"; drives the picker's agent badge
   features: Feature[]
 }
 

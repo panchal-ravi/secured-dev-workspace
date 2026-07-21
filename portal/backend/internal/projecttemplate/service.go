@@ -79,6 +79,7 @@ type BaseOption struct {
 	Image           string          `json:"image,omitempty"` // baked into the project template; readonly to the project-admin
 	DefaultNodePool string          `json:"default_node_pool,omitempty"`
 	Runtime         string          `json:"runtime,omitempty"`
+	CodingAgent     string          `json:"coding_agent,omitempty"`
 	Features        []store.Feature `json:"features,omitempty"`
 }
 
@@ -99,7 +100,8 @@ func (s *Service) ListBase(ctx context.Context, groups []string, project string)
 		}
 		out = append(out, BaseOption{
 			Name: b.Name, Label: b.Label, Description: b.Description, Version: b.Version,
-			Image: b.Image, DefaultNodePool: b.DefaultNodePool, Runtime: b.Runtime, Features: b.Features,
+			Image: b.Image, DefaultNodePool: b.DefaultNodePool, Runtime: b.Runtime,
+			CodingAgent: b.CodingAgent, Features: b.Features,
 		})
 	}
 	return out, nil
@@ -154,7 +156,7 @@ func (s *Service) Create(ctx context.Context, actor string, groups []string, pro
 	// Pass-1 bake (markers intact) is snapshotted as BakedBase; the launch-time
 	// RenderedSource is that with the (initially empty) add-ons injected.
 	bakedBase := jobrender.RenderPartial(bt.PublishedSource, projectStatic(project, s.cfg, in.GitRepoURL, bt.Image))
-	rendered := jobtemplate.Inject(bakedBase, store.TemplateAddons{})
+	rendered := jobtemplate.Inject(bakedBase, store.TemplateAddons{}, bt.CodingAgent)
 	// After pass-1 + inject the only tokens left must be the 5 per-workspace ones;
 	// anything else would make jobrender.Render fail at launch.
 	if err := onlyPerWorkspaceLeft(rendered); err != nil {
@@ -182,6 +184,7 @@ func (s *Service) Create(ctx context.Context, actor string, groups []string, pro
 		Image:          bt.Image,
 		GitRepoURL:     in.GitRepoURL,
 		NodePool:       nodePool,
+		CodingAgent:    bt.CodingAgent,
 		Features:       bt.Features,
 		CreatedBy:      actor,
 	}
@@ -235,7 +238,7 @@ func (s *Service) Update(ctx context.Context, actor string, groups []string, pro
 			return store.ProjectTemplate{}, fmt.Errorf("base template %q is not published — cannot re-bake a repo change: %w", baseName, apperr.ErrBadRequest)
 		}
 		bakedBase := jobrender.RenderPartial(bt.PublishedSource, projectStatic(project, s.cfg, newRepo, bt.Image))
-		rendered := jobtemplate.Inject(bakedBase, pt.Addons)
+		rendered := jobtemplate.Inject(bakedBase, pt.Addons, bt.CodingAgent)
 		if err := onlyPerWorkspaceLeft(rendered); err != nil {
 			return store.ProjectTemplate{}, err
 		}
@@ -243,6 +246,7 @@ func (s *Service) Update(ctx context.Context, actor string, groups []string, pro
 		pt.RenderedSource = rendered
 		pt.BaseVersion = bt.Version
 		pt.Image = bt.Image
+		pt.CodingAgent = bt.CodingAgent
 		pt.Features = bt.Features
 		pt.GitRepoURL = newRepo
 	}
@@ -319,7 +323,7 @@ func (s *Service) SetAddons(ctx context.Context, actor string, groups []string, 
 		}
 	}
 
-	rendered := jobtemplate.Inject(pt.BakedBase, addons)
+	rendered := jobtemplate.Inject(pt.BakedBase, addons, pt.CodingAgent)
 	if err := onlyPerWorkspaceLeft(rendered); err != nil {
 		return store.ProjectTemplate{}, err
 	}
@@ -395,7 +399,8 @@ func (s *Service) syncDescriptorFlavors(ctx context.Context, project string) err
 		flavors = append(flavors, descriptor.Flavor{
 			Name: t.Flavor, Label: t.Label, Description: t.Description,
 			GitRepoURL: t.GitRepoURL, Image: t.Image, NodePool: t.NodePool,
-			Features: toDescriptorFeatures(t.Features),
+			CodingAgent: t.CodingAgent,
+			Features:    toDescriptorFeatures(t.Features),
 		})
 	}
 	d.Flavors = flavors
