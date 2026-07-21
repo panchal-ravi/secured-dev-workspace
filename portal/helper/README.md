@@ -25,7 +25,9 @@ run an arbitrary command or write arbitrary SSH config.
 Parameter validation (rejected otherwise): `addr` must be `https://…`,
 `auth_method_id` `am*_*` (required on `connect` too), `target_id` `tssh_*`,
 `host`/`user` alphanumeric-ish, `terminal` ∈ {terminal,iterm},
-`ide` ∈ {vscode,vscode-insiders,cursor,windsurf}.
+`ide` ∈ {vscode,vscode-insiders,cursor,windsurf,bob}. `bob` (IBM Bob, a VS Code fork)
+maps to the `ibm-bob://` scheme; it needs the open-remote-ssh extension from Open VSX
+(no built-in Remote-SSH).
 
 ## macOS (built & shipped)
 

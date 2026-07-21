@@ -16,12 +16,16 @@ import { Workspace, connectLink } from '../api/client'
 
 // IDEs in the VS Code family share the `vscode-remote/ssh-remote+<host>` deep
 // link authority and differ only by URL scheme; the helper maps these ids to the
-// right scheme when it opens the IDE.
+// right scheme when it opens the IDE. IBM Bob is a VS Code fork whose scheme is
+// `ibm-bob://`; unlike the others it ships no built-in Remote-SSH (Microsoft's is
+// fork-locked), so it needs the open-remote-ssh extension from Open VSX — see the
+// one-time note below.
 const IDES = [
   { id: 'vscode', label: 'VS Code' },
   { id: 'vscode-insiders', label: 'VS Code Insiders' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'windsurf', label: 'Windsurf' },
+  { id: 'bob', label: 'IBM Bob' },
 ]
 
 // Two connection methods on the workspace card: the ProxyCommand path (no Client
@@ -77,6 +81,14 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
               Open
             </Button>
           </div>
+          {ide.id === 'bob' && (
+            <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+              First time with IBM Bob: install <strong>Open Remote - SSH</strong> from Open VSX
+              (Extensions → search <code>open-remote-ssh</code>) once — Bob has no built-in Remote-SSH.
+              After that, Open works exactly like VS Code. If the button doesn&rsquo;t launch Bob, open
+              it and run <em>Remote-SSH: Connect to Host</em> → <code>{ws.name}</code>.
+            </p>
+          )}
           {!running && (
             <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', marginTop: '0.5rem' }}>
               Available once the workspace is running.
