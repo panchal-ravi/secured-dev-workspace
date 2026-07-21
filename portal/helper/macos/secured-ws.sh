@@ -142,6 +142,7 @@ open_ide() {
     vscode-insiders)  open "vscode-insiders://${target}" ;;
     cursor)           open "cursor://${target}" ;;
     windsurf)         open "windsurf://${target}" ;;
+    bob)              open "ibm-bob://${target}" ;;
     *) die "unsupported IDE '$ide'" ;;
   esac
 }

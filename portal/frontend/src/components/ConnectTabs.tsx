@@ -13,12 +13,42 @@ import {
 } from '@carbon/react'
 import { Launch } from '@carbon/icons-react'
 import { Workspace, connectLink } from '../api/client'
+import { ideLogos } from './ideLogos'
+
+type Ide = { id: string; label: string }
+
+// Logo + label, used for both the closed field (renderSelectedItem) and the open
+// menu (itemToElement). The logo carries its own tile so it reads on light + dark.
+function IdeItem({ ide }: { ide: Ide }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+      <img
+        src={ideLogos[ide.id]}
+        alt=""
+        aria-hidden="true"
+        width={18}
+        height={18}
+        style={{
+          borderRadius: '4px',
+          flexShrink: 0,
+          border: '1px solid rgba(141, 141, 141, 0.4)',
+          boxSizing: 'border-box',
+        }}
+      />
+      {ide.label}
+    </span>
+  )
+}
 
 // IDEs in the VS Code family share the `vscode-remote/ssh-remote+<host>` deep
 // link authority and differ only by URL scheme; the helper maps these ids to the
-// right scheme when it opens the IDE.
+// right scheme when it opens the IDE. IBM Bob is a VS Code fork whose scheme is
+// `ibm-bob://`; unlike the others it ships no built-in Remote-SSH (Microsoft's is
+// fork-locked), so it needs the open-remote-ssh extension from Open VSX — see the
+// one-time note below.
 const IDES = [
   { id: 'vscode', label: 'VS Code' },
+  { id: 'bob', label: 'IBM Bob' },
   { id: 'vscode-insiders', label: 'VS Code Insiders' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'windsurf', label: 'Windsurf' },
@@ -69,6 +99,8 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
               titleText="IDE"
               items={IDES}
               itemToString={(i) => (i ? i.label : '')}
+              itemToElement={(i) => (i ? <IdeItem ide={i} /> : null)}
+              renderSelectedItem={(i) => (i ? <IdeItem ide={i} /> : null)}
               selectedItem={ide}
               onChange={({ selectedItem }) => selectedItem && setIde(selectedItem)}
               style={{ minWidth: '12rem' }}
@@ -77,6 +109,14 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
               Open
             </Button>
           </div>
+          {ide.id === 'bob' && (
+            <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+              First time with IBM Bob: install <strong>Open Remote - SSH</strong> from Open VSX
+              (Extensions → search <code>open-remote-ssh</code>) once — Bob has no built-in Remote-SSH.
+              After that, Open works exactly like VS Code. If the button doesn&rsquo;t launch Bob, open
+              it and run <em>Remote-SSH: Connect to Host</em> → <code>{ws.name}</code>.
+            </p>
+          )}
           {!running && (
             <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', marginTop: '0.5rem' }}>
               Available once the workspace is running.
