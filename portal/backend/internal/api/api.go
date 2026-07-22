@@ -237,6 +237,7 @@ type flavorDTO struct {
 	GitRepoURL  string               `json:"git_repo_url,omitempty"`
 	Image       string               `json:"image,omitempty"`
 	NodePool    string               `json:"node_pool,omitempty"`
+	CodingAgent string               `json:"coding_agent,omitempty"`
 	Features    []descriptor.Feature `json:"features"`
 }
 
@@ -256,6 +257,7 @@ func toProjectDTO(d descriptor.Descriptor) projectDTO {
 			GitRepoURL:  f.GitRepoURL,
 			Image:       f.Image,
 			NodePool:    f.NodePool,
+			CodingAgent: f.CodingAgent,
 			Features:    f.Features,
 		})
 	}

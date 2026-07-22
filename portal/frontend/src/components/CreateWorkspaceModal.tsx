@@ -96,7 +96,12 @@ export default function CreateWorkspaceModal({
                   marginBottom: '0.25rem',
                 }}
               >
-                <span style={{ fontWeight: 600 }}>{f.label || f.name}</span>
+                <span style={{ fontWeight: 600 }}>
+                  {f.name}
+                  {f.label && f.label !== f.name && (
+                    <span style={{ fontWeight: 400, color: 'var(--cds-text-secondary)' }}> ({f.label})</span>
+                  )}
+                </span>
                 <AgentBadge codingAgent={f.coding_agent} />
               </div>
             {f.description && (
