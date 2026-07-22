@@ -3,8 +3,6 @@ import {
   Button,
   CodeSnippet,
   Dropdown,
-  ListItem,
-  OrderedList,
   Tab,
   TabList,
   TabPanel,
@@ -85,12 +83,10 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
       </TabList>
       <TabPanels>
         <TabPanel>
-          <OrderedList style={{ margin: '0.5rem 0' }}>
-            <ListItem>
-              Open it directly — the Secured Workspace helper signs you in to Boundary if needed (reusing your portal
-              login), writes the SSH config to <code>~/.ssh/config</code>, and launches your IDE:
-            </ListItem>
-          </OrderedList>
+          <p style={{ margin: '0.5rem 0' }}>
+            Open it directly — the Secured Workspace helper signs you in to Boundary if needed (reusing your portal
+            login), writes the SSH config to <code>~/.ssh/config</code>, and launches your IDE:
+          </p>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
             <Dropdown
               id={`ide-${ws.name}`}
@@ -130,12 +126,10 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
           </details>
         </TabPanel>
         <TabPanel>
-          <OrderedList style={{ margin: '0 0 0.5rem' }}>
-            <ListItem>
-              Requires the Boundary Client Agent running plus an SSO login. Append to <code>~/.ssh/config</code> and
-              connect to <code>{ws.alias}</code>:
-            </ListItem>
-          </OrderedList>
+          <p style={{ margin: '0 0 0.5rem' }}>
+            Requires the Boundary Client Agent running plus an SSO login. Append to <code>~/.ssh/config</code> and
+            connect to <code>{ws.alias}</code>:
+          </p>
           <CodeSnippet type="multi" feedback="Copied!">
             {ws.transparent_config}
           </CodeSnippet>
