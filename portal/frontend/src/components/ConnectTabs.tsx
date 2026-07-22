@@ -83,7 +83,7 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
       </TabList>
       <TabPanels>
         <TabPanel>
-          <p style={{ margin: '0.5rem 0' }}>
+          <p style={{ margin: '0.5rem 0', fontSize: '0.875rem' }}>
             Open it directly — the Secured Workspace helper signs you in to Boundary if needed (reusing your portal
             login), writes the SSH config to <code>~/.ssh/config</code>, and launches your IDE:
           </p>
@@ -126,7 +126,7 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
           </details>
         </TabPanel>
         <TabPanel>
-          <p style={{ margin: '0 0 0.5rem' }}>
+          <p style={{ margin: '0 0 0.5rem', fontSize: '0.875rem' }}>
             Requires the Boundary Client Agent running plus an SSO login. Append to <code>~/.ssh/config</code> and
             connect to <code>{ws.alias}</code>:
           </p>
