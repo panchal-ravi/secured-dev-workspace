@@ -15,6 +15,20 @@ export default function WorkspaceCard({ ws, onChanged }: { ws: Workspace; onChan
 
   const destroyConfirmed = destroyConfirmText.trim() === ws.workspace_name
 
+  const submitDestroy = () => {
+    if (!destroyConfirmed) return
+    setConfirmOpen(false)
+    setDestroyConfirmText('')
+    run(async () => {
+      await destroyWorkspace(ws.project, ws.name)
+      // Ask the local helper to drop this workspace's ~/.ssh/config block so it
+      // doesn't linger after the workspace is gone. Custom-scheme assign hands off
+      // to the helper without navigating away; no-ops if uninstalled or if the
+      // block was never written.
+      window.location.assign(disconnectLink(ws.name))
+    })
+  }
+
   const statusType =
     ws.status === 'running'
       ? 'green'
@@ -112,19 +126,7 @@ export default function WorkspaceCard({ ws, onChanged }: { ws: Workspace; onChan
           setConfirmOpen(false)
           setDestroyConfirmText('')
         }}
-        onRequestSubmit={() => {
-          if (!destroyConfirmed) return
-          setConfirmOpen(false)
-          setDestroyConfirmText('')
-          run(async () => {
-            await destroyWorkspace(ws.project, ws.name)
-            // Ask the local helper to drop this workspace's ~/.ssh/config block so
-            // it doesn't linger after the workspace is gone. Custom-scheme assign
-            // hands off to the helper without navigating away; no-ops if uninstalled
-            // or if the block was never written.
-            window.location.assign(disconnectLink(ws.name))
-          })
-        }}
+        onRequestSubmit={submitDestroy}
       >
         <Stack gap={5}>
           <p>
@@ -137,6 +139,14 @@ export default function WorkspaceCard({ ws, onChanged }: { ws: Workspace; onChan
             placeholder={ws.workspace_name}
             value={destroyConfirmText}
             onChange={(e) => setDestroyConfirmText(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter submits the destroy once the name matches (Carbon's Modal
+              // doesn't forward Enter from a field to the primary action).
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                submitDestroy()
+              }
+            }}
           />
         </Stack>
       </Modal>
