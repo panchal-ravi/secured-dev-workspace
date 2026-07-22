@@ -699,6 +699,23 @@ export function publishBaseTemplate(name: string): Promise<BaseJobTemplate> {
   return post(`${adminBase}/base-templates/${encodeURIComponent(name)}/publish`)
 }
 
+// ---- Platform Admin: coding-agent allow-list ----
+
+export function listCodingAgents(): Promise<CodingAgent[]> {
+  return fetch(`${adminBase}/coding-agents`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.agents as CodingAgent[]) || [])
+}
+
+export function setCodingAgentEnabled(key: string, enabled: boolean): Promise<CodingAgent> {
+  return fetch(`${adminBase}/coding-agents/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  }).then(asJSON)
+}
+
 // ---- Project Admin: project templates (create a flavor from a base template) ----
 
 // BaseOption is a published base template a project-admin can build a flavor from.
@@ -748,6 +765,7 @@ export interface ProjectTemplate {
   image?: string
   git_repo_url?: string
   node_pool?: string
+  coding_agent?: string // coding agent chosen at flavor create (drives the agent badge)
   features?: TemplateFeature[]
   addons?: TemplateAddons
   created_by?: string
@@ -760,16 +778,34 @@ export interface ProjectTemplate {
 export interface CreateProjectTemplateInput {
   base: string
   flavor?: string
+  coding_agent?: string // agent chosen for this flavor; defaults to claude, validated against the allow-list
   git_repo_url: string
   label?: string
   description?: string
   node_pool?: string
 }
 
+// CodingAgent is a coding agent offered in the flavor picker / governed in the admin
+// allow-list. governance is a plainly-stated caveat surfaced to the project-admin.
+export interface CodingAgent {
+  key: string
+  label: string
+  governance?: string
+  enabled: boolean
+}
+
 export function listProjectBaseTemplates(project: string): Promise<BaseOption[]> {
   return fetch(`/api/projects/${encodeURIComponent(project)}/base-templates`, { credentials: 'include' })
     .then(asJSON)
     .then((d) => (d as BaseOption[]) || [])
+}
+
+// listProjectCodingAgents returns the ENABLED coding agents a project-admin may pick
+// when creating a flavor (the platform-admin allow-list decides what's offered).
+export function listProjectCodingAgents(project: string): Promise<CodingAgent[]> {
+  return fetch(`/api/projects/${encodeURIComponent(project)}/coding-agents`, { credentials: 'include' })
+    .then(asJSON)
+    .then((d) => (d.agents as CodingAgent[]) || [])
 }
 
 export function listProjectTemplates(project: string): Promise<ProjectTemplate[]> {

@@ -8,32 +8,43 @@ import (
 )
 
 // Injection markers a base template carries (as bare comments, so they survive both
-// render passes untouched). Inject replaces them with the project-admin's add-on
-// wiring. Kept in sync with the seed HCL.
+// render passes untouched). Inject replaces them with the coding-agent wiring + the
+// project-admin's add-ons. Kept in sync with the seed HCL.
 const (
 	markerSecrets    = "# @project-addons:secrets"
 	markerEntrypoint = "# @project-addons:entrypoint"
 )
 
-// Inject renders the project-admin's structured add-ons into an already pass-1-baked
-// template by replacing the two @project-addons markers. It generates:
-//   - secrets marker → Vault secret template{} blocks (MCP url/token + extra-engine
-//     KV fields) that consul-template renders to the /secrets tmpfs at launch;
-//   - entrypoint marker → per-MCP-server registrations, in the form the workspace's
-//     coding agent expects: `claude mcp add` for Claude Code, or a jq-built
-//     ~/.bob/mcp_settings.json for IBM Bob Shell.
+// LLMWiring carries the (already-resolved) values the Claude Code wiring needs. It
+// is passed in by Inject's caller, which holds the infra LLM config + the project's
+// KV path — because Inject runs AFTER the pass-1 bake, its output must contain no
+// ${...} placeholders, so these arrive as literal values.
+type LLMWiring struct {
+	KVPath       string // Vault KV v2 data path for the per-project LiteLLM virtual key
+	BaseURL      string // ANTHROPIC_BASE_URL (the node-private LiteLLM gateway)
+	ModelPrimary string // opus/sonnet slot
+	ModelFast    string // haiku/subagent slot
+}
+
+// Inject renders the coding-agent wiring + the project-admin's structured add-ons
+// into an already pass-1-baked template by replacing the two @project-addons markers.
+// The base template itself is AGENT-AGNOSTIC (it carries no Claude/LLM blocks); the
+// agent-specific wiring is emitted here based on codingAgent:
+//   - secrets marker → for Claude: the LiteLLM virtual-key template{} + the
+//     managed-settings.json template{}; then (both agents) the MCP url/token
+//     template{} blocks consul-template renders to the /secrets tmpfs at launch;
+//   - entrypoint marker → for Claude: install managed-settings.json + `claude mcp add`
+//     registrations; for Bob: a jq-built ~/.bob/mcp_settings.json.
 //
-// codingAgent selects the entrypoint form ("bob" → Bob Shell; anything else,
-// including "", → Claude Code — the historical default). The secrets block is
-// agent-agnostic (both agents read the same /secrets tmpfs url/token files).
+// codingAgent selects the form ("bob" → Bob Shell; anything else, including "", →
+// Claude Code — the historical default).
 //
-// The generated content uses only consul-template {{ }} + bash $(...) + literal
-// /secrets paths — no ${...} placeholders — so it never disturbs the pass-2 render.
-// A missing marker makes that section a no-op (older templates simply carry no
-// add-ons region). Deterministic ordering keeps re-renders stable (no needless diffs).
-func Inject(baseRendered string, addons store.TemplateAddons, codingAgent string) string {
-	// A missing marker makes Replace a no-op (older templates carry no add-ons region).
-	out := strings.Replace(baseRendered, markerSecrets, secretsBlock(addons), 1)
+// The generated content uses only literal values + consul-template {{ }} + bash
+// $(...) + literal /secrets paths — no ${...} placeholders — so it never disturbs
+// the pass-2 render. A missing marker makes that section a no-op. Deterministic
+// ordering keeps re-renders stable (no needless diffs).
+func Inject(baseRendered string, addons store.TemplateAddons, codingAgent string, llm LLMWiring) string {
+	out := strings.Replace(baseRendered, markerSecrets, secretsBlock(addons, codingAgent, llm), 1)
 	out = strings.Replace(out, markerEntrypoint, entrypointBlock(addons, codingAgent), 1)
 	return out
 }
@@ -43,8 +54,10 @@ func Inject(baseRendered string, addons store.TemplateAddons, codingAgent string
 func mcpKVPath(server string) string { return "secret/data/projects/mcp/" + server }
 
 // secretsBlock builds the template{} blocks injected at the secrets marker (6-space
-// indent, matching the surrounding task blocks).
-func secretsBlock(a store.TemplateAddons) string {
+// indent, matching the surrounding task blocks). For Claude it leads with the LLM
+// virtual-key + managed-settings templates; both agents then get the MCP + extra-
+// engine secret templates.
+func secretsBlock(a store.TemplateAddons, codingAgent string, llm LLMWiring) string {
 	var b strings.Builder
 	tmpl := func(dest, path, field string) {
 		fmt.Fprintf(&b, "      template {\n")
@@ -54,6 +67,9 @@ func secretsBlock(a store.TemplateAddons) string {
 		fmt.Fprintf(&b, "        data        = <<EOH\n")
 		fmt.Fprintf(&b, "{{ with secret %q }}{{ .Data.data.%s }}{{ end }}\n", path, field)
 		fmt.Fprintf(&b, "EOH\n      }\n\n")
+	}
+	if codingAgent != "bob" {
+		claudeSecretsBlock(&b, llm)
 	}
 	for _, name := range a.MCPServers {
 		tmpl("mcp-"+name+"-url", mcpKVPath(name), "url")
@@ -67,15 +83,56 @@ func secretsBlock(a store.TemplateAddons) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// claudeSecretsBlock writes the two Claude-Code-only template{} blocks (6-space
+// indent): the per-project LiteLLM virtual key (read at call time by the apiKeyHelper,
+// never landing on /home/dev) and the enterprise managed-settings.json that pins the
+// governed gateway URL + model mapping. Values are literal (baked by the caller).
+func claudeSecretsBlock(b *strings.Builder, llm LLMWiring) {
+	fmt.Fprintf(b, "      template {\n")
+	fmt.Fprintf(b, "        destination = \"secrets/llm-key\"\n")
+	fmt.Fprintf(b, "        perms       = \"0644\"\n")
+	fmt.Fprintf(b, "        change_mode = \"noop\"\n")
+	fmt.Fprintf(b, "        data        = <<EOH\n")
+	fmt.Fprintf(b, "{{ with secret %q }}{{ .Data.data.virtual_key }}{{ end }}\n", llm.KVPath)
+	fmt.Fprintf(b, "EOH\n      }\n\n")
+
+	fmt.Fprintf(b, "      template {\n")
+	fmt.Fprintf(b, "        destination = \"local/managed-settings.json\"\n")
+	fmt.Fprintf(b, "        perms       = \"0644\"\n")
+	fmt.Fprintf(b, "        change_mode = \"noop\"\n")
+	fmt.Fprintf(b, "        data        = <<EOH\n")
+	fmt.Fprintf(b, "{\n")
+	fmt.Fprintf(b, "  \"apiKeyHelper\": \"/usr/local/bin/llm-key\",\n")
+	fmt.Fprintf(b, "  \"env\": {\n")
+	fmt.Fprintf(b, "    \"DISABLE_AUTOUPDATER\": \"1\",\n")
+	fmt.Fprintf(b, "    \"ANTHROPIC_BASE_URL\": %q,\n", llm.BaseURL)
+	fmt.Fprintf(b, "    \"ANTHROPIC_MODEL\": %q,\n", llm.ModelPrimary)
+	fmt.Fprintf(b, "    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": %q,\n", llm.ModelPrimary)
+	fmt.Fprintf(b, "    \"ANTHROPIC_DEFAULT_SONNET_MODEL\": %q,\n", llm.ModelPrimary)
+	fmt.Fprintf(b, "    \"ANTHROPIC_DEFAULT_HAIKU_MODEL\": %q,\n", llm.ModelFast)
+	fmt.Fprintf(b, "    \"CLAUDE_CODE_SUBAGENT_MODEL\": %q,\n", llm.ModelFast)
+	fmt.Fprintf(b, "    \"CLAUDE_CODE_EFFORT_LEVEL\": \"max\"\n")
+	fmt.Fprintf(b, "  }\n")
+	fmt.Fprintf(b, "}\n")
+	fmt.Fprintf(b, "EOH\n      }\n\n")
+}
+
 // entrypointBlock builds the bash lines injected at the entrypoint marker (column 0,
-// inside the entrypoint heredoc). MCP servers are registered user-scoped + idempotently;
-// a failure WARNs without aborting the workspace. The registration form matches the
-// workspace's coding agent (codingAgent=="bob" → Bob Shell; else Claude Code).
+// inside the entrypoint heredoc). For Claude it installs the managed-settings.json
+// (rendered above) into /etc/claude-code — outside the persistent /home/dev — then
+// registers each MCP server with `claude mcp add`. For Bob it writes
+// ~/.bob/mcp_settings.json. MCP registration is user-scoped + idempotent; a failure
+// WARNs without aborting the workspace (a missing MCP tool must never cost the
+// developer their SSH session).
 func entrypointBlock(a store.TemplateAddons, codingAgent string) string {
 	if codingAgent == "bob" {
 		return bobEntrypointBlock(a)
 	}
 	var b strings.Builder
+	// Claude Code's enterprise-managed settings, rendered by claudeSecretsBlock, are
+	// installed OUTSIDE /home/dev (which the persistent volume shadows) so the governed
+	// gateway + model mapping is enforced and the developer can't re-point the model.
+	fmt.Fprintf(&b, "install -o root -g root -m 0644 /local/managed-settings.json /etc/claude-code/managed-settings.json\n")
 	for _, name := range a.MCPServers {
 		fmt.Fprintf(&b, "if ! sudo -u dev claude mcp list 2>/dev/null | grep -q %q; then\n", name)
 		fmt.Fprintf(&b, "  sudo -u dev claude mcp add --scope user --transport sse %s \"$(cat /secrets/mcp-%s-url)\" \\\n", name, name)

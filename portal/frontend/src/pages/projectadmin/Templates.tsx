@@ -6,11 +6,12 @@ import {
 } from '@carbon/react'
 import { Add, TrashCan } from '@carbon/icons-react'
 import {
-  listProjectTemplates, listProjectBaseTemplates, createProjectTemplate, deleteProjectTemplate,
-  updateProjectTemplate, updateTemplateAddons, listProjectMcp,
+  listProjectTemplates, listProjectBaseTemplates, listProjectCodingAgents, createProjectTemplate,
+  deleteProjectTemplate, updateProjectTemplate, updateTemplateAddons, listProjectMcp,
   BaseOption, ProjectTemplate, CreateProjectTemplateInput, UpdateProjectTemplateInput,
-  AddonEngine, ProjectMcpServer,
+  AddonEngine, ProjectMcpServer, CodingAgent,
 } from '../../api/client'
+import AgentBadge from '../../components/AgentBadge'
 
 // engineRow is the flattened editor shape (one secret file per engine row keeps the
 // UI simple; it maps to AddonEngine.secret_files with a single entry).
@@ -25,6 +26,7 @@ interface engineRow {
 export default function Templates() {
   const { name = '' } = useParams()
   const [bases, setBases] = useState<BaseOption[]>([])
+  const [agents, setAgents] = useState<CodingAgent[]>([])
   const [tmpls, setTmpls] = useState<ProjectTemplate[]>([])
   const [deployedMcp, setDeployedMcp] = useState<ProjectMcpServer[]>([])
   const [loading, setLoading] = useState(true)
@@ -42,11 +44,18 @@ export default function Templates() {
   const [editForm, setEditForm] = useState<UpdateProjectTemplateInput>({})
 
   const selectedBase = bases.find((b) => b.name === form.base)
+  const selectedAgent = agents.find((a) => a.key === form.coding_agent)
 
   const refresh = () =>
-    Promise.all([listProjectBaseTemplates(name), listProjectTemplates(name), listProjectMcp(name)])
-      .then(([b, t, mcp]) => {
+    Promise.all([
+      listProjectBaseTemplates(name),
+      listProjectCodingAgents(name),
+      listProjectTemplates(name),
+      listProjectMcp(name),
+    ])
+      .then(([b, ag, t, mcp]) => {
         setBases(b)
+        setAgents(ag)
         setTmpls(t)
         setDeployedMcp(mcp.deployed || [])
       })
@@ -73,7 +82,12 @@ export default function Templates() {
 
   const openCreate = () => {
     const first = bases[0]
-    setForm({ base: first?.name || '', git_repo_url: '', node_pool: first?.default_node_pool })
+    setForm({
+      base: first?.name || '',
+      coding_agent: agents[0]?.key || 'claude',
+      git_repo_url: '',
+      node_pool: first?.default_node_pool,
+    })
     setErr('')
     setModalOpen(true)
   }
@@ -163,6 +177,7 @@ export default function Templates() {
             <TableHead>
               <TableRow>
                 <TableHeader>Flavor</TableHeader>
+                <TableHeader>Coding agent</TableHeader>
                 <TableHeader>Base version</TableHeader>
                 <TableHeader>Image</TableHeader>
                 <TableHeader>Node pool</TableHeader>
@@ -174,6 +189,9 @@ export default function Templates() {
               {tmpls.map((t) => (
                 <TableRow key={t.flavor}>
                   <TableCell>{t.flavor}</TableCell>
+                  <TableCell>
+                    <AgentBadge codingAgent={t.coding_agent} />
+                  </TableCell>
                   <TableCell>
                     <Tag type="blue">v{t.base_version}</Tag>
                   </TableCell>
@@ -237,6 +255,26 @@ export default function Templates() {
               <SelectItem key={b.name} value={b.name} text={`${b.label || b.name} (v${b.version})`} />
             ))}
           </Select>
+          <Select
+            id="coding_agent"
+            labelText="Coding agent"
+            value={form.coding_agent || ''}
+            disabled={agents.length === 0}
+            onChange={(e) => setForm((f) => ({ ...f, coding_agent: e.target.value }))}
+          >
+            {agents.map((a) => (
+              <SelectItem key={a.key} value={a.key} text={a.label} />
+            ))}
+          </Select>
+          {selectedAgent?.governance && (
+            <InlineNotification
+              kind={selectedAgent.key === 'bob' ? 'warning' : 'info'}
+              lowContrast
+              hideCloseButton
+              title={selectedAgent.label}
+              subtitle={selectedAgent.governance}
+            />
+          )}
           <TextInput
             id="flavor"
             labelText="Flavor name (optional; defaults to the base name)"

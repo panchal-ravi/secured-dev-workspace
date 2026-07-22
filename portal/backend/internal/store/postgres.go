@@ -167,6 +167,13 @@ CREATE TABLE IF NOT EXISTS project_templates (
     data         JSONB       NOT NULL,
     PRIMARY KEY (project, flavor)
 );
+-- Coding-agent allow-list: one row per DISABLED (or explicitly re-enabled) agent.
+-- Absent row = enabled, so a fresh install offers every code-known agent.
+CREATE TABLE IF NOT EXISTS coding_agent_settings (
+    key        TEXT PRIMARY KEY,
+    enabled    BOOLEAN     NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
 -- 2026-07: project-developer collapsed into project-user (single member role).
 -- Rewrites legacy grants in place; idempotent, and no PK collision is possible
 -- because project-user rows can only be minted after this has run.
@@ -1025,6 +1032,40 @@ func (p *Postgres) ListBaseJobTemplates(ctx context.Context) ([]BaseJobTemplate,
 
 func (p *Postgres) DeleteBaseJobTemplate(ctx context.Context, name string) error {
 	return p.deleteByName(ctx, "base_job_templates", "base job template", name)
+}
+
+// ---- coding-agent allow-list ----
+
+func (p *Postgres) UpsertCodingAgentSetting(ctx context.Context, s CodingAgentSetting) error {
+	if s.Key == "" {
+		return fmt.Errorf("store: coding agent key required: %w", apperr.ErrBadRequest)
+	}
+	const q = `
+INSERT INTO coding_agent_settings (key, enabled, updated_at)
+VALUES ($1, $2, $3)
+ON CONFLICT (key) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at`
+	if _, err := p.db.ExecContext(ctx, q, s.Key, s.Enabled, p.now()); err != nil {
+		return fmt.Errorf("store: upsert coding agent setting: %w", err)
+	}
+	return nil
+}
+
+func (p *Postgres) ListCodingAgentSettings(ctx context.Context) ([]CodingAgentSetting, error) {
+	const q = `SELECT key, enabled FROM coding_agent_settings ORDER BY key`
+	rows, err := p.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: list coding agent settings: %w", err)
+	}
+	defer rows.Close()
+	out := []CodingAgentSetting{}
+	for rows.Next() {
+		var s CodingAgentSetting
+		if err := rows.Scan(&s.Key, &s.Enabled); err != nil {
+			return nil, fmt.Errorf("store: scan coding agent setting: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func scanBaseJobTemplate(row scanRow, name string) (BaseJobTemplate, error) {

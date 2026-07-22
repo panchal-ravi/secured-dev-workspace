@@ -26,13 +26,18 @@ func TestValidatePlaceholders(t *testing.T) {
 }
 
 func TestSeedsAreValidAndComplete(t *testing.T) {
-	// Every shipped seed must reference only known placeholders and must include
-	// the full set EXCEPT mcp_kv_path, which is reserved for add-on injection
-	// (C-R.6) — the base body carries no MCP wiring. The llm_* placeholders wire the
-	// governed LiteLLM gateway and are Claude-agent-only; the IBM Bob Shell seed
-	// intentionally omits them (Bob's model is IBM-hosted, not gateway-governed).
-	notInBaseBody := map[string]bool{"mcp_kv_path": true}
-	llmOnly := map[string]bool{"llm_kv_path": true, "llm_base_url": true, "llm_model_primary": true, "llm_model_fast": true}
+	// Every shipped seed must reference only known placeholders and must include the
+	// full project-static + per-workspace set EXCEPT the tokens that are INJECTED
+	// rather than baked into the agent-agnostic base body: mcp_kv_path (add-on MCP
+	// wiring) and the llm_* tokens (Claude Code's governed-gateway wiring, emitted by
+	// Inject based on the agent chosen at flavor create).
+	notInBaseBody := map[string]bool{
+		"mcp_kv_path":       true,
+		"llm_kv_path":       true,
+		"llm_base_url":      true,
+		"llm_model_primary": true,
+		"llm_model_fast":    true,
+	}
 	for name, meta := range seeds {
 		src, err := seedFS.ReadFile(meta.file)
 		if err != nil {
@@ -44,12 +49,9 @@ func TestSeedsAreValidAndComplete(t *testing.T) {
 		s := string(src)
 		for _, ph := range append(append([]string{}, ProjectStaticPlaceholders...), PerWorkspacePlaceholders...) {
 			if notInBaseBody[ph] {
-				continue
-			}
-			if meta.codingAgent == "bob" && llmOnly[ph] {
-				// The Bob seed must NOT carry LLM wiring — assert its absence.
+				// Injected, not baked — the agent-agnostic base must NOT reference it.
 				if strings.Contains(s, "${"+ph+"}") {
-					t.Errorf("bob seed %q should not reference LLM placeholder ${%s}", name, ph)
+					t.Errorf("agent-agnostic seed %q should not reference injected placeholder ${%s}", name, ph)
 				}
 				continue
 			}
@@ -67,19 +69,23 @@ func TestSeedBaseTemplatesIdempotentAndNonDestructive(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	list, _ := st.ListBaseJobTemplates(ctx)
-	if len(list) != 4 {
-		t.Fatalf("want 4 seeded templates, got %d", len(list))
+	if len(list) != 3 {
+		t.Fatalf("want 3 seeded (infra-only) templates, got %d", len(list))
 	}
 	dev, err := st.GetBaseJobTemplate(ctx, "dev-workspace")
 	if err != nil || dev.Status != store.StatusPublished || dev.Version != 1 || dev.ContentHash == "" {
 		t.Fatalf("seeded dev-workspace wrong: %+v err=%v", dev, err)
 	}
-	if dev.CodingAgent != "claude" {
-		t.Fatalf("dev-workspace should be a claude agent, got %q", dev.CodingAgent)
+	// Base templates are agent-agnostic now — no coding agent baked into them.
+	if dev.CodingAgent != "" {
+		t.Fatalf("dev-workspace base should carry no coding agent, got %q", dev.CodingAgent)
 	}
-	bob, err := st.GetBaseJobTemplate(ctx, "bobshell-workspace")
-	if err != nil || bob.CodingAgent != "bob" || bob.Image != "panchalravi/bobshell-workspace:poc" {
-		t.Fatalf("seeded bobshell-workspace wrong: %+v err=%v", bob, err)
+	if dev.Image != "panchalravi/workspace-base:poc" {
+		t.Fatalf("dev-workspace should use the universal image, got %q", dev.Image)
+	}
+	// The old agent-specific base is gone (Standard base + Bob agent replaces it).
+	if _, err := st.GetBaseJobTemplate(ctx, "bobshell-workspace"); err == nil {
+		t.Fatalf("bobshell-workspace base should no longer be seeded")
 	}
 
 	// Simulate an admin edit, then re-seed: the edit must survive.

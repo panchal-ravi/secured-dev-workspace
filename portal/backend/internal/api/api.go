@@ -18,6 +18,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/apperr"
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/basetmpladmin"
+	"github.com/secured-dev-workspace/developer-portal/internal/codingagentadmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/descriptor"
 	"github.com/secured-dev-workspace/developer-portal/internal/middleware"
 	"github.com/secured-dev-workspace/developer-portal/internal/projectadmin"
@@ -76,6 +77,7 @@ type Options struct {
 	Svc           *workspace.Service
 	Admin         *admin.Handlers
 	BaseTmpl      *basetmpladmin.Handlers    // optional; platform-admin base job-template plane
+	CodingAgents  *codingagentadmin.Handlers // optional; platform-admin coding-agent allow-list plane
 	ProjectCreate *projectbootstrap.Handlers // optional; platform-admin project-create plane
 	ProjectRoles  *projectrole.Service       // optional; project-role plane
 	ProjectMCP    *projectadmin.Handlers     // optional; project MCP-deploy plane
@@ -170,6 +172,9 @@ func NewMux(opts Options) http.Handler {
 	// gateway), so it registers on its own whenever wired.
 	if opts.BaseTmpl != nil {
 		opts.BaseTmpl.Register(mux, adminProtect, adminMutate)
+	}
+	if opts.CodingAgents != nil {
+		opts.CodingAgents.Register(mux, adminProtect, adminMutate)
 	}
 	if opts.ProjectCreate != nil {
 		opts.ProjectCreate.Register(mux, adminProtect, adminMutate)
