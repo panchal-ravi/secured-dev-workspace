@@ -43,6 +43,9 @@ docs/
 CLAUDE.md
 # ── Throwaway verification harness (not part of the real stack) ────────
 terraform/infra/identity-test/
+
+# ── IDIG working dir (may hold project secrets — never commit) ─────────
+idig-projects/
 scratch
 AGENTIC-SANDBOX-REVIEW.md
 demo/
