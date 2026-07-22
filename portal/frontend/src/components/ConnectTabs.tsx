@@ -80,8 +80,8 @@ export default function ConnectTabs({ ws }: { ws: Workspace }) {
   return (
     <Tabs>
       <TabList aria-label="Connection method" contained>
-        <Tab>VSCode (ProxyCommand)</Tab>
-        <Tab>Transparent</Tab>
+        <Tab>One-click open</Tab>
+        <Tab>Host alias</Tab>
       </TabList>
       <TabPanels>
         <TabPanel>
