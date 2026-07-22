@@ -26,10 +26,18 @@ func TestValidatePlaceholders(t *testing.T) {
 }
 
 func TestSeedsAreValidAndComplete(t *testing.T) {
-	// Every shipped seed must reference only known placeholders and must include
-	// the full set EXCEPT mcp_kv_path, which is reserved for add-on injection
-	// (C-R.6) — the base body carries no MCP wiring.
-	notInBaseBody := map[string]bool{"mcp_kv_path": true}
+	// Every shipped seed must reference only known placeholders and must include the
+	// full project-static + per-workspace set EXCEPT the tokens that are INJECTED
+	// rather than baked into the agent-agnostic base body: mcp_kv_path (add-on MCP
+	// wiring) and the llm_* tokens (Claude Code's governed-gateway wiring, emitted by
+	// Inject based on the agent chosen at flavor create).
+	notInBaseBody := map[string]bool{
+		"mcp_kv_path":       true,
+		"llm_kv_path":       true,
+		"llm_base_url":      true,
+		"llm_model_primary": true,
+		"llm_model_fast":    true,
+	}
 	for name, meta := range seeds {
 		src, err := seedFS.ReadFile(meta.file)
 		if err != nil {
@@ -41,6 +49,10 @@ func TestSeedsAreValidAndComplete(t *testing.T) {
 		s := string(src)
 		for _, ph := range append(append([]string{}, ProjectStaticPlaceholders...), PerWorkspacePlaceholders...) {
 			if notInBaseBody[ph] {
+				// Injected, not baked — the agent-agnostic base must NOT reference it.
+				if strings.Contains(s, "${"+ph+"}") {
+					t.Errorf("agent-agnostic seed %q should not reference injected placeholder ${%s}", name, ph)
+				}
 				continue
 			}
 			if !strings.Contains(s, "${"+ph+"}") {
@@ -58,11 +70,22 @@ func TestSeedBaseTemplatesIdempotentAndNonDestructive(t *testing.T) {
 	}
 	list, _ := st.ListBaseJobTemplates(ctx)
 	if len(list) != 3 {
-		t.Fatalf("want 3 seeded templates, got %d", len(list))
+		t.Fatalf("want 3 seeded (infra-only) templates, got %d", len(list))
 	}
 	dev, err := st.GetBaseJobTemplate(ctx, "dev-workspace")
 	if err != nil || dev.Status != store.StatusPublished || dev.Version != 1 || dev.ContentHash == "" {
 		t.Fatalf("seeded dev-workspace wrong: %+v err=%v", dev, err)
+	}
+	// Base templates are agent-agnostic now — no coding agent baked into them.
+	if dev.CodingAgent != "" {
+		t.Fatalf("dev-workspace base should carry no coding agent, got %q", dev.CodingAgent)
+	}
+	if dev.Image != "panchalravi/workspace-base:poc" {
+		t.Fatalf("dev-workspace should use the universal image, got %q", dev.Image)
+	}
+	// The old agent-specific base is gone (Standard base + Bob agent replaces it).
+	if _, err := st.GetBaseJobTemplate(ctx, "bobshell-workspace"); err == nil {
+		t.Fatalf("bobshell-workspace base should no longer be seeded")
 	}
 
 	// Simulate an admin edit, then re-seed: the edit must survive.

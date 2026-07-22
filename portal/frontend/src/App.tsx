@@ -12,6 +12,7 @@ import Agents from './pages/Agents'
 import Workspaces from './pages/Workspaces'
 import LlmModels from './pages/platformadmin/LlmModels'
 import BaseTemplates from './pages/platformadmin/BaseTemplates'
+import CodingAgents from './pages/platformadmin/CodingAgents'
 import AdminProjects from './pages/platformadmin/Projects'
 import Members from './pages/projectadmin/Members'
 import ProjectMcpServers from './pages/projectadmin/McpServers'
@@ -82,6 +83,7 @@ export default function App() {
           {isPlatformAdmin(me) && <Route path="/admin/projects" element={<AdminProjects />} />}
           {isPlatformAdmin(me) && <Route path="/admin/llm-models" element={<LlmModels />} />}
           {isPlatformAdmin(me) && <Route path="/admin/base-templates" element={<BaseTemplates />} />}
+          {isPlatformAdmin(me) && <Route path="/admin/coding-agents" element={<CodingAgents />} />}
           <Route path="/projects/:name/members" element={<Members />} />
           <Route path="/projects/:name/mcp-servers" element={<ProjectMcpServers />} />
           <Route path="/projects/:name/shared-volumes" element={<SharedVolumes />} />

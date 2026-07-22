@@ -22,6 +22,7 @@ func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
 // auth + project-admin gating (and rate-limit for mutate) at the mux.
 func (h *Handlers) Register(mux *http.ServeMux, protect, mutate func(http.HandlerFunc) http.Handler) {
 	mux.Handle("GET /api/projects/{name}/base-templates", protect(h.ListBase))
+	mux.Handle("GET /api/projects/{name}/coding-agents", protect(h.ListCodingAgents))
 	mux.Handle("GET /api/projects/{name}/templates", protect(h.List))
 	mux.Handle("POST /api/projects/{name}/templates", mutate(h.Create))
 	mux.Handle("PUT /api/projects/{name}/templates/{flavor}", mutate(h.Update))
@@ -37,6 +38,16 @@ func (h *Handlers) ListBase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, bases)
+}
+
+func (h *Handlers) ListCodingAgents(w http.ResponseWriter, r *http.Request) {
+	u, _ := auth.UserFrom(r.Context())
+	agents, err := h.svc.ListCodingAgents(r.Context(), u.Groups, r.PathValue("name"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
 }
 
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {

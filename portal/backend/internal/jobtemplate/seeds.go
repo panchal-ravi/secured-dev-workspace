@@ -16,8 +16,9 @@ import (
 var seedFS embed.FS
 
 // seedMeta is the non-source metadata for a base template: picker label, node
-// placement, runtime, and the feature cards. It mirrors the per-flavor data that
-// terraform/project/portal.tf carried in its flavor_features map.
+// placement, runtime, and the INFRA feature cards. Base templates are agent-agnostic
+// — the coding agent is an orthogonal dimension chosen at flavor create (see
+// agents.go), so no coding-agent metadata lives here.
 type seedMeta struct {
 	file            string
 	label           string
@@ -28,26 +29,23 @@ type seedMeta struct {
 	features        []store.Feature
 }
 
-var claudeFeature = store.Feature{
-	Key:         "claude-deepseek",
-	Label:       "Claude Code CLI (governed model)",
-	Description: "Pre-configured AI coding assistant. The API key is injected per session from Vault and never lands on the persistent home volume.",
-}
-
 var gitPATFeature = store.Feature{
 	Key:         "git-dynamic-pat",
 	Label:       "Git push (dynamic PAT)",
 	Description: "git is pre-configured with your identity and a short-lived GitHub App token as the push credential — no static PAT anywhere.",
 }
 
-// seeds is the canonical set of base templates the portal ships with.
+// seeds is the canonical set of base templates the portal ships with — the three
+// INFRA flavors (standard / GPU / microVM). The workspace image bakes every coding
+// agent's binary, so a flavor selects its agent at create time (agents.go) rather
+// than the base template carrying one.
 var seeds = map[string]seedMeta{
 	"dev-workspace": {
 		file:        "seeds/dev-workspace.nomad.hcl",
 		label:       "Standard Dev Workspace",
-		description: "Full dev environment: Claude Code (governed model), dynamic Git PAT.",
-		image:       "panchalravi/dev-workspace:poc",
-		features:    []store.Feature{claudeFeature, gitPATFeature},
+		description: "Full dev environment on a standard node, with a dynamic Git PAT. Pick the coding agent at flavor create.",
+		image:       "panchalravi/workspace-base:poc",
+		features:    []store.Feature{gitPATFeature},
 	},
 	"gpu-workspace": {
 		file:            "seeds/gpu-workspace.nomad.hcl",
@@ -58,19 +56,19 @@ var seeds = map[string]seedMeta{
 		runtime:         "nvidia",
 		features: []store.Feature{
 			{Key: "nvidia-t4-gpu", Label: "NVIDIA T4 GPU", Description: "Scheduled on a GPU node (g4dn.xlarge, NVIDIA T4). nvidia-smi and nvcc are available; a CUDA vectorAdd sample is included in the repo."},
-			claudeFeature, gitPATFeature,
+			gitPATFeature,
 		},
 	},
 	"microvm-workspace": {
 		file:            "seeds/microvm-workspace.nomad.hcl",
 		label:           "Hardened Workspace (microVM)",
 		description:     "Everything in the standard workspace, isolated in a Kata microVM (separate guest kernel) on a bare-metal node.",
-		image:           "panchalravi/dev-workspace:poc",
+		image:           "panchalravi/workspace-base:poc",
 		defaultNodePool: "microvm",
 		runtime:         "kata",
 		features: []store.Feature{
 			{Key: "kata-microvm-isolation", Label: "Hardware-isolated microVM", Description: "Runs inside a Kata Containers microVM with its own guest kernel on a dedicated bare-metal node — a hardware-virtualization (KVM) boundary around AI-agent code, not just shared-kernel namespaces."},
-			claudeFeature, gitPATFeature,
+			gitPATFeature,
 		},
 	},
 }

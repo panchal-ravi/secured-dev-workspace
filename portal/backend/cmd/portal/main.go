@@ -22,6 +22,7 @@ import (
 	"github.com/secured-dev-workspace/developer-portal/internal/auth"
 	"github.com/secured-dev-workspace/developer-portal/internal/basetmpladmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/blueprint"
+	"github.com/secured-dev-workspace/developer-portal/internal/codingagentadmin"
 	"github.com/secured-dev-workspace/developer-portal/internal/config"
 	"github.com/secured-dev-workspace/developer-portal/internal/hashistack"
 	"github.com/secured-dev-workspace/developer-portal/internal/jobtemplate"
@@ -184,6 +185,7 @@ func run() error {
 		Svc:           svc,
 		Admin:         adminHandlers,
 		BaseTmpl:      basetmpladmin.NewHandlers(basetmpladmin.New(st)),
+		CodingAgents:  codingagentadmin.NewHandlers(codingagentadmin.New(st)),
 		ProjectCreate: projectCreate,
 		ProjectRoles:  projectRoles,
 		ProjectMCP:    projectMCP,

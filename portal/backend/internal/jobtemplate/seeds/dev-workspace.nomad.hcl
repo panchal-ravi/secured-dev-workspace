@@ -16,11 +16,10 @@
 #   wif_role          — per-project Nomad↔Vault WIF role (= project name)
 #   ssh_ca_path       — per-project Vault SSH CA config path (ssh/config/ca)
 #   github_token_path — per-project Vault GitHub permission-set token path
-#   llm_kv_path       — per-project Vault KV path for the LiteLLM virtual key (secret/data/projects/llm)
-#   llm_base_url      — node-private LiteLLM gateway base URL (Claude Code's ANTHROPIC_BASE_URL)
-#   llm_model_primary llm_model_fast — governed model names (from terraform/infra LiteLLM model_list)
-# MCP wiring is NOT in the base template — a project-admin attaches MCP servers from the
-# catalog via structured template extension (injected at the @project-addons markers below).
+# This base template is AGENT-AGNOSTIC: the coding agent is chosen at flavor create,
+# and its wiring (e.g. Claude Code's LiteLLM virtual key + managed-settings.json, or
+# Bob's ~/.bob config) plus any MCP servers are injected at the @project-addons
+# markers below — none of it is baked into the base.
 #
 # Per-workspace placeholders (escaped "$$" here; filled by the portal at create):
 #   job_name ssh_port volume_name developer_email git_user_name
@@ -145,50 +144,10 @@ EOH
       # project-admin attaches MCP servers (from the catalog) or extra secret engines
       # to this flavor (structured template extension). The base template ships with
       # NO MCP wiring — MCP is a per-project choice.
+      # Per-project coding-agent secret templates (e.g. Claude Code's LiteLLM virtual
+      # key + managed-settings.json) are injected here by the portal based on the agent
+      # chosen at flavor create — the base template is agent-agnostic.
       # @project-addons:secrets
-
-      # Per-project LiteLLM virtual key (KV v2), minted into the /secrets tmpfs over
-      # WIF. Claude Code is pointed at the shared LiteLLM gateway (managed-settings.json
-      # below) and reads this via its apiKeyHelper (/usr/local/bin/llm-key), so the key
-      # is read at call time and never lands on the persistent /home/dev. This is a
-      # SCOPED virtual key (allowed models + budget + rpm), NOT the real provider key —
-      # that lives only on the gateway. 0644 so the dev user (Claude runs as dev) can
-      # read it; change_mode=noop so a re-render NEVER restarts sshd.
-      template {
-        destination = "secrets/llm-key"
-        perms       = "0644"
-        change_mode = "noop"
-        data        = <<EOH
-{{ with secret "${llm_kv_path}" }}{{ .Data.data.virtual_key }}{{ end }}
-EOH
-      }
-
-      # Claude Code's enterprise-managed settings, rendered with this project's
-      # LiteLLM gateway URL (llm_base_url) and installed by the entrypoint to
-      # /etc/claude-code/managed-settings.json — OUTSIDE /home/dev (which the
-      # persistent volume shadows) so it is enforced and the developer can't re-point
-      # the model. Non-secret (the key is served separately by apiKeyHelper), so it is
-      # static data; the model names match the gateway model_list. change_mode=noop.
-      template {
-        destination = "local/managed-settings.json"
-        perms       = "0644"
-        change_mode = "noop"
-        data        = <<EOH
-{
-  "apiKeyHelper": "/usr/local/bin/llm-key",
-  "env": {
-    "DISABLE_AUTOUPDATER": "1",
-    "ANTHROPIC_BASE_URL": "${llm_base_url}",
-    "ANTHROPIC_MODEL": "${llm_model_primary}",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${llm_model_primary}",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${llm_model_primary}",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${llm_model_fast}",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "${llm_model_fast}",
-    "CLAUDE_CODE_EFFORT_LEVEL": "max"
-  }
-}
-EOH
-      }
 
       template {
         destination = "local/entrypoint.sh"
@@ -199,11 +158,6 @@ set -euo pipefail
 
 # Trust the Vault SSH CA (re-rendered every launch from the template above).
 install -o root -g root -m 0644 /local/trusted_ca.pub /etc/ssh/trusted_ca.pub
-
-# Install Claude Code's enterprise-managed settings (rendered with this project's
-# LiteLLM gateway URL). /etc/claude-code is created in the image; this enforces the
-# governed gateway + model mapping and is outside the persistent /home/dev volume.
-install -o root -g root -m 0644 /local/managed-settings.json /etc/claude-code/managed-settings.json
 
 # The dynamic host volume mounts root-owned on first boot; hand it to the dev
 # user BEFORE the clone (run as dev) so the clone can write into it.
@@ -226,10 +180,11 @@ HELPER
 chmod 0755 /local/git-credential-helper
 sudo -u dev git config --global 'credential.https://github.com.helper' /local/git-credential-helper
 
-# Project add-on MCP registrations are injected here by the portal when a
-# project-admin attaches MCP servers from the catalog. Each is registered user-scoped
-# and idempotently; a failure WARNs without aborting the workspace (a missing MCP tool
-# must never cost the developer their SSH session). The base template registers none.
+# Coding-agent setup + MCP registrations are injected here by the portal based on the
+# agent chosen at flavor create (e.g. Claude Code installs its managed-settings and runs
+# `claude mcp add`; Bob writes ~/.bob/mcp_settings.json). Each MCP add is user-scoped and
+# idempotent; a failure WARNs without aborting the workspace (a missing MCP tool must
+# never cost the developer their SSH session).
 # @project-addons:entrypoint
 
 # Point package/build caches at a shared volume when a project-admin has created

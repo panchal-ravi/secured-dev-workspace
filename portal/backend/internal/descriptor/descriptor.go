@@ -27,6 +27,10 @@ type Flavor struct {
 	GitRepoURL  string    `json:"git_repo_url,omitempty"`
 	Image       string    `json:"image,omitempty"`
 	NodePool    string    `json:"node_pool,omitempty"`
+	// CodingAgent is the in-workspace coding agent this flavor ships ("claude" | "bob";
+	// empty = claude, the historical default). Surfaced to the picker so it can badge
+	// and differentiate Claude Code vs IBM Bob Shell templates.
+	CodingAgent string    `json:"coding_agent,omitempty"`
 	Features    []Feature `json:"features"`
 }
 

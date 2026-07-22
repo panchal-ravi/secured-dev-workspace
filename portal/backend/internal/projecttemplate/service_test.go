@@ -151,3 +151,72 @@ func TestDelete_ResyncsFlavors(t *testing.T) {
 		t.Fatalf("flavors not cleared: %+v", d.Flavors)
 	}
 }
+
+func TestCreate_CodingAgentSelectionAndAllowList(t *testing.T) {
+	st, svc := seed(t)
+	ctx := context.Background()
+
+	// Default (no agent given) → claude, and the claude feature card is attached.
+	pt, err := svc.Create(ctx, "admin@x", nil, "project-beta", CreateInput{Base: "dev-workspace", GitRepoURL: "r"})
+	if err != nil {
+		t.Fatalf("Create default: %v", err)
+	}
+	if pt.CodingAgent != "claude" {
+		t.Fatalf("default agent = %q, want claude", pt.CodingAgent)
+	}
+	if !hasFeature(pt.Features, "claude-deepseek") {
+		t.Fatalf("claude flavor missing claude feature card: %+v", pt.Features)
+	}
+
+	// Explicit bob → recorded as bob with the bob feature card.
+	pt, err = svc.Create(ctx, "admin@x", nil, "project-beta", CreateInput{Base: "dev-workspace", Flavor: "std-bob", CodingAgent: "bob", GitRepoURL: "r"})
+	if err != nil {
+		t.Fatalf("Create bob: %v", err)
+	}
+	if pt.CodingAgent != "bob" || !hasFeature(pt.Features, "bob-shell-ibm-hosted") {
+		t.Fatalf("bob flavor wrong: agent=%q features=%+v", pt.CodingAgent, pt.Features)
+	}
+
+	// Unknown agent is rejected.
+	if _, err := svc.Create(ctx, "admin@x", nil, "project-beta", CreateInput{Base: "dev-workspace", Flavor: "x", CodingAgent: "grok", GitRepoURL: "r"}); !errors.Is(err, apperr.ErrBadRequest) {
+		t.Fatalf("unknown agent: err = %v, want ErrBadRequest", err)
+	}
+
+	// A disabled agent is rejected by the allow-list.
+	if err := st.UpsertCodingAgentSetting(ctx, store.CodingAgentSetting{Key: "bob", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, "admin@x", nil, "project-beta", CreateInput{Base: "dev-workspace", Flavor: "x", CodingAgent: "bob", GitRepoURL: "r"}); !errors.Is(err, apperr.ErrBadRequest) {
+		t.Fatalf("disabled agent: err = %v, want ErrBadRequest", err)
+	}
+}
+
+func TestListCodingAgents_ReflectsAllowList(t *testing.T) {
+	st, svc := seed(t)
+	ctx := context.Background()
+
+	agents, err := svc.ListCodingAgents(ctx, nil, "project-beta")
+	if err != nil {
+		t.Fatalf("ListCodingAgents: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("want both agents enabled by default, got %d", len(agents))
+	}
+
+	if err := st.UpsertCodingAgentSetting(ctx, store.CodingAgentSetting{Key: "bob", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	agents, _ = svc.ListCodingAgents(ctx, nil, "project-beta")
+	if len(agents) != 1 || agents[0].Key != "claude" {
+		t.Fatalf("disabled bob should drop from picker, got %+v", agents)
+	}
+}
+
+func hasFeature(fs []store.Feature, key string) bool {
+	for _, f := range fs {
+		if f.Key == key {
+			return true
+		}
+	}
+	return false
+}

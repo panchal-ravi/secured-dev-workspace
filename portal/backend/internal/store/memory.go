@@ -26,6 +26,7 @@ type Memory struct {
 	projectDesc  map[string]ProjectDescriptor    // key: project
 	baseTmpl     map[string]BaseJobTemplate      // key: name
 	projectTmpl  map[string]ProjectTemplate      // key: project\x00flavor
+	codingAgent  map[string]CodingAgentSetting   // key: agent key (absent = enabled)
 	audit        []AuditEvent
 	nextID       int64
 	now          func() time.Time
@@ -45,6 +46,7 @@ func NewMemory() *Memory {
 		projectDesc:  map[string]ProjectDescriptor{},
 		baseTmpl:     map[string]BaseJobTemplate{},
 		projectTmpl:  map[string]ProjectTemplate{},
+		codingAgent:  map[string]CodingAgentSetting{},
 		now:          time.Now,
 	}
 }
@@ -577,6 +579,27 @@ func (m *Memory) DeleteBaseJobTemplate(_ context.Context, name string) error {
 	}
 	delete(m.baseTmpl, name)
 	return nil
+}
+
+func (m *Memory) UpsertCodingAgentSetting(_ context.Context, s CodingAgentSetting) error {
+	if s.Key == "" {
+		return fmt.Errorf("store: coding agent key required: %w", apperr.ErrBadRequest)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.codingAgent[s.Key] = s
+	return nil
+}
+
+func (m *Memory) ListCodingAgentSettings(_ context.Context) ([]CodingAgentSetting, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]CodingAgentSetting, 0, len(m.codingAgent))
+	for _, s := range m.codingAgent {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
 }
 
 func (m *Memory) UpsertProjectTemplate(_ context.Context, t ProjectTemplate) (ProjectTemplate, error) {

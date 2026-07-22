@@ -277,7 +277,8 @@ type BaseJobTemplate struct {
 	Image           string    `json:"image,omitempty"`  // container image baked into project templates (portal-admin owned)
 	Features        []Feature `json:"features,omitempty"`
 	DefaultNodePool string    `json:"default_node_pool,omitempty"`
-	Runtime         string    `json:"runtime,omitempty"` // "", "nvidia", "kata" (informational)
+	Runtime         string    `json:"runtime,omitempty"`      // "", "nvidia", "kata" (informational)
+	CodingAgent     string    `json:"coding_agent,omitempty"` // "claude" (default) | "bob"; selects how MCP is wired into the workspace
 	CreatedBy       string    `json:"created_by,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -289,6 +290,15 @@ type Feature struct {
 	Key         string `json:"key"`
 	Label       string `json:"label"`
 	Description string `json:"description"`
+}
+
+// CodingAgentSetting is the platform-admin allow-list state for one coding agent
+// (the code-known set is {claude, bob}; only the enabled flag is persisted). An
+// ABSENT row means enabled — so a fresh install offers every agent, and toggling
+// one off writes a row with Enabled=false. No secret material.
+type CodingAgentSetting struct {
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
 }
 
 // ProjectTemplate is a per-project "flavor": a snapshot of a base template's
@@ -308,6 +318,7 @@ type ProjectTemplate struct {
 	Image          string    `json:"image,omitempty"`
 	GitRepoURL     string    `json:"git_repo_url,omitempty"`
 	NodePool       string    `json:"node_pool,omitempty"`
+	CodingAgent    string    `json:"coding_agent,omitempty"` // coding agent chosen at flavor create; drives agent wiring at inject time
 	Features       []Feature `json:"features,omitempty"`
 	// Addons is the project-admin's structured extension of the base template: MCP
 	// servers (from the catalog) and extra secret engines wired into the workspace.
@@ -438,6 +449,11 @@ type Store interface {
 	GetBaseJobTemplate(ctx context.Context, name string) (BaseJobTemplate, error)
 	ListBaseJobTemplates(ctx context.Context) ([]BaseJobTemplate, error)
 	DeleteBaseJobTemplate(ctx context.Context, name string) error
+
+	// Coding-agent allow-list (platform-admin toggles which agents are offered).
+	// Absent row = enabled; a row is written only to disable/re-enable an agent.
+	UpsertCodingAgentSetting(ctx context.Context, s CodingAgentSetting) error
+	ListCodingAgentSettings(ctx context.Context) ([]CodingAgentSetting, error)
 
 	// Project templates (per-project flavors; was Vault KV job-templates/<flavor>).
 	UpsertProjectTemplate(ctx context.Context, t ProjectTemplate) (ProjectTemplate, error)

@@ -70,6 +70,7 @@ export default function AppHeader({
       { label: 'Projects (admin)', path: '/admin/projects', icon: Folders, current: pathname.startsWith('/admin/projects') },
       { label: 'LLM models', path: '/admin/llm-models', icon: MachineLearningModel, current: pathname.startsWith('/admin/llm-models') },
       { label: 'Base templates', path: '/admin/base-templates', icon: Catalog, current: pathname.startsWith('/admin/base-templates') },
+      { label: 'Coding agents', path: '/admin/coding-agents', icon: Bot, current: pathname.startsWith('/admin/coding-agents') },
     )
   }
   // Developer project switcher — a per-project dropdown driving Workspaces + AI

@@ -79,6 +79,7 @@ type BaseOption struct {
 	Image           string          `json:"image,omitempty"` // baked into the project template; readonly to the project-admin
 	DefaultNodePool string          `json:"default_node_pool,omitempty"`
 	Runtime         string          `json:"runtime,omitempty"`
+	CodingAgent     string          `json:"coding_agent,omitempty"`
 	Features        []store.Feature `json:"features,omitempty"`
 }
 
@@ -99,7 +100,8 @@ func (s *Service) ListBase(ctx context.Context, groups []string, project string)
 		}
 		out = append(out, BaseOption{
 			Name: b.Name, Label: b.Label, Description: b.Description, Version: b.Version,
-			Image: b.Image, DefaultNodePool: b.DefaultNodePool, Runtime: b.Runtime, Features: b.Features,
+			Image: b.Image, DefaultNodePool: b.DefaultNodePool, Runtime: b.Runtime,
+			CodingAgent: b.CodingAgent, Features: b.Features,
 		})
 	}
 	return out, nil
@@ -117,8 +119,9 @@ func (s *Service) List(ctx context.Context, groups []string, project string) ([]
 // supplied to the engine-provision plane, not here. The image is NOT accepted here
 // — it is a property of the base template (portal-admin owned), baked from bt.Image.
 type CreateInput struct {
-	Base        string `json:"base"`             // published base template name
-	Flavor      string `json:"flavor,omitempty"` // template key; defaults to Base
+	Base        string `json:"base"`                   // published base template name
+	Flavor      string `json:"flavor,omitempty"`       // template key; defaults to Base
+	CodingAgent string `json:"coding_agent,omitempty"` // agent chosen for this flavor; defaults to claude, validated against the allow-list
 	GitRepoURL  string `json:"git_repo_url"`
 	Label       string `json:"label,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -151,10 +154,25 @@ func (s *Service) Create(ctx context.Context, actor string, groups []string, pro
 		return store.ProjectTemplate{}, fmt.Errorf("base template %q has no image set: %w", base, apperr.ErrBadRequest)
 	}
 
+	// The coding agent is an orthogonal choice (the base is agent-agnostic). Default
+	// to claude for callers written before it was selectable, and reject an agent the
+	// platform-admin has not enabled in the allow-list.
+	agent := strings.TrimSpace(in.CodingAgent)
+	if agent == "" {
+		agent = jobtemplate.DefaultAgent
+	}
+	settings, err := s.store.ListCodingAgentSettings(ctx)
+	if err != nil {
+		return store.ProjectTemplate{}, err
+	}
+	if !jobtemplate.IsAgentEnabled(agent, settings) {
+		return store.ProjectTemplate{}, fmt.Errorf("coding agent %q is not available: %w", agent, apperr.ErrBadRequest)
+	}
+
 	// Pass-1 bake (markers intact) is snapshotted as BakedBase; the launch-time
-	// RenderedSource is that with the (initially empty) add-ons injected.
+	// RenderedSource is that with the (initially empty) add-ons + agent wiring injected.
 	bakedBase := jobrender.RenderPartial(bt.PublishedSource, projectStatic(project, s.cfg, in.GitRepoURL, bt.Image))
-	rendered := jobtemplate.Inject(bakedBase, store.TemplateAddons{})
+	rendered := jobtemplate.Inject(bakedBase, store.TemplateAddons{}, agent, s.llmWiring())
 	// After pass-1 + inject the only tokens left must be the 5 per-workspace ones;
 	// anything else would make jobrender.Render fail at launch.
 	if err := onlyPerWorkspaceLeft(rendered); err != nil {
@@ -182,7 +200,8 @@ func (s *Service) Create(ctx context.Context, actor string, groups []string, pro
 		Image:          bt.Image,
 		GitRepoURL:     in.GitRepoURL,
 		NodePool:       nodePool,
-		Features:       bt.Features,
+		CodingAgent:    agent,
+		Features:       flavorFeatures(bt.Features, agent),
 		CreatedBy:      actor,
 	}
 	saved, err := s.store.UpsertProjectTemplate(ctx, pt)
@@ -235,7 +254,9 @@ func (s *Service) Update(ctx context.Context, actor string, groups []string, pro
 			return store.ProjectTemplate{}, fmt.Errorf("base template %q is not published — cannot re-bake a repo change: %w", baseName, apperr.ErrBadRequest)
 		}
 		bakedBase := jobrender.RenderPartial(bt.PublishedSource, projectStatic(project, s.cfg, newRepo, bt.Image))
-		rendered := jobtemplate.Inject(bakedBase, pt.Addons)
+		// The flavor keeps its own coding agent across a re-bake (the base is
+		// agent-agnostic); only the infra source/image is refreshed from the base.
+		rendered := jobtemplate.Inject(bakedBase, pt.Addons, pt.CodingAgent, s.llmWiring())
 		if err := onlyPerWorkspaceLeft(rendered); err != nil {
 			return store.ProjectTemplate{}, err
 		}
@@ -243,7 +264,7 @@ func (s *Service) Update(ctx context.Context, actor string, groups []string, pro
 		pt.RenderedSource = rendered
 		pt.BaseVersion = bt.Version
 		pt.Image = bt.Image
-		pt.Features = bt.Features
+		pt.Features = flavorFeatures(bt.Features, pt.CodingAgent)
 		pt.GitRepoURL = newRepo
 	}
 	if strings.TrimSpace(in.Label) != "" {
@@ -319,7 +340,7 @@ func (s *Service) SetAddons(ctx context.Context, actor string, groups []string, 
 		}
 	}
 
-	rendered := jobtemplate.Inject(pt.BakedBase, addons)
+	rendered := jobtemplate.Inject(pt.BakedBase, addons, pt.CodingAgent, s.llmWiring())
 	if err := onlyPerWorkspaceLeft(rendered); err != nil {
 		return store.ProjectTemplate{}, err
 	}
@@ -354,6 +375,50 @@ func projectStatic(project string, cfg Config, gitRepoURL, image string) map[str
 		"llm_model_primary": cfg.LLMModelPrimary,
 		"llm_model_fast":    cfg.LLMModelFast,
 	}
+}
+
+// llmKVPath is the per-project Vault KV v2 data path for the LiteLLM virtual key.
+// Matches projectStatic's llm_kv_path; passed to Inject so the Claude Code wiring it
+// emits references the right path with no ${...} placeholder surviving the bake.
+const llmKVPath = "secret/data/projects/llm"
+
+// llmWiring is the (literal) LLM config Inject needs for the Claude Code agent.
+func (s *Service) llmWiring() jobtemplate.LLMWiring {
+	return jobtemplate.LLMWiring{
+		KVPath:       llmKVPath,
+		BaseURL:      s.cfg.LLMGatewayPrivateEndpoint,
+		ModelPrimary: s.cfg.LLMModelPrimary,
+		ModelFast:    s.cfg.LLMModelFast,
+	}
+}
+
+// flavorFeatures composes a flavor's feature cards: the base's infra cards plus the
+// chosen coding agent's card (appended last, so the agent reads after the infra).
+func flavorFeatures(base []store.Feature, agent string) []store.Feature {
+	out := append([]store.Feature{}, base...)
+	if af, ok := jobtemplate.AgentFeature(agent); ok {
+		out = append(out, af)
+	}
+	return out
+}
+
+// ListCodingAgents returns the ENABLED coding agents a project-admin may pick when
+// creating a flavor. Membership on the project is enforced first.
+func (s *Service) ListCodingAgents(ctx context.Context, groups []string, project string) ([]jobtemplate.Agent, error) {
+	if _, err := s.projects.GetProject(ctx, project, groups); err != nil {
+		return nil, err
+	}
+	settings, err := s.store.ListCodingAgentSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []jobtemplate.Agent{}
+	for _, a := range jobtemplate.ResolveAgents(settings) {
+		if a.Enabled {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 // onlyPerWorkspaceLeft asserts every remaining ${...} token is a per-workspace one.
@@ -395,7 +460,8 @@ func (s *Service) syncDescriptorFlavors(ctx context.Context, project string) err
 		flavors = append(flavors, descriptor.Flavor{
 			Name: t.Flavor, Label: t.Label, Description: t.Description,
 			GitRepoURL: t.GitRepoURL, Image: t.Image, NodePool: t.NodePool,
-			Features: toDescriptorFeatures(t.Features),
+			CodingAgent: t.CodingAgent,
+			Features:    toDescriptorFeatures(t.Features),
 		})
 	}
 	d.Flavors = flavors
