@@ -341,6 +341,7 @@ footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover
     <a href="#credentials" data-chapter>Credentials</a>
     <a href="#isolation" data-chapter>Runtime</a>
     <a href="#ai-egress" data-chapter>AI egress</a>
+    <a href="#shared" data-chapter>Shared knowledge</a>
     <a href="#experience" data-chapter>Experience</a>
     <a href="#reference" data-chapter>Reference</a>
   </nav>
@@ -992,9 +993,66 @@ footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover
     </div>
   </div></section>
 
-  <!-- ================= Chapter 08 · Experience ================= -->
+  <!-- ================= Chapter 08 · Shared knowledge ================= -->
+  <section id="shared" class="chapter"><div class="page">
+    <span class="chapter-num">Chapter 08 · <span style="color:var(--text-sub)">Shared knowledge</span></span>
+    <h2>A volume the whole project shares</h2>
+    <p class="lede">
+      Everything so far has stayed separate: your workspace is yours, and its <code class="inline">/home/dev</code> is a private
+      volume no other workspace can reach. Most of the time that is what you want. But a <em>project</em> is a team, and some
+      things are worth sharing across all of its workspaces: a build cache, a common dataset, and, above all, whatever the
+      coding agents work out along the way. A <span class="node" data-node="shared-volume"><strong>project shared volume</strong></span>
+      is a read-write disk the platform mounts at <code class="inline">/shared</code> in every workspace of the project. Its name
+      resolves only inside the project's own namespace, so no other project can mount it.
+    </p>
+
+    <div class="svg-frame" aria-label="Two workspaces in one project share a volume: an agent in one writes a learning, an agent in the other reads it into context">
+      <svg viewBox="0 0 920 264" role="img" aria-labelledby="shared-title">
+        <title id="shared-title">One project, two workspaces, one shared volume — a learning written in workspace A is read into the agent context in workspace B</title>
+        <rect x="34" y="20" width="852" height="224" rx="4" fill="none" stroke="#a8a8a8" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="48" y="40" font-family="IBM Plex Sans" font-size="11" fill="#6f6f6f">one project · project namespace</text>
+        <!-- workspace A -->
+        <g transform="translate(184,96)" text-anchor="middle" font-family="IBM Plex Sans"><rect x="-112" y="-42" width="224" height="84" rx="3" fill="#d6f5ea" stroke="#00a578" stroke-width="1.4"/><text y="-22" font-weight="600" font-size="12" fill="#161616">workspace · alice</text><rect x="-90" y="-8" width="180" height="30" rx="2" fill="#fff" stroke="#00a578" stroke-dasharray="3 2"/><text y="12" font-family="IBM Plex Mono" font-size="11" fill="#161616">coding agent</text></g>
+        <!-- workspace B -->
+        <g transform="translate(184,196)" text-anchor="middle" font-family="IBM Plex Sans"><rect x="-112" y="-42" width="224" height="84" rx="3" fill="#d6f5ea" stroke="#00a578" stroke-width="1.4"/><text y="-22" font-weight="600" font-size="12" fill="#161616">workspace · bob (new)</text><rect x="-90" y="-8" width="180" height="30" rx="2" fill="#fff" stroke="#00a578" stroke-dasharray="3 2"/><text y="12" font-family="IBM Plex Mono" font-size="11" fill="#161616">coding agent</text></g>
+        <!-- shared volume -->
+        <g transform="translate(672,146)" text-anchor="middle" font-family="IBM Plex Sans"><rect x="-120" y="-54" width="240" height="108" rx="3" fill="#edf5ff" stroke="#4589ff" stroke-width="1.4"/><text y="-30" font-weight="600" font-size="12" fill="#161616">project shared volume</text><rect x="-100" y="-16" width="200" height="30" rx="2" fill="#fff" stroke="#4589ff"/><text y="4" font-family="IBM Plex Mono" font-size="11" fill="#161616">/shared/memory</text><text y="36" font-size="10" fill="#4589ff">read-write · project-scoped</text></g>
+        <!-- A writes -> volume -->
+        <line x1="298" y1="82" x2="550" y2="116" stroke="#00a578" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="416" y="86" text-anchor="middle" font-family="IBM Plex Sans" font-size="10" fill="#00695c">saves a learning</text>
+        <!-- volume -> B reads -->
+        <line x1="550" y1="176" x2="298" y2="210" stroke="#4589ff" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="416" y="226" text-anchor="middle" font-family="IBM Plex Sans" font-size="10" fill="#0043ce">injected into the next session</text>
+      </svg>
+    </div>
+    <p class="caption">One project, two workspaces, one shared volume. Whatever an agent writes in one workspace, an agent in another can read, including a workspace created later or one that belongs to a different developer.</p>
+
+    <div class="subsection">
+      <h3>Agents that learn as a team</h3>
+      <p>The most useful of these is the knowledge the agents build up for themselves. When an agent works out something worth remembering, say the cause of a confusing error, or a project convention nobody has written down, it saves a short note to the shared volume. Every other workspace picks it up on its own: the project's agent-instructions file loads that shared index into context at the start of each session. A fix one developer's agent found is already waiting for everyone else's, so the agents stop solving the same problems over and over.</p>
+      <div class="grid two">
+        <div class="card">
+          <span class="chip" data-accent="5">Write</span>
+          <p class="card-title" style="margin-top:10px">One agent records a lesson</p>
+          <p>When an agent hits a gotcha or lands on a fix, it saves a short note to the shared volume. One note per lesson, kept trimmed so the store stays useful instead of sprawling.</p>
+          <a class="see-ch" href="#isolation">→ Ch 06 · Runtime</a>
+        </div>
+        <div class="card">
+          <span class="chip" data-accent="4">Read</span>
+          <p class="card-title" style="margin-top:10px">Every later session inherits it</p>
+          <p>At the start of every session, the project's agent-instructions file loads that shared index into context. A brand-new workspace's agent already knows what the team has learned, without anyone copying anything across.</p>
+          <a class="see-ch" href="#ai-egress">→ Ch 07 · AI egress</a>
+        </div>
+      </div>
+      <p class="helper" style="color:var(--text-sub)">None of this is built into the platform. It is plain configuration on top of the shared volume: an agent-instructions file and a few small scripts checked into the project repo. That is deliberate. The shared volume is a building block a team extends on its own, not a feature they have to wait on.</p>
+
+      <div class="callout"><strong>Shared, but never leaky.</strong> The same rules that keep projects apart are what make this safe. A volume resolves only inside its own project's namespace, so no other project can mount it. Whether it is read-only or read-write is set when it is created, so a reference dataset can't be quietly changed underneath you. And nothing from outside the repo reaches an agent's context without a trust gate: a one-time approval the first time that external file loads.</div>
+    </div>
+  </div></section>
+
+  <!-- ================= Chapter 09 · Experience ================= -->
   <section id="experience" class="chapter"><div class="page">
-    <span class="chapter-num">Chapter 08 · <span style="color:var(--text-sub)">Experience</span></span>
+    <span class="chapter-num">Chapter 09 · <span style="color:var(--text-sub)">Experience</span></span>
     <h2>What the developer actually does</h2>
     <p class="lede">
       The developer sees none of this. They sign in, create a workspace, open it in their IDE, and start coding —
@@ -1085,9 +1143,9 @@ footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover
     </div>
   </div></section>
 
-  <!-- ================= Chapter 09 · Reference & getting started ================= -->
+  <!-- ================= Chapter 10 · Reference & getting started ================= -->
   <section id="reference" class="chapter"><div class="page">
-    <span class="chapter-num">Chapter 09 · <span style="color:var(--text-sub)">Reference</span></span>
+    <span class="chapter-num">Chapter 10 · <span style="color:var(--text-sub)">Reference</span></span>
     <h2>Reference &amp; getting started</h2>
     <p class="lede" style="margin-bottom:var(--s-05)">Each product owns one part of the security model. Only the base platform is provisioned with Terraform; projects and workspaces are created from the Portal — each step run by a different role, so no one person ever holds every privilege at once.</p>
 
@@ -1164,7 +1222,8 @@ const NODES = {
   portal:{kind:'experience',name:'Developer Portal',body:'A self-service web app (Carbon React + Go) — the direct-API equivalent of the terraform/workspace tier. Developers sign in with SSO, see only projects their groups allow, pick a flavor, and click create. No HCL, no state, no tokens.',meta:{Stack:'Carbon React + Go',Auth:'IBM Verify OIDC (PKCE)',Equivalent:'terraform/workspace tier'}},
   'protocol-helper':{kind:'experience',name:'secured-ws:// protocol helper',body:'A narrow local URL-scheme handler (same pattern as vscode://) that bridges the remote Portal to the developer’s machine. Three verbs — authenticate, connect, disconnect. It validates every parameter and rebuilds each command and SSH-config block itself, so a link can never run an arbitrary command or write arbitrary config.',meta:{Verbs:'authenticate · connect · disconnect',Safety:'strict per-param validation',Pattern:'like vscode://'}},
   'bob-ide':{kind:'experience',name:'IBM Bob',body:'A VS Code fork offered as a first-class peer to VS Code in the connect flow, opened via the ibm-bob:// scheme. The brokered SSH path is identical whichever editor you pick, so the security model is editor-agnostic. One-time setup: Microsoft’s official Remote-SSH extension is not supported on VS Code forks, so install the open-remote-ssh extension from Open VSX once.',meta:{Kind:'VS Code fork · peer to VS Code',Scheme:'ibm-bob://',Prereq:'open-remote-ssh from Open VSX (Microsoft Remote-SSH unsupported on forks)',Security:'editor-agnostic — brokered SSH'}},
-  'bob-shell':{kind:'experience',name:'IBM Bob Shell',body:'An in-workspace coding agent, peer to Claude Code, selected per template by the project-admin and gated by a platform-admin allow-list. Its MCP path is governed identically to Claude Code — scoped gateway tokens rendered to tmpfs and wired into ~/.bob/mcp_settings.json. Its model path is the current exception: Bob Shell exposes no way to set a custom LLM provider URL, so its model calls run on IBM’s hosted backend via the developer’s IBMid and bypass the LiteLLM gateway — outside the per-project budget, allow-list, and audit.',meta:{Kind:'coding agent · peer to Claude Code',Selected:'per template · platform-admin allow-list',MCP:'governed — scoped token → ~/.bob/mcp_settings.json',Model:'IBM-hosted via IBMid — bypasses the LLM gateway (no configurable endpoint yet)'}}
+  'bob-shell':{kind:'experience',name:'IBM Bob Shell',body:'An in-workspace coding agent, peer to Claude Code, selected per template by the project-admin and gated by a platform-admin allow-list. Its MCP path is governed identically to Claude Code — scoped gateway tokens rendered to tmpfs and wired into ~/.bob/mcp_settings.json. Its model path is the current exception: Bob Shell exposes no way to set a custom LLM provider URL, so its model calls run on IBM’s hosted backend via the developer’s IBMid and bypass the LiteLLM gateway — outside the per-project budget, allow-list, and audit.',meta:{Kind:'coding agent · peer to Claude Code',Selected:'per template · platform-admin allow-list',MCP:'governed — scoped token → ~/.bob/mcp_settings.json',Model:'IBM-hosted via IBMid — bypasses the LLM gateway (no configurable endpoint yet)'}},
+  'shared-volume':{kind:'shared storage',name:'Project shared volume',body:'A read-write volume the platform provisions once per project and mounts into every workspace at /shared — distinct from each workspace’s own private home directory, which no other workspace can see. Its name resolves only inside the project’s own namespace, so another project can never mount it, and whether it is read-only or read-write is fixed when it’s created. Uses: warm build caches, shared datasets, and a coding-agent knowledge base the agents curate and read back into context on their next session.',meta:{Backing:'one managed shared volume per project',Scope:'project namespace — never cross-project',Mode:'read-only or read-write, fixed at creation',Distinct:'from each workspace’s private home directory'}}
 };
 
 /* ---- Detail panel ---- */
