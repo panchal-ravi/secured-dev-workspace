@@ -471,6 +471,8 @@ footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover
       <div class="pillar" data-accent="4"><span class="p-num">05 · AI EGRESS</span><h3>What can it reach?</h3><p>Only what a project-admin allows. MCP tools, data, and models are reached through central gateways whose keys the agent never holds — every other tool returns <code class="inline">403</code>, model use runs on a per-project budget and allow-list, and every prompt and response is logged.</p></div>
     </div>
 
+    <p class="helper" style="max-width:730px;color:var(--text-sub)">The five questions above are about keeping an agent contained. The same project boundary also lets a team share safely — a knowledge base every workspace's agent reads and adds to. <a class="see-ch" href="#shared">→ Ch 08 · Shared knowledge</a></p>
+
     <p class="helper" style="max-width:730px;color:var(--text-sub)">Read the chapters in order: the problem that makes this necessary, why a secured workspace is the answer, the foundations it stands on, then one chapter for each of the five questions above — closing with the developer experience and a reference catalog.</p>
   </div></section>
 
@@ -604,7 +606,7 @@ footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover
           <span class="card-tag">Onboarding</span>
           <p class="card-title">Nothing to install</p>
           <p>A new developer signs in with company SSO and lands in a workspace with the repo already cloned, the toolchain installed, and git configured as them.</p>
-          <a class="see-ch" href="#experience">→ Ch 08 · Experience</a>
+          <a class="see-ch" href="#experience">→ Ch 09 · Experience</a>
         </div>
       </div>
 
@@ -1168,7 +1170,7 @@ footer a{color:var(--text-sub);border-bottom-color:var(--border)} footer a:hover
         <thead><tr><th>Tier</th><th>Role</th><th>What they set up</th></tr></thead>
         <tbody>
           <tr><td><span class="prod">Platform</span> · <code class="inline">terraform/infra</code></td><td>Platform Admin</td><td>Provisions the base platform with Terraform — Boundary, Nomad, Vault, and the LLM + MCP gateways. Then creates each new project from the Portal, and with it a fresh Boundary scope, Vault namespace, and Nomad namespace.</td></tr>
-          <tr><td><span class="prod">Project</span> · Portal</td><td>Project Admin</td><td>Configures the project's MCP servers and workspace templates — including each template's coding agent (Claude Code or IBM Bob Shell) — from the Portal.</td></tr>
+          <tr><td><span class="prod">Project</span> · Portal</td><td>Project Admin</td><td>Configures the project's MCP servers, workspace templates — including each template's coding agent (Claude Code or IBM Bob Shell) — and shared volumes, all from the Portal.</td></tr>
           <tr><td><span class="prod">Workspace</span> · Portal</td><td>Developer</td><td>Creates and connects to their own workspace — from the Portal.</td></tr>
         </tbody>
       </table></div>
