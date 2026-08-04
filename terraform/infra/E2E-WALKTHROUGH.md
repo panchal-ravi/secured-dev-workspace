@@ -4,6 +4,9 @@ Drives the three user roles through the Portal UI against a running platform:
 **platform-admin** (§1), **project-admin** (§2), **project-user / developer** (§3), plus the
 AI-agents plane (§4) and project teardown (§5).
 
+The core path is §1 → §2 → §3.1–§3.3 → §5. Sections marked *(optional)* — §3.4–§3.7 and §4 — are
+independent deep-dives; skipping them does not affect anything that follows.
+
 Stand the platform up first with [`README.md`](./README.md). Everything here is **portal-driven** —
 no Terraform, no Nomad or Vault access. Each step is verified in the UI; the deeper backend proofs
 (Vault paths, Nomad jobs, Boundary scopes, EFS access points) are collected in
@@ -453,7 +456,7 @@ cat /etc/profile.d/shared-cache.sh            # the auto-exported cache env vars
 `vault-mcp` read returns the seeded `api_key`; and `/shared/cache` accepts a write while
 `/shared/datasets` rejects one.
 
-### 3.4 Shared-volume cache warm-hit
+### 3.4 Shared-volume cache warm-hit *(optional)*
 
 The point of the `cache` volume: a cold dependency fetch in one workspace warms the cache for the
 next, even on a different node.
@@ -470,7 +473,7 @@ time (cd ~/<go-repo> && go mod download)      # fast — served from the shared 
 **Pass** = the second download is materially faster and does no network fetch. Deselect `cache` on a
 third workspace and it launches with no `/shared/cache` at all — the feature is opt-out per launch.
 
-### 3.5 Cross-project isolation
+### 3.5 Cross-project isolation *(optional)*
 
 A second project cannot see or mount project-acme's shared volumes:
 
@@ -479,7 +482,7 @@ A second project cannot see or mount project-acme's shared volumes:
 - A `project-beta` workspace's create modal offers only `project-beta` volumes. Each volume's EFS
   access point is a hard chroot root with its own enforced uid, so there is no path across.
 
-### 3.6 Reachability across a node change
+### 3.6 Reachability across a node change *(optional)*
 
 A workspace stays reachable if it moves to another node: its `/home/dev` volume follows it, and the
 host-sync reconciler repoints the workspace's **stable** Boundary target at the new node address —
@@ -489,7 +492,7 @@ To exercise it on a single-node cluster, set `enable_default_spare = true` (READ
 temporary second node, force a reschedule, confirm the workspace is still reachable, then set the
 flag back to `false`.
 
-### 3.7 Bob flavor
+### 3.7 Bob flavor *(optional)*
 
 Everything in §3.3 that is **infrastructure** rather than agent — block 1 (identity + secrets),
 block 2 (git), block 5 (shared volumes) — behaves identically on a Bob-flavor workspace: same base
@@ -524,7 +527,7 @@ a URL and bearer token matching the `/secrets/mcp-<server>-*` files.
 
 ---
 
-## 4. AI-agents plane
+## 4. AI-agents plane *(optional)*
 
 Any member with the **ai-agents** capability can author, deploy and chat with a YAML agent.
 
