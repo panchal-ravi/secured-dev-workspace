@@ -1,336 +1,609 @@
-# Platform tier — all-in-one HashiStack node (`terraform/infra/`)
+# Platform tier — stand up the secured dev workspace (`terraform/infra/`)
 
-The **platform / foundation tier** of the three-tier model — see [`../README.md`](../README.md) for the overview, the provisioning order, and the end-to-end developer demo.
+Minimum steps to build and verify the platform tier. For architecture, module internals and the deep
+verification recipes, see [`README.md.bak`](./README.md.bak) (the previous, full-detail README).
+Once the platform is up, **[`E2E-WALKTHROUGH.md`](./E2E-WALKTHROUGH.md)** takes over: it drives the
+platform-admin, project-admin and developer roles through the Portal UI (§10). Also related:
+[`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md) (admin-plane operations) and
+[`../README.md`](../README.md) (three-tier overview).
 
-Provisions **HashiCorp Boundary Enterprise** as a single all-in-one node on AWS:
+## What this provisions
 
-1. A **Packer** base image (`ami/base_image/`) that bakes the Boundary, Consul, Nomad and Vault Enterprise binaries onto the org base AMI.
-2. A **Terraform** module (`modules/secured-codespace/`) that launches one EC2 instance from that AMI running, on the same host: the Boundary **controller + worker** (backed by a **local PostgreSQL**, static **AEAD KMS keys**) and a single combined **Nomad server + client** agent (TLS + ACLs enabled).
-3. *(opt-in)* A second **Packer** GPU image (`ami/gpu_image/`) and a second EC2 — a **GPU worker** (`g4dn.xlarge`, NVIDIA T4) — that joins the cluster as a **Nomad client in the `gpu` node pool** for GPU workspaces. Gated by `enable_gpu_node` (off by default). See [GPU worker node](#gpu-worker-node).
-4. *(opt-in)* A third **Packer** microVM image (`ami/microvm_image/`) and a bare-metal EC2 — a **microVM worker** (`c5.metal`, Kata Containers) — that joins the cluster as a **Nomad client in the `microvm` node pool** for hardware-isolated workspaces. Gated by `enable_microvm_node` (off by default). See [microVM worker node](#microvm-worker-node).
+One all-in-one EC2 running the **Boundary** controller+worker (local Postgres, AEAD KMS), a combined
+**Nomad** server+client (TLS + ACLs), and a single-node **Vault** — all behind a public NLB whose every
+listener is locked to the `/32` of the machine that ran `terraform apply`.
 
-The Boundary controller API (`9200`), Boundary worker proxy (`9202`), the Nomad HTTP API/UI (`4646`), the Vault API/UI (`8200`), the **MCP gateway** (`4444`) and **LLM gateway** (`4000`) admin APIs, and the **developer portal** (`8443`, when enabled) are all reached through a public **Network Load Balancer**. SSH is direct to the instance. **All ingress — every NLB listener and SSH — is locked to the public IP of the machine running Terraform (`/32`)**, auto-detected via `https://checkip.amazonaws.com`.
+On top of it, Nomad jobs in namespace `infra`: the **ContextForge MCP gateway**, the **LiteLLM LLM
+gateway** (+Postgres), the **AWS EBS CSI driver** (durable per-workspace `/home/dev`), the **Developer
+Portal** (+Postgres), the **Nomad→Boundary host-sync** reconciler, and — when enabled — the **EFS CSI
+driver** for shared volumes and a throwaway demo Postgres.
 
-## Modules
+Optional extra EC2s join as Nomad clients in their own node pools: `agents` (MCP servers + AI agents),
+`gpu` (NVIDIA T4), `microvm` (Kata, bare metal).
 
-What this platform tier provisions and the order it applies in (the project and developer tiers are documented in [`../project/README.md`](../project/README.md) and [`../workspace/README.md`](../workspace/README.md)):
+---
 
-- **`modules/secured-codespace`** *(base — applied first)* — the all-in-one node and everything it depends on: VPC, subnets, security groups (locked to your `/32`), the public NLB, the self-signed TLS certs, and the EC2 instance whose cloud-init bootstraps the **Boundary controller+worker** (local PostgreSQL + AEAD KMS), the combined **Nomad server+client** (ACLs + TLS), and the single-node **Vault** server (init + unseal). Emits all the connection outputs (`*_addr`, admin creds, scope IDs, tokens) the day-2 modules and providers consume.
-- **`modules/identity`** *(day-2 — IBM Verify SSO)* — creates two OIDC apps in the IBM Verify SaaS tenant via REST and wires **Boundary and Nomad** to trust them, mapping Verify group membership → admin / readonly. Additive: the Boundary password admin and Nomad management token remain as break-glass logins.
-- **`modules/nomad-vault-wif`** *(platform)* — creates the single **`jwt-nomad`** Vault auth method that trusts Nomad's workload-identity signing keys (WIF). Per-project WIF roles + read policies live in the project tier; this is just the shared trust anchor. The foundation root also enables a **KV-v2** mount (`secret/`) where the project tier publishes job templates.
-- **GitHub secrets plugin** *(platform)* — the AMI bakes the external `martinbaillie/vault-plugin-secrets-github` binary into `/opt/vault/plugins` (sha256-pinned), and `vault-github-plugin.tf` registers it into Vault's plugin catalog. It mints short-lived GitHub App installation tokens; per-project **mounts** of it (`github`, inside each project's Vault namespace) are created in the project tier. The git push credential for every workspace comes from here — no static PAT anywhere.
-- **AI gateways** *(platform)* — two Nomad jobs in the `infra` namespace that make AI egress one governed choke point. **ContextForge MCP gateway** (`mcp-gateway.tf`) federates each project's MCP server and decides which tools/data a workspace may reach. **LiteLLM LLM gateway** (`llm-gateway.tf`, plus a dedicated Postgres for virtual keys / budgets / spend logs) is what every workspace's Claude Code talks to instead of the model provider directly: it serves the Anthropic `/v1/messages` API, maps the workspace-facing model names to the real backend (DeepSeek today, watsonx.ai by a one-line `config.yaml` change), and holds the **one central provider key** (`deepseek_api_key`, in `secret/infra/llm-gateway`). Per-project **virtual MCP servers** and **virtual keys** are minted in the project tier; see [Verify the MCP Gateway](#verify-the-mcp-gateway) and [Verify the LLM Gateway](#verify-the-llm-gateway). Both deploy on every apply (no enable flag).
-- **Durable workspace storage (EBS CSI)** *(platform)* — `ebs-csi.tf` runs the **AWS EBS CSI driver** as two Nomad jobs in `infra` (a `controller` service + a `node` system job on every pool), so each workspace `/home/dev` is a **durable per-workspace EBS volume** (gp3, encrypted, AZ-pinned) provisioned by the portal at create — it survives node crash / instance replacement, unlike the old node-local `mkdir` host volume. `modules/secured-codespace/iam.tf` grants each instance a scoped EBS-CSI **instance profile** (the nodes had no IAM before), `allow_privileged = true` on the docker driver lets the node plugin stage block devices, and `modules/secured-codespace/backup.tf` adds daily **AWS Backup** (30-day retention) selecting the `backup=secured-workspace` tag (`enable_workspace_backups`, default on). Only workspace volumes use CSI; the portal/LiteLLM Postgres + MCP SQLite stay `mkdir`. See [Durable workspace storage (EBS CSI)](./PLATFORM-ADMIN-RUNBOOK.md#durable-workspace-storage-ebs-csi) in the runbook. Deploys on every apply (no enable flag).
-- **Developer Portal + Platform-Admin plane** *(platform — opt-in)* — `developer-portal.tf` deploys the self-service portal as a Nomad job in `infra`, gated by `enable_developer_portal` (off by default; needs the portal image built + `portal_oidc_issuer` set — its Verify OIDC app is created automatically by the identity module, `modules/identity/verify.tf`, no hand-registration). With `enable_platform_admin = true` it additionally enables the in-portal onboarding plane (platform-admins onboard LLM models + author base templates + create projects) and the project-MCP deploy plane (the portal's second, `vault-provisioner` workload identity, brokered per-project — see [Portal per-project provisioner brokering](#portal-per-project-provisioner-brokering-project-mcp-deploy-plane)). Its durable control-plane state lives in a dedicated `portal-postgres` (`portal-postgres.tf`, when the admin plane is on). Apply + live-verification steps live in [`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md). The base NLB `:8443` listener is provisioned regardless; only the portal job itself is gated.
-- **Agent worker node(s) + agent-platform** *(platform)* — `modules/secured-codespace/agent-nodes.tf` provisions `var.agent_node_count` standard-CPU EC2(s) that join as **Nomad clients in the `agents` node pool** (`enable_agent_nodes`, on by default in `terraform.tfvars`), so portal-deployed **MCP servers** and **AI agents** run off the all-in-one node (`platform_admin_mcp_node_pool` / `PORTAL_AGENT_NODE_POOL`, default `agents`). `agent-identity.tf` adds the agent-platform identity foundation (RFC 8693 token exchange for delegated agent identity). See [Agent worker node](#agent-worker-node).
-- **Workspace reachability (host-sync)** *(platform — with the portal)* — `nomad-boundary-host-sync.tf` runs the external reconciler that keeps a rescheduled workspace's Boundary target pointed at its current node (gated on `enable_developer_portal`). See [Workspace reachability](#workspace-reachability-nomadboundary-host-sync).
+## 1. Prerequisites
 
-## Prerequisites
+**Tooling**
 
-- AWS credentials in the environment (region defaults to `ap-southeast-1`).
+- AWS credentials in the environment.
 - Packer >= 1.9, Terraform >= 1.7.
-- Boundary, Nomad **and** Vault Enterprise licenses (the AMI bakes `+ent` binaries, which require a license to start).
+- Docker with `buildx`, and `docker login` to your registry (the image build scripts always `--push`).
+- **macOS** — required to build the portal image (the connect helper uses `osacompile` / `PlistBuddy`).
 
-## Steps
+**Enterprise licenses** — Boundary, Nomad **and** Vault. Place them here (all gitignored; `main.tf`
+reads all three with `file()` and the apply hard-fails if any is missing):
 
-1. **Add your licenses** — Boundary at `config/boundary_license.hclic`, Nomad at `config/nomad_license.hclic` and Vault at `config/vault_license.hclic` (replace the placeholders). All are gitignored. Vault Enterprise will not start without its license.
+```
+config/boundary_license.hclic
+config/nomad_license.hclic
+config/vault_license.hclic
+```
 
-2. **Build the AMIs** — the base AMI, **and** the GPU AMI (only when enabling the GPU node — prerequisite of `enable_gpu_node = true`, see [GPU worker node](#gpu-worker-node)) **and** the microVM AMI (only when enabling the microVM node — prerequisite of `enable_microvm_node = true`, see [microVM worker node](#microvm-worker-node)):
-   ```bash
-   cd ami/base_image
-   packer init .
-   packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-boundary-enterprise-<ts>
-   cd ../gpu_image
-   packer init .
-   packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-gpu-workspace-<ts>
-   cd ../microvm_image
-   packer init .
-   packer build -var-file=variables.pkrvars.hcl .          # -> <owner>-microvm-workspace-<ts>  (build on c5.metal)
-   ```
-The base AMI is tagged with the four binary versions; the GPU AMI bakes the NVIDIA driver + container toolkit + Nomad + the `nomad-device-nvidia` plugin; the microVM AMI bakes Kata Containers + a pinned Docker 27.5.1 + Nomad and self-gates on `kata-runtime check` + a `docker run --runtime=kata` smoke test (so it **must** build on a bare-metal `c5.metal`).
+**IBM Verify SaaS** (manual, one-time):
 
-3. **Configure variables:**
-   ```bash
-   cd ..
-   cp terraform.tfvars.example terraform.tfvars
-   ```
-Set the base values and the three IBM Verify values (`ibm_verify_tenant`, `ibm_verify_api_client_id`, `ibm_verify_api_client_secret`). The `ibm_verify_*` variables have **no defaults**, so they must be set before any `terraform` plan/apply will run — see [IBM Verify OIDC SSO](#ibm-verify-oidc-sso) below for what they are and how to obtain them. Also set **`deepseek_api_key`** — the **one central provider key** the LiteLLM gateway uses to reach the model provider (it lives only on the gateway in `secret/infra/llm-gateway`; workspaces get per-project virtual keys, never this). Optionally pin `litellm_image` / `litellm_postgres_image`. (`terraform.tfvars` is gitignored — never commit secrets.)
+1. A Verify tenant.
+2. A bootstrap **API client** (console → Security → API access) with entitlements
+   `manageAppAccessAdmin` **and** `readAppConfigAndClientSecret`.
+3. Groups for admin / read-only access, matching `admin_group_name` / `readonly_group_name`.
+4. A group named **exactly `platform-admins`** holding your platform admins. The match is
+   case-insensitive but the name is literal — singular `platform-admin` does **not** work. Without it
+   `/api/me` returns no roles and every `/api/admin/*` call 403s.
+5. A group per project (`<project>-developers`, e.g. `project-acme-developers`) once you onboard
+   projects.
+6. **Free an app slot.** The tenant enforces a **5-application cap** and a full stack uses 4. Delete any
+   hand-registered `secured-codespace-portal` app before applying, or the portal app create fails with
+   `CSIAD0030 (exceeded the allowed limit of 5 applications)`. Terraform creates that app for you.
 
-To also stand up the **developer portal** and/or the **platform-admin onboarding plane** (both off by default), set `enable_developer_portal = true` (requires the portal image built and `portal_oidc_issuer` set; the Verify OIDC app is created automatically — delete any old hand-registered `secured-codespace-portal` app first to stay under the 5-app cap) and optionally `enable_platform_admin = true` — see [`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md) for the full prerequisites and live verification.
+> **Your egress IP matters.** Every NLB listener and SSH is locked to the public `/32` detected at apply
+> time. If you move networks, re-apply from the new IP (or add it to the `<owner>-boundary-nlb` security
+> group for ports 8200/4646/9200/9202/4444/4000/8443).
 
-4. **Provision** — single state, so a **fresh** stack applies in three ordered stages. The platform providers (boundary/nomad/vault/restapi) connect to the base over the NLB, so the base must exist before they can configure; and the shared `jwt-nomad` auth mount must exist before the agent-identity data source reads it.
-   ```bash
-   terraform init
+---
 
-   # Stage 1 — bring the base node up first (creates the NLB the providers target + Vault).
-   terraform apply -target=module.secured_codespace
+## 2. Build the AMIs
 
-   # Stage 2 — create the shared jwt-nomad WIF auth method. MUST precede the plain apply:
-   #   data.vault_auth_backend.nomad (agent-identity.tf) reads the jwt-nomad mount at PLAN
-   #   time (its path is a static literal), so the mount has to exist first or the plain
-   #   apply 400s with "No secret engine mount at auth/jwt-nomad/".
-   terraform apply -target=module.nomad_vault_wif
+Always build the base image. Build the others only if you enable the matching node.
 
-   # Stage 3 — a plain apply layers on everything else against the now-running base:
-   #   module.identity          — IBM Verify OIDC apps + Boundary/Nomad SSO wiring
-   #   vault_mount.kv            — KV-v2 mount (secret/) for project job templates
-   #   vault_generic_endpoint.github_plugin — register the baked GitHub secrets plugin
-   #   agent-identity.tf         — actor-JWT identity wiring (reads the jwt-nomad mount)
-   #   nomad_job.mcp_gateway / litellm_gateway (+ litellm_postgres) — AI gateways (ns infra)
-   #   nomad_job.developer_portal — only when enable_developer_portal = true
-   terraform apply
+```bash
+cd ami/base_image                                          # always
+packer init . && packer build -var-file=variables.pkrvars.hcl .    # -> <owner>-boundary-enterprise-<ts>
 
-   # Verify the plugin registered + is runnable:
-   #   VAULT_ADDR=... VAULT_SKIP_VERIFY=true vault plugin list secret | grep github
-   ```
-Stage 1 finds the just-built AMI via the `<owner>-boundary-enterprise-*` filter and waits for cloud-init (Postgres + `boundary database init` + the recovery-KMS setup that creates the admin, the **org scope**, password auth method and admin role; then the Nomad agent + `nomad acl bootstrap`; then `vault operator init`/unseal with the `vault{}` JWT-auth stanza baked into `nomad.hcl`), copying the generated IDs to `generated/boundary-setup.json`, the Nomad management token to `generated/nomad-setup.json`, and the Vault root token + unseal keys to `generated/vault-setup.json`. Stage 2 stands up the shared **`jwt-nomad`** Nomad↔Vault WIF auth method — the trust anchor that stage 3's identity data source reads. Stage 3 fetches an IBM Verify token and creates the two OIDC apps (wiring Boundary + Nomad to trust them — see the SSO section below), enables the **KV-v2** mount where the project tier publishes job templates, registers the GitHub secrets plugin, and deploys the AI gateways (and the developer portal, when `enable_developer_portal = true`). The per-project Vault SSH CA, Boundary credential store and WIF role are created later by the [project tier](../project/README.md).
+cd ../agent_image                                          # enable_agent_nodes = true
+packer init . && packer build -var-file=variables.pkrvars.hcl .    # -> <owner>-agent-node-<ts>
 
-> **Already-provisioned stack:** once the base and the `jwt-nomad` mount exist, a plain `terraform apply` is enough — the two staged `-target` applies are only needed on a fresh build (and after an instance replace, which rebuilds Vault). The eager `jwt-nomad` read is also why `terraform plan` on a fresh stack fails before stage 2.
+cd ../gpu_image                                            # enable_gpu_node = true
+packer init . && packer build -var-file=variables.pkrvars.hcl .    # -> <owner>-gpu-workspace-<ts>
 
-> **Re-applying onto an existing instance:** `aws_instance.this` has `lifecycle { ignore_changes = all }`, so changes to the bootstrap/config are not pushed by a plain `apply`. To roll them onto a running node, replace it: `terraform apply -replace='module.secured_codespace.aws_instance.this'`.
+cd ../microvm_image                                        # enable_microvm_node = true — build ON c5.metal
+packer init . && packer build -var-file=variables.pkrvars.hcl .    # -> <owner>-microvm-workspace-<ts>
+```
 
-5. **Retrieve admin credentials and scope IDs:**
-   ```bash
-   terraform output boundary_addr
-   terraform output admin_auth_method_id
-   terraform output admin_login_name
-   terraform output -raw admin_password
-   terraform output org_scope_id
-   ```
-The login name, password and org name are whatever you set in `terraform.tfvars` (defaults: `admin` / `Password123!` / `primary-org`). The auth-method and **org scope ID** are server-generated and read back from `generated/boundary-setup.json`. Project scopes are created later by the [project tier](../project/README.md).
+Terraform finds each AMI by an `<owner>-*` name filter, so `owner` in `terraform.tfvars` must match the
+`owner` used for the Packer build.
 
-6. **Connect** (self-signed API cert, so skip TLS verification):
-   ```bash
-   boundary authenticate password \
-     -addr "$(terraform output -raw boundary_addr)" \
-     -auth-method-id "$(terraform output -raw admin_auth_method_id)" \
-     -login-name "$(terraform output -raw admin_login_name)" \
-     -tls-insecure
-   ```
-(Enter the configured `boundary_admin_password` when prompted.)
+---
 
-7. **Connect to Nomad** (self-signed API cert, so skip TLS verification):
-   ```bash
-   export NOMAD_ADDR="$(terraform output -raw nomad_addr)"
-   export NOMAD_TOKEN="$(terraform output -raw nomad_management_token)"
-   export NOMAD_SKIP_VERIFY=true
-   nomad server members        # the node should be "alive"
-   nomad node status           # the client should be "ready"
-   ```
-The web UI is at `$(terraform output -raw nomad_ui_addr)` (paste the management token under **ACL → Sign in with a token**).
+## 3. Build the container images
 
-8. **Connect to Vault** (self-signed API cert, so skip TLS verification):
-   ```bash
-   export VAULT_ADDR="$(terraform output -raw vault_addr)"
-   export VAULT_SKIP_VERIFY=true
-   export VAULT_TOKEN="$(terraform output -raw vault_root_token)"
-   vault status        # Initialized=true, Sealed=false
-   vault token lookup  # the root token
-   ```
-The web UI is at `$(terraform output -raw vault_addr)/ui`.
+Only **two** images are built by hand. Everything else (`mcp_gateway_image`, `litellm_image`,
+`litellm_postgres_image`, `portal_postgres_image`, `ebs_csi_driver_image`, `efs_csi_driver_image`) is
+pulled from a public registry.
 
-## Vault server + Nomad↔Vault WIF
+### 3a. macOS connect helper — required before the portal build
 
-`modules/secured-codespace` runs a single-node **Vault** (file storage, self-signed TLS) on the all-in-one node, reached at `:8200` through the NLB. The bootstrap runs `vault operator init` (Shamir, 1 share / 1 threshold for this demo) and unseals it; the **root token** and **unseal keys** are scp'd back to `generated/vault-setup.json` and surfaced as the sensitive outputs `vault_root_token` / `vault_unseal_keys`. The foundation root then adds two shared, project-agnostic pieces: `modules/nomad-vault-wif` enables the **`jwt-nomad`** auth method (the **Nomad↔Vault workload-identity** trust anchor — Vault fetches Nomad's JWKS over HTTPS and validates it with the Nomad CA), and `vault_mount.kv` enables a **KV-v2** mount at `secret/` for project job templates.
+`portal/Dockerfile` does `COPY --chown=10001:10001 backend/helper-dist /app/helper-dist`, and
+`portal/.gitignore` ignores `backend/helper-dist/`. **On a fresh clone that directory does not exist and
+the portal image build fails.** Build it first:
 
-The actual **SSH certificate authority** and **Boundary credential store** are **per project**, created by the [project tier](../project/README.md) (each project gets its own Vault namespace with an `ssh` CA + `dev-workspace` signing role, and a per-project WIF role on a per-namespace `jwt-nomad` backend rooted in this shared trust anchor). The platform's job here is just the shared trust anchor: the base `nomad.hcl` carries the `vault{}` stanza for WIF, so this works on a fresh build; rolling it onto an already-running node needs the in-place `nomad.hcl` update + `systemctl restart nomad` described in `docs/specs/phase-2-jit-vault-ssh-certs.md`.
+```bash
+cd <repo-root>
+portal/helper/macos/build.sh        # -> portal/backend/helper-dist/SecuredWS-macos.zip
+```
 
-> **Re-unseal after a reboot.** With Shamir unseal, Vault comes back **sealed** whenever the node restarts. Because the root `vault` provider is configured at the root, **every** `terraform plan`/`apply` needs Vault unsealed — re-unseal it first: ```bash VAULT_ADDR="$(terraform output -raw vault_addr)" VAULT_SKIP_VERIFY=true \ vault operator unseal "$(terraform output -json vault_unseal_keys | jq -r '.[0]')" ```
+### 3b. Developer Portal image
 
-> **Enabling Vault on an already-running stack.** Vault's config lives in the node's bootstrap/user_data, which is `lifecycle { ignore_changes = all }`, so a plain `apply` will not roll it onto a running instance. Replace the instance: `terraform apply -replace='module.secured_codespace.aws_instance.this'`, then a plain `terraform apply` to configure the WIF auth method + KV mount. The replace rebuilds Boundary/Nomad and re-runs the SSO wiring.
+`portal/scripts/build-image.sh` builds the Carbon/React frontend **and** the Go backend inside Docker
+(you pre-build neither) and always pushes, so the registry login and a push-capable builder must be in
+place first.
 
-### Portal per-project provisioner brokering (project-MCP deploy plane)
+**1. Work from the repo root** — every path below is relative to it (step 3a already put you there):
 
-When the onboarding plane is enabled (`enable_platform_admin = true`), `developer-portal.tf` gives the portal task a **second Nomad workload identity** (`aud = vault-provisioner`, JWT written to `secrets/nomad_vault_provisioner.jwt`). To deploy a blueprint-backed MCP server into a project, the portal presents that identity to the **target project namespace's** `jwt-nomad` backend (role `portal-provisioner`) and exchanges it for a short-TTL (300s) token that is **native to that namespace**. That token evaluates a **relative-path** policy `portal-provisioner` — defined per-namespace in the project tier ([`../project/portal-provisioner.tf`](../project/portal-provisioner.tf)) — to mount/unmount secret engines, write the generated (lint-gated) ACL policies, manage the `jwt-nomad` WIF roles MCP jobs assume, configure database connections/roles, write class-B KV secrets, and revoke leases on deprovision.
+```bash
+cd <repo-root>
+git status        # build from the commit you intend to ship; the image carries no version stamp
+```
 
-> **Why brokered, not a root-namespace grant.** The earlier approach attached a static `portal-blueprint-provisioning` policy to the portal's **root** WIF role and had the Executor scope each call via `client.WithNamespace(<project>)`. That never worked on Vault Enterprise: a root-namespace token operating in a child namespace is ACL-matched against the **namespace-prefixed** path (`<child>/sys/policies/acl/…`), so a relative grant matches nothing and the `+/` single-segment wildcard **does not match the namespace segment either** — both **403**, and project namespaces are dynamic so no static infra-tier prefix can cover them. The brokered token above is issued **inside** the namespace, so its policy uses plain relative paths and the `+/` problem never arises. The retired `portal-provisioning-policy.hcl` and its root-role attachment have been removed.
+**2. Authenticate to the registry** (the script always `--push`es; a missing login fails the build):
 
-> **Containment.** The portal holds **no standing token** into any project namespace — it only ever holds a JWT it can trade, and the `portal-provisioner` role is bound (`bound_claims`) to the `developer-portal` job in the `infra` Nomad namespace, so no other workload can assume it. Each token's blast radius is a single project (namespace-native, 300s TTL); its policy grants only the blueprint engine-lifecycle surface and its explicit `deny` stanzas forbid `identity/*`, `sys/auth*`, `sys/namespaces*`, and `cubbyhole/*`. The role + policy are created by the **project tier** in each namespace, so a project must have had its `terraform/project` apply run before the portal can provision into it.
+```bash
+docker login
+```
 
-### Portal project-create plane (portal-admin creates projects from the Portal)
+**3. Create a push-capable buildx builder — once per machine.** The default `docker` driver cannot
+`--push`; the `docker-container` driver can:
 
-When the plane is enabled (`enable_platform_admin = true` + `enable_developer_portal = true`), the portal can **create a project's Tier-1 shell from the UI** (`POST /api/admin/projects`) instead of an operator running `terraform/project`. `developer-portal.tf` adds a **third Nomad workload identity** (`aud = vault-creator`, JWT at `secrets/nomad_vault_creator.jwt`) which the portal exchanges at the **root-namespace** `jwt-nomad` backend for the short-TTL (120s) `project-creator` role. Backed by driver code in [`../../portal/backend/internal/projectbootstrap`](../../portal/backend/internal/projectbootstrap), that token creates the child Vault namespace, enables + configures its `jwt-nomad` backend, mounts the project KV, and **seeds the `portal-provisioner` role/policy** (so the §5 plane above takes over) + the workspace WIF role. It also creates the Nomad namespace + `project-<p>-dev` ACL policy + OIDC binding rule, the Boundary project scope, writes the root-KV descriptor, and grants the first project-admin.
+```bash
+docker buildx create --name multiarch --use --bootstrap   # once; skip if it already exists
+docker buildx ls                                          # 'multiarch' should be the active default
+```
 
-**Tightening (all three planes):**
-- **Vault** — the net-new `project-creator` policy is scoped to `sys/namespaces` create + the child-namespace bootstrap paths (`+/sys/mounts`, `+/sys/auth`, `+/auth/jwt-nomad`, `+/sys/policies/acl`) + the root-KV descriptor, denying `identity/*` and cross-namespace secrets. 120s TTL, no standing token.
-- **Nomad** — a dedicated, revocable `nomad_acl_token.portal` (management) replaces the shared bootstrap management token in the portal's KV. Namespace/ACL/binding-rule admin is management-only in Nomad, so this is a revocability/auditability tightening, not a capability scope-down.
-- **Boundary** ([`boundary-portal.tf`](boundary-portal.tf), decision **F-A**) — a dedicated `developer-portal` password account with `portal-org-admin` (admin within the **org subtree** only, not global) + a narrow `portal-global-managed-groups` grant (workspace provisioning creates per-developer OIDC managed groups on the **global** auth method). Replaces the global bootstrap admin creds the portal used before.
+**4. Confirm the helper artifact from step 3a exists** — the Dockerfile copies it, and it is gitignored:
 
-> **Live-validation items (confirm on first apply):** (1) the `project-creator` policy's `+/…` single-segment globs must match a freshly-created child namespace's paths for a root-minted token operating cross-namespace — the §5 ACL seam in reverse; if not, widen `+/…` to `+/*` (same denies). (2) The Boundary F-A grant set must let **both** project-create and a workspace launch succeed; a too-narrow grant regresses workspace provisioning.
+```bash
+ls -l portal/backend/helper-dist/SecuredWS-macos.zip
+```
 
-> **Note:** `nomad_acl_token.secret_id` is deprecated in the current nomad provider but is the only way to read the token value; the deprecation is informational.
+**5. Build and push.** The script accepts exactly two environment variables:
 
-## IBM Verify OIDC SSO
+```bash
+PORTAL_IMAGE=<registry-user>/developer-portal:<tag> \
+PORTAL_PLATFORM=linux/amd64 \
+  portal/scripts/build-image.sh
+```
 
-`modules/identity` (called from `main.tf`) creates two OIDC applications in an **IBM Verify SaaS** tenant via its REST API and configures Boundary **and** Nomad to trust them, mapping Verify **group membership** to admin / readonly access. It is **additive** — the Boundary password admin and the Nomad management token stay as break-glass logins.
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `PORTAL_IMAGE` | `panchalravi/developer-portal:poc` | Full `repo:tag`. Prefer a fresh, distinct tag over reusing a mutable one. |
+| `PORTAL_PLATFORM` | `linux/amd64` | Leave it — every Nomad node pool is amd64. |
 
-Prerequisites (manual, one-time):
+The script prints `Pushed <image>` on success.
 
-1. An IBM Verify SaaS tenant.
-2. A **bootstrap API client** (Verify console → Security → API access) with entitlements `manageAppAccessAdmin` **and** `readAppConfigAndClientSecret`.
-3. Two Verify groups (`secured-codespace-admins`, `secured-codespace-readonly`) with members assigned.
-4. The IBM Verify variables set in `terraform.tfvars` (see `terraform.tfvars.example`): `ibm_verify_tenant`, `ibm_verify_api_client_id`, `ibm_verify_api_client_secret`.
+**6. Verify the push landed** (reads the manifest back from the registry):
 
-> **Single-state tradeoff:** because the `boundary`/`nomad`/`restapi` providers are configured from the base module's outputs and a live Verify token, **every** `terraform plan`/`apply` now fetches a Verify bootstrap token and connects to Boundary + Nomad. So the `ibm_verify_*` variables must be populated and **the base instance must already be applied and running** before any plan succeeds — which is why the provisioning flow above targets `module.secured_codespace` first, then runs a plain `terraform apply`.
+```bash
+docker buildx imagetools inspect <registry-user>/developer-portal:<tag>
+```
 
-After applying, log in via SSO:
+**7. Pin the tag** in `terraform.tfvars`:
+
+```hcl
+developer_portal_image = "<registry-user>/developer-portal:<tag>"
+```
+
+On a first build that is all — the stage-3 `terraform apply` in §5 deploys the job.
+
+**Rebuilding later, on an already-running stack**, is the only case that needs a targeted apply:
+
+```bash
+# New, distinct tag: pin it in terraform.tfvars, then push just this job
+terraform apply -target=nomad_job.developer_portal
+
+# Reusing a mutable tag (e.g. :poc): Terraform sees no change, so force a restart
+nomad job restart -namespace infra -reschedule -on-error=fail developer-portal
+```
+
+### 3c. Nomad→Boundary host-sync image
+
+No build script exists — only a Dockerfile. The nodes are amd64, so on Apple Silicon this must be a
+`buildx` cross-build:
+
+```bash
+docker buildx build --platform linux/amd64 \
+  -t <registry-user>/nomad-boundary-host-sync:<tag> --push nomad-boundary-host-sync/
+```
+
+Pin the result as `nomad_boundary_host_sync_image` in `terraform.tfvars`:
+
+```hcl
+nomad_boundary_host_sync_image = "<registry-user>/nomad-boundary-host-sync:<tag>"
+```
+
+Nothing else to run here — the stage-3 `terraform apply` in §5 deploys the job. (The job is gated
+on `enable_developer_portal`.)
+
+### 3d. Agent runtime image (only if you use AI agents)
+
+```bash
+AGENT_RUNTIME_IMAGE=<registry-user>/agent-runtime:<tag> portal/images/agent-runtime/build-image.sh
+```
+
+This is **not** a Terraform variable — the portal defaults to `panchalravi/agent-runtime:agentv2`
+(`PORTAL_AGENT_RUNTIME_IMAGE`), so either that tag must exist or you override the env var.
+
+> **Workspace images** (`workspace-base`, `gpu-workspace`) belong to the project tier, not here. The
+> tags the Portal seeds are in `portal/backend/internal/jobtemplate/seeds.go`; a reference Dockerfile
+> lives at `docs/handoff/workspace-base.Dockerfile` (note: `docs/` is gitignored, so that one is a
+> local working copy, not part of the repo).
+
+---
+
+## 4. Configure `terraform.tfvars`
+
+```bash
+cd terraform/infra
+cp terraform.tfvars.example terraform.tfvars     # gitignored — never commit secrets
+```
+
+Everything you need lives in that one file. (Terraform also auto-loads any `*.auto.tfvars`, so an
+existing `portal.auto.tfvars` keeps working — but you do not need one.)
+
+Four variables have **no default** and the plan will not run without them:
+
+```hcl
+# --- Required: no defaults ---
+ibm_verify_tenant            = "myorg.verify.ibm.com"      # hostname only, no scheme
+ibm_verify_api_client_id     = "00000000-0000-0000-0000-000000000000"
+ibm_verify_api_client_secret = "..."                       # sensitive
+deepseek_api_key             = "sk-..."                    # sensitive; the ONE central provider key
+```
+
+The base + feature settings you will normally touch:
+
+```hcl
+# --- Base ---
+owner         = "rp"                # must match the owner used for the Packer builds
+region        = "ap-southeast-1"
+instance_type = "t3.xlarge"
+
+# --- Feature flags ---
+enable_agent_nodes      = true      # 'agents' node pool — needed by the platform-admin MCP plane
+enable_developer_portal = true      # the Portal Nomad job + its Verify OIDC app
+enable_platform_admin   = true      # in-portal onboarding plane + portal-postgres
+enable_shared_volume    = true      # EFS + EFS CSI driver for per-project /shared volumes
+enable_demo_db          = false     # throwaway Postgres for the postgres-mcp blueprint demo
+enable_gpu_node         = false     # costly — needs the GPU AMI
+enable_microvm_node     = false     # costly (c5.metal) — needs the microVM AMI
+
+# --- Images you built in step 3 ---
+developer_portal_image         = "<registry-user>/developer-portal:<tag>"
+nomad_boundary_host_sync_image = "<registry-user>/nomad-boundary-host-sync:<tag>"
+
+# --- Portal OIDC: the FULL issuer endpoint, not the bare tenant host ---
+portal_oidc_issuer = "https://myorg.verify.ibm.com/oidc/endpoint/default"
+
+# --- Boundary bootstrap admin (break-glass; SSO is layered on top) ---
+boundary_admin_login_name = "admin"
+boundary_admin_password   = "..."   # sensitive
+boundary_org_name         = "primary-org"
+```
+
+See `terraform.tfvars.example` for the complete annotated set, including the Verify group names, the
+gateway image pins, and the GitHub-plugin version/SHA pair.
+
+---
+
+## 5. Provision
+
+A fresh stack applies in **three ordered stages**. The `boundary`/`nomad`/`vault`/`restapi` providers
+connect to the base node over the NLB, so the base must exist before they can configure anything; and
+`agent-identity.tf` reads the `jwt-nomad` mount at **plan** time, so that mount must exist before the
+plain apply.
+
+Run every Terraform command with a clean environment — stale `AWS_*` / `VAULT_*` / `NOMAD_*` variables
+from a previous build silently shadow the provider configuration and are a repeat cause of failures:
+
+```bash
+alias tf='env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+              -u VAULT_ADDR -u VAULT_TOKEN -u NOMAD_ADDR -u NOMAD_TOKEN terraform'
+```
+
+```bash
+tf init
+
+# Stage 1 — the base node: VPC, NLB, EC2, Boundary + Nomad + Vault bootstrap.
+# Blocks on cloud-init and writes generated/{boundary,nomad,vault}-setup.json.
+tf apply -target=module.secured_codespace
+
+# Stage 2 — the shared jwt-nomad Vault auth method (Nomad↔Vault WIF trust anchor).
+# MUST precede the plain apply, or it fails with "No secret engine mount at auth/jwt-nomad/".
+tf apply -target=module.nomad_vault_wif
+
+# Stage 3 — everything else: Verify OIDC apps + SSO wiring, KV mount, GitHub plugin,
+# MCP + LLM gateways, EBS/EFS CSI, developer portal, host-sync.
+tf apply
+```
+
+**Stage 3 must be non-targeted.** The `boundary` provider takes its address from the base module's
+outputs; a targeted-only run can leave that evaluation empty and the apply fails with
+`boundary: error parsing address`.
+
+Once the base and the `jwt-nomad` mount exist, later changes need only a plain `tf apply`.
+
+> **If an apply fails**, work through [§7 Troubleshooting](#7-troubleshooting) — it comes after Verify
+> because every diagnostic there needs the operator environment exported in §6.
+
+
+---
+
+## 6. Verify
+
+Set up the operator environment once:
+
+```bash
+cd terraform/infra
+export VAULT_ADDR="$(terraform output -raw vault_addr)" VAULT_SKIP_VERIFY=true
+export VAULT_TOKEN="$(terraform output -raw vault_root_token)"
+export NOMAD_ADDR="$(terraform output -raw nomad_addr)" NOMAD_SKIP_VERIFY=true
+export NOMAD_TOKEN="$(terraform output -raw nomad_management_token)"
+```
+
+**Vault**
+
+```bash
+vault status                              # Initialized: true, Sealed: false
+vault plugin list secret | grep github    # the baked GitHub secrets plugin is registered
+vault kv get secret/infra/llm-gateway     # master_key, salt_key, deepseek_api_key, portal_admin_key
+vault kv get secret/infra/mcp-gateway     # jwt_secret_key, admin_email, admin_password
+```
+
+**Nomad**
+
+```bash
+nomad server members                      # the server is "alive"
+nomad node status                         # all-in-one (default pool) + agents-pool client(s) "ready"
+nomad job status -namespace infra         # developer-portal, mcp-gateway, litellm-gateway,
+                                          # litellm-postgres, portal-postgres,
+                                          # ebs-csi-controller, ebs-csi-node,
+                                          # nomad-boundary-host-sync
+                                          # (+ efs-csi, demo-db when enabled)
+nomad plugin status aws-ebs               # Controllers + Nodes healthy
+nomad plugin status aws-efs               # only when enable_shared_volume = true
+nomad namespace list                      # default, infra, infra-mcp
+```
+
+The Nomad UI is at `$(terraform output -raw nomad_ui_addr)` — sign in under **ACL** with the management
+token.
+
+**Shared-volume EFS filesystem** (only when `enable_shared_volume = true`). The module creates it but
+the root does not re-export its id, so query AWS directly — it is named `<owner>-boundary-shared`:
+
+```bash
+aws efs describe-file-systems --region <your-region> \
+  --query 'FileSystems[].{Id:FileSystemId,Name:Name,State:LifeCycleState}' --output table
+```
+
+**Gateways and Portal**
+
+```bash
+curl -s  "$(terraform output -raw llm_gateway_addr)/health/liveliness"   # "I'm alive!"
+curl -sk "$(terraform output -raw developer_portal_addr)/health"         # {"status":"ok"}
+```
+
+The MCP gateway is JWT-only (no anonymous health check) — the token-minting recipe is under
+"Verify the MCP Gateway" in [`README.md.bak`](./README.md.bak). Its Admin UI is at
+`$(terraform output -raw mcp_gateway_addr)`, credentials in `secret/infra/mcp-gateway`.
+
+**Boundary** — break-glass password login (self-signed cert):
+
+```bash
+boundary authenticate password \
+  -addr "$(terraform output -raw boundary_addr)" \
+  -auth-method-id "$(terraform output -raw admin_auth_method_id)" \
+  -login-name "$(terraform output -raw admin_login_name)" \
+  -tls-insecure
+```
+
+**SSO** — Verify-backed logins for Boundary and Nomad:
 
 ```bash
 eval "$(terraform output -raw boundary_oidc_login_command)"   # browser OIDC flow
 eval "$(terraform output -raw nomad_oidc_login_command)"      # CLI loopback flow
 ```
 
-## GPU worker node
+**Portal login** — open `$(terraform output -raw developer_portal_addr)` and sign in with Verify. A
+member of `platform-admins` should see `"roles":["platform-admin"]` at `/api/me`; anyone else must get
+403 on `/api/admin/*`.
 
-For GPU workspaces, the platform tier can provision a **second EC2** (opt-in via `enable_gpu_node`, off by default) that joins the existing all-in-one node as a **Nomad client in the `gpu` node pool** — the main node stays in the implicit `default` pool, so existing jobs can't drift onto the GPU box and only a flavor that opts into `node_pool = "gpu"` is placed there.
+> Use a **normal browser window, not incognito** — the Portal→Boundary single sign-on relies on the
+> shared Verify session.
 
-- **Separate GPU AMI** (`ami/gpu_image/`, built with `packer build` like the base image): an Ubuntu 24.04 base with the NVIDIA driver, `nvidia-container-toolkit` (the Docker `nvidia` runtime), Nomad `+ent`, and the **`nomad-device-nvidia`** plugin — so the node fingerprints its `nvidia/gpu` device and can schedule GPU jobs.
-- **`aws_instance.gpu`** (`gpu.tf`, type `var.gpu_instance_type` = `g4dn.xlarge`, root `var.gpu_root_volume_size` = 60 GiB) in the same VPC/subnet/SG, with a **public IP** for image egress (no NAT in the PoC VPC). It registers to the main node over the VPC; new SG rules are **self-referencing/intra-SG only** (Nomad RPC+serf, Vault, demo-db, and the Boundary worker → workspace SSH range `2222–2399`) — no new public ingress.
-- **Reuses the existing Boundary worker**, which dials the GPU node's private IP over the VPC, and the **same Nomad TLS cert** (mutual RPC TLS authorizes the join; a client needs no ACL token). No Vault/Boundary/Postgres runs on the GPU node.
-
-The GPU node's private IP surfaces as the `gpu_instance_private_ip` output. The project tier publishes the `gpu-workspace` flavor (`node_pool = "gpu"`, CUDA image) and the developer tier (or the portal) places the workspace there — see [`../project/README.md`](../project/README.md) and [`../workspace/README.md`](../workspace/README.md#gpu-flavor).
-
-> **The GPU node is opt-in** — gated by `var.enable_gpu_node` (`gpu.tf`: `count = var.enable_gpu_node ? 1 : 0`), **off by default** because the `g4dn` instance is costly. Set `enable_gpu_node = true` in `terraform.tfvars` to provision it; a plain `terraform apply` then looks up the GPU AMI and creates the GPU instance, and its `remote-exec` **blocks the apply** until the node finishes bootstrapping and `nvidia-smi` works — so the **GPU AMI (`ami/gpu_image/`) is a prerequisite whenever GPU is enabled** (build it in step 2 above). With `enable_gpu_node = false` the base node comes up on its own.
-
-## microVM worker node
-
-For **hardware-isolated** workspaces — running untrusted AI-agent code behind a virtualization boundary rather than shared-kernel container namespaces — the platform tier can provision a **third EC2** (opt-in via `enable_microvm_node`, off by default) that joins the all-in-one node as a **Nomad client in the `microvm` node pool**. The main node stays in the implicit `default` pool, so only a flavor that opts into `node_pool = "microvm"` is placed there. It mirrors the GPU node pattern exactly, swapping the NVIDIA stack for Kata Containers.
-
-- **Separate microVM AMI** (`ami/microvm_image/`, built with `packer build` like the base image): an Ubuntu 24.04 base with **Kata Containers** (a `kata-static` tarball: its own QEMU + guest kernel + rootfs, pinned to **QEMU + virtio-fs**), a docker runtime named **`kata`**, Nomad `+ent`, and **docker-ce pinned to `27.5.1`** (Docker 28/29 break the Kata shim with `invalid namespace type`). The build self-gates on a **KVM check** (`/dev/kvm` + `kata-runtime check`) and a **smoke test** (`docker run --runtime=kata hello-world`), so a broken image never ships. The microVM node's Nomad client config adds `plugin "docker" { config { allow_runtimes = ["runc", "kata"] } }` — without it a `runtime = "kata"` job is rejected.
-- **`aws_instance.microvm`** (`microvm.tf`, type `var.microvm_instance_type` = `c5.metal`, root `var.microvm_root_volume_size` = 60 GiB) in the same VPC/subnet/SG, with a **public IP** for image egress. **Bare metal is required** — Kata needs `/dev/kvm`, and Nitro guests (t3/g4dn-non-metal) expose no nested virtualization. New SG rules are **self-referencing/intra-SG only** (same set as the GPU node) — no new public ingress.
-- **Reuses the existing Boundary worker** (which dials the microVM node's private IP over the VPC) and the **same Nomad TLS cert**. No Vault/Boundary/Postgres runs on the microVM node.
-
-The microVM node's private IP surfaces as the `microvm_instance_private_ip` output. The project tier publishes the `microvm-workspace` flavor (`node_pool = "microvm"`, `runtime = "kata"`, the **same image as `dev-workspace`**) and the developer tier (or the portal) places the workspace there — see [`../project/README.md`](../project/README.md) and [`../workspace/README.md`](../workspace/README.md#microvm-flavor).
-
-> **The microVM node is opt-in** — gated by `var.enable_microvm_node` (`microvm.tf`: `count = var.enable_microvm_node ? 1 : 0`), **off by default** because `c5.metal` is costly (~$4/hr). Set `enable_microvm_node = true` in `terraform.tfvars` to provision it; a plain `terraform apply` then looks up the microVM AMI and creates the instance, and its `remote-exec` **blocks the apply** until the node bootstraps and `kata-runtime check` + a `--runtime=kata` container run succeed — so the **microVM AMI (`ami/microvm_image/`) is a prerequisite whenever microVM is enabled** (build it in step 2 above). With `enable_microvm_node = false` the base node comes up on its own.
-
-## Agent worker node
-
-The **agent-platform tier** (portal-deployed MCP servers and AI agents) runs off the all-in-one node on dedicated **standard-CPU worker(s)** that join the cluster as **Nomad clients in the `agents` node pool** — the same opt-in worker pattern as the GPU/microVM nodes, minus any special hardware. Unlike GPU/microVM, this pool is **on by default** (`enable_agent_nodes = true` in `terraform.tfvars`), because the MCP/agent planes assume it.
-
-- **Agent AMI** (`ami/agent_image/`, the GPU image minus the NVIDIA driver/toolkit/device-plugin layers): Ubuntu 24.04 + Docker + CNI + Nomad `+ent` client — all a container-based MCP server or agent runtime needs.
-- **`aws_instance.agent`** (`modules/secured-codespace/agent-nodes.tf`, `count = var.agent_node_count`, default 1; type `var.agent_instance_type`) in the same VPC/subnet[0]/SG (same AZ as the all-in-one node so a workspace's EBS volume can reattach), public IP for image egress. It joins the main node over the VPC with `node_pool = "agents"` (`templates/nomad-agents.hcl.tftpl`); `allow_privileged = true` lets the EBS-CSI **node** system job stage volumes here too.
-- **Reuses the existing Boundary worker + Nomad TLS cert.** No Vault/Boundary/Postgres runs on the agent node. The portal places MCP jobs and agent jobs here via `platform_admin_mcp_node_pool` / `PORTAL_AGENT_NODE_POOL` (default `agents`), so they never load the all-in-one node.
-
-The agent node's private IP(s) surface as `agent_node_private_ips`. Set `enable_agent_nodes = false` to run MCP/agent workloads on the all-in-one node instead (set `platform_admin_mcp_node_pool = ""`). `agent-identity.tf` provisions the agent-platform identity foundation (RFC 8693 token exchange) regardless.
-
-## Workspace reachability (Nomad→Boundary host-sync)
-
-Durable EBS-CSI storage keeps a workspace's `/home/dev` alive across node replacement; a companion **`nomad-boundary-host-sync`** job (`nomad-boundary-host-sync.tf`, namespace `infra`, gated on `enable_developer_portal`) keeps it **reachable**. Boundary Enterprise cannot embed a custom dynamic-host plugin (its host-plugin set is compiled in), so this small external reconciler drives Boundary's API instead: the portal owns the per-project shared host catalog (`dev-workspaces`) + each workspace's host-set + **stable** ssh target, and the sync keeps the single host inside each host-set at the workspace's current node address — read from the workspace's Nomad-native service (`address_mode = "host"`, tagged `service-type=workspace` + `project=<ns>`). So a rescheduled workspace's Boundary target follows it to the new node with no portal action and no isolation change. Boundary admin + a read-only Nomad token come from Vault KV `infra/nomad-boundary-host-sync` over WIF. Build/deploy + verification steps are in [`PLATFORM-ADMIN-RUNBOOK.md`](PLATFORM-ADMIN-RUNBOOK.md#workspace-reachability-nomadboundary-host-sync); the reconciler source is [`../../nomad-boundary-host-sync`](../../nomad-boundary-host-sync).
-
-> **`enable_default_spare` (test-only, default false).** The `default` node pool is normally the single all-in-one node, so a workspace can't reschedule cross-node there. Setting `enable_default_spare = true` adds one temporary standard-CPU EC2 as a second `default`-pool Nomad client (same AZ, `modules/secured-codespace/default-spare.tf`) purely to exercise a cross-node reschedule and confirm the host-sync follow. Destroy it (flag back to `false` + apply) after the test — it has zero footprint when off.
-
-## Verify the MCP Gateway
-
-The platform tier runs one **ContextForge MCP Gateway** (Nomad ns `infra`, see `mcp-gateway.tf`). Its admin API is reachable only from the operator `/32` via the NLB on `:4444` (plain HTTP — the gateway terminates no TLS in the PoC). Auth is **JWT-only** (HTTP Basic is disabled), so every admin call needs a bearer token minted from the gateway's `JWT_SECRET_KEY`. Mint a short-lived admin JWT, then list the federated peers, virtual servers, tools, and tokens:
+**Hand this to your project-admins** — the node's private IP. Project-admins deploying an MCP server
+that talks to Vault must type it into the server's `VAULT_ADDR`, and nothing in the Portal exposes it.
+A rebuild issues a new one:
 
 ```bash
-cd terraform/infra
-GW="$(terraform output -raw mcp_gateway_addr)"        # http://<nlb>:4444 (operator /32)
-
-# Signing secret + admin identity from Vault (the gateway KV path; never echoed).
-JWT_SECRET="$(vault kv get -mount=secret -field=jwt_secret_key infra/mcp-gateway)"
-ADMIN_EMAIL="$(vault kv get -mount=secret -field=admin_email   infra/mcp-gateway)"
-
-# Mint an HS256 admin JWT with the exact claims ContextForge verifies (iss/aud/exp/jti).
-# A hand-minted JWT only authenticates the bootstrap admin identity — arbitrary users 401.
-b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
-now=$(date +%s); exp=$((now + 600)); jti=$(openssl rand -hex 16)
-hdr=$(printf '{"alg":"HS256","typ":"JWT"}' | b64url)
-pld=$(printf '{"sub":"%s","username":"%s","iss":"mcpgateway","aud":"mcpgateway-api","iat":%s,"exp":%s,"jti":"%s"}' \
-  "$ADMIN_EMAIL" "$ADMIN_EMAIL" "$now" "$exp" "$jti" | b64url)
-sig=$(printf '%s.%s' "$hdr" "$pld" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | b64url)
-ADMIN_JWT="$hdr.$pld.$sig"
-auth=(-H "Authorization: Bearer $ADMIN_JWT")
+terraform output -raw instance_private_ip
 ```
+
+---
+
+## 7. Troubleshooting
+
+All commands here assume the operator environment from §6 is exported.
+
+### The LiteLLM portal-admin key bootstrap failed
+
+**What it is.** The Portal's admin plane manages LLM models on the gateway (`POST /model/new`, etc.). It
+must never use the gateway **master key**, so `terraform_data.litellm_portal_admin_key`
+(`platform-admin.tf:92`, only when `enable_platform_admin = true`) runs
+`scripts/litellm-portal-admin-key.sh` after the gateway job. That script creates a **service user inside
+LiteLLM's own database** — `user_id = portal-admin`, `user_role = proxy_admin` — mints a key for it, and
+merge-patches that key into Vault at `secret/infra/llm-gateway` under `portal_admin_key`. The Portal reads
+that field over WIF at startup and sends it as `Authorization: Bearer` on every gateway admin call.
+
+`portal-admin` is **not** a human and not an IBM Verify identity — it exists only in LiteLLM, and it is
+the Portal's service account there. Do not confuse it with the Verify group `platform-admins`, which is
+what grants *people* the Portal's platform-admin role.
+
+**Why it fails.** The script reaches the gateway over the **NLB** and waits at most **60 s** for
+`/health/liveliness`. Terraform has already waited for the Nomad alloc to be healthy (`detach = false`),
+but the NLB target group runs its own TCP health check on `:4000` and only routes once that passes — so
+on a cold build the alloc can be up while the NLB is not yet forwarding. If the 60 s budget runs out the
+script exits non-zero, and the provisioner has no `on_failure = continue`, so the apply fails.
+
+**How to tell.** Four signals, cheapest first:
 
 ```bash
-# Auth is enforced (Basic disabled): no token => 401, valid token => 200.
-curl -s -o /dev/null -w 'no-token: %{http_code}\n' "$GW/health"      # 401
-curl -s "${auth[@]}" "$GW/health"; echo                              # {"status":"healthy",...}
-curl -s "${auth[@]}" "$GW/version" | jq '{name, version}'            # gateway build
+# 1. The apply's own error — the script's message on stderr:
+#      ERROR: could not mint portal-admin key
+#    Terraform then reports the tainted resource:
+#      Error: local-exec provisioner error
 
-# Peer MCP servers — the federated upstreams (one demo-db-<project> per onboarded project).
-curl -s "${auth[@]}" "$GW/gateways" \
-  | jq -r '.[] | "\(.id)\t\(.name)\t\(.url)\treachable=\(.reachable // .enabled)"'
+# 2. Authoritative check — is the key actually in Vault?
+#    Prints the sk-... value on success; errors with
+#    "field 'portal_admin_key' not present in secret" if the bootstrap never completed.
+vault kv get -field=portal_admin_key secret/infra/llm-gateway
 
-# Virtual MCP servers — the per-project tool bundles a workspace token is scoped to.
-curl -s "${auth[@]}" "$GW/servers" \
-  | jq -r '.[] | "\(.id)\t\(.name)\ttools=\((.associatedTools // .associated_tools) | length)"'
+# 3. Is the Portal restart-looping because of it? Look for a non-zero restart count,
+#    then grep its stderr for the startup error.
+nomad job status -namespace infra developer-portal
+nomad alloc logs -stderr -namespace infra \
+  "$(nomad job allocs -namespace infra -json developer-portal | jq -r '.[0].ID')" \
+  | grep -i "admin plane"
+#    -> "admin plane: read llm-gateway portal-admin key: ..."
 
-# MCP tools — everything discovered across all peers (each tagged with its peer gateway id).
-curl -s "${auth[@]}" "$GW/tools" \
-  | jq -r '.[] | "\(.name)\tgateway=\(.gatewayId // .gateway_id)"'
-
-# API tokens — the per-project client tokens (include_inactive shows revoked/soft-deleted ones).
-curl -s "${auth[@]}" "$GW/tokens?include_inactive=true&limit=100" \
-  | jq -r '.tokens[]? | "\(.id)\t\(.name)\tactive=\(.is_active)"'
+# 4. Root cause — can you reach the gateway through the NLB at all?
+#    If this hangs or refuses, the NLB target is still unhealthy (or your /32 changed).
+curl -fsS "$(terraform output -raw llm_gateway_addr)/health/liveliness"
 ```
 
-Notes:
-- `/tokens` lists tokens **owned by the caller** (the bootstrap admin, which created the per-project client tokens, so they appear here). `/tokens/admin/all` needs full platform-admin RBAC and **403s** for a hand-minted JWT — that's expected.
-- The per-project client tokens are **server-scoped**: each returns `200` only on its own `/servers/<vs>/...` and `403` on every other server/admin endpoint (per-project isolation).
-- A virtual server's id is what a workspace connects to: `secret/projects/mcp` (in the project's Vault namespace) holds `{url: <private-endpoint>/servers/<vs-id>/sse, token: <scoped-client-token>}` (project tier).
-- The **Admin UI** is the same surface in a browser: open `$GW/` and log in with `admin_email` / `admin_password` from `vault kv get -mount=secret infra/mcp-gateway`.
+A useful confirmation: `terraform plan` will show `terraform_data.litellm_portal_admin_key[0]` as
+tainted and forced for replacement — that is what makes the re-run below re-execute the script.
 
-## Verify the LLM Gateway
-
-The platform tier also runs a **LiteLLM AI gateway** (Nomad ns `infra`, see `llm-gateway.tf`) plus a dedicated **Postgres** (virtual keys, budgets, spend/audit logs). Every workspace's Claude Code is pointed at it instead of the model provider: it serves the Anthropic **`/v1/messages`** API, maps the workspace-facing model names (`deepseek-v4-pro`/`deepseek-v4-flash`) to the real backend in its `config.yaml` `model_list`, and holds the **one central provider key** — workspaces only ever hold a per-project **virtual key**. Two endpoints, mirroring the MCP gateway:
-
-- `llm_gateway_addr` — `http://<nlb>:4000`, reachable **only from the operator `/32`**; the admin surface (mint/inspect virtual keys, spend logs).
-- `llm_gateway_private_endpoint` — `http://<node-ip>:4000`, the node-private inference endpoint the workspaces use (baked into each workspace's `ANTHROPIC_BASE_URL`).
+**Fix — re-run the apply.** The NLB target is healthy by then, the script mints the key, and the Portal
+starts:
 
 ```bash
-cd terraform/infra
-export VAULT_ADDR="$(terraform output -raw vault_addr)" VAULT_SKIP_VERIFY=true
-export VAULT_TOKEN="$(terraform output -raw vault_root_token)"
-GW="$(terraform output -raw llm_gateway_addr)"        # http://<nlb>:4000 (operator /32)
-
-# Admin (master) key + a project's virtual key from Vault (never echoed).
-MKEY="$(vault kv get -mount=secret -field=master_key  infra/llm-gateway)"
-VKEY="$(vault kv get -namespace=<project> -mount=secret -field=virtual_key projects/llm)"   # written by the project tier (in the project's namespace)
+tf apply
 ```
+
+**Manual fallback**, if the apply keeps failing (e.g. your `/32` cannot reach the NLB on `:4000`): mint
+the key yourself and write it to the same Vault field the script would have.
 
 ```bash
-# 1. Liveness.
-curl -s "$GW/health/liveliness"; echo                                 # "I'm alive!"
+# 1. Open the LiteLLM Admin UI and log in with the master key:
+terraform output -raw llm_gateway_addr        # then browse <addr>/ui
+vault kv get -field=master_key secret/infra/llm-gateway
 
-# 2. Anthropic round-trip with Claude Code's own header (x-api-key = the virtual key) → DeepSeek.
-curl -s "$GW/v1/messages" -H "x-api-key: $VKEY" -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"deepseek-v4-pro","max_tokens":40,"messages":[{"role":"user","content":"say hi"}]}' | jq .
+# 2. In the UI: Virtual Keys -> Create New Key, with User Role = proxy_admin. Copy the sk-... value.
 
-# 3. Per-key model scope: a model NOT in the key's allow-list is rejected.
-curl -s -o /dev/null -w '%{http_code}\n' "$GW/v1/messages" -H "x-api-key: $VKEY" \
-  -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
-  -d '{"model":"gpt-4o","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'    # 403
+# 3. Write ONLY that subkey — `patch` preserves master_key/salt_key/deepseek_api_key:
+vault kv patch secret/infra/llm-gateway portal_admin_key=<sk-...>
 
-# 4. Audit: spend logs (master key), tagged with the per-project key alias (llm-<project>).
-curl -s "$GW/spend/logs" -H "Authorization: Bearer $MKEY" | jq '.[-3:]'
-
-# 5. Mint a virtual key by hand (the project tier does this for you):
-curl -s "$GW/key/generate" -H "Authorization: Bearer $MKEY" -H "content-type: application/json" \
-  -d '{"key_alias":"llm-demo","models":["deepseek-v4-pro","deepseek-v4-flash"],"max_budget":50,"rpm_limit":120}' | jq .
+# 4. Restart the Portal so it re-reads Vault at startup:
+nomad job restart -namespace infra -on-error=fail developer-portal
 ```
 
-Notes:
-- The workspace never holds the real provider key — only its virtual key, rendered per session to tmpfs `/secrets/llm-key` over WIF and served to Claude Code by `apiKeyHelper`. Swapping providers (e.g. to **watsonx.ai**) is a one-line `model:` change in the gateway `config.yaml` `model_list` — no workspace edit.
-- The provider key crash-class to watch on first deploy: the LiteLLM Postgres uses a `mkdir`-plugin host volume, so an `init-data-perms` busybox **prestart** task chowns it to the postgres uid before initdb runs (see `templates/litellm-postgres.nomad.hcl.tftpl`).
-- The **Admin UI** is at `$GW/ui` (log in with the master key).
+Use `vault kv patch`, never `vault kv put` — `put` replaces the whole secret and would drop the
+gateway's master key.
 
-## Next steps
+### The Portal's onboarding plane is disabled
 
-The platform tier is now provisioned. Continue with the lower tiers (each reads this root's outputs via `terraform_remote_state`, so there is no token/address copying):
+The Portal's platform-admin plane turns on only when **both** `PORTAL_MCP_GATEWAY_ADDR` and
+`PORTAL_LLM_GATEWAY_ADDR` are set on the task (`config.go:153`). If either is empty the plane boots
+disabled and the failures are **silent**: project creation still returns OK but skips engine
+auto-provision (the project gets no `ssh/` or `github/` mount, so the project-admin's GitHub save
+no-ops), LLM model onboarding 404s, and the project-admin's **New template** button is disabled.
 
-- **Project onboarding** *(per project)* → [`../project/README.md`](../project/README.md)
-- **Developer workspace** *(per workspace)* → [`../workspace/README.md`](../workspace/README.md)
-- **End-to-end developer demo** → [`../README.md`](../README.md#verify-the-boundary-brokered-workspace-ssh)
+The jobspec pins both addresses statically to the node's stable gateway ports, so this should not
+happen on a current build — but check before creating any project:
 
-## Notes
+```bash
+PORTAL_ALLOC=$(nomad job allocs -namespace infra -json developer-portal \
+  | jq -r '[.[]|select(.ClientStatus=="running")][0].ID')
+nomad alloc logs -namespace infra "$PORTAL_ALLOC" | grep -i "onboarding plane"
+#  want → "platform-admin onboarding plane enabled  mcp_gateway=…:4444  llm_gateway=…:4000"
+nomad alloc exec -namespace infra "$PORTAL_ALLOC" \
+  sh -c 'echo "MCP=[$PORTAL_MCP_GATEWAY_ADDR] LLM=[$PORTAL_LLM_GATEWAY_ADDR]"'   # both non-empty
+```
 
-- AEAD keys are generated once by Terraform (`random_bytes`) and held in state, so they remain **stable across reboots** — required, since rotating them would orphan the DB-encrypted data.
-- The admin account, **org scope**, password auth method and admin role are created on the instance during cloud-init via Boundary's **recovery-KMS workflow** (no controller login required — it authenticates with the recovery AEAD key). This runs locally against `127.0.0.1:9200`, so it does not depend on the NLB being healthy. Login name, password and the org name come straight from `terraform.tfvars`; project scopes are created later by the [project tier](../project/README.md).
-- `generated/` holds the SSH private key, `boundary-setup.json` (server-generated scope/auth-method/user/role IDs — no secrets) and `nomad-setup.json` (the Nomad ACL bootstrap **management token** — a secret); it is gitignored and both setup files are removed on `terraform destroy`. The Boundary admin password is a Terraform variable, not a file artifact.
-- **Nomad** runs as a single combined `server { bootstrap_expect = 1 }` + `client` agent with **ACLs** and **TLS** enabled, standalone (no Consul). It runs as **root** so the client's docker/exec drivers work; `nomad acl bootstrap` runs once during cloud-init and the management token surfaces via the `nomad_management_token` (sensitive) output. The Nomad Enterprise license must be supplied at `config/nomad_license.hclic`.
-- Scope is a single demo node: no AWS KMS, no RDS, no separate controller/worker split, no bastion. The `hashicorp/boundary` provider (targets/host-catalogs) is out of scope; the initial scopes/auth-method/admin/role are provisioned via the CLI recovery workflow above instead.
-- Change the owner, region, instance type, or binary versions in `terraform.tfvars` and `ami/base_image/variables.pkrvars.hcl`.
+**Any project created while the plane was disabled must be deleted and recreated** — engines do not
+back-fill.
+
+### Vault is sealed
+
+Vault re-seals on every reboot (Shamir), and **every** plan/apply needs it unsealed — the root `vault`
+provider is configured at the root. Symptom: provider errors mentioning `Vault is sealed` / `503`.
+
+```bash
+VAULT_ADDR="$(terraform output -raw vault_addr)" VAULT_SKIP_VERIFY=true \
+  vault operator unseal "$(terraform output -json vault_unseal_keys | jq -r '.[0]')"
+```
+
+### A config change did not reach the running node
+
+`aws_instance.this` has `lifecycle { ignore_changes = all }`, so bootstrap/config edits are never pushed
+by a plain apply. Replace the instance, then re-run stages 1–2 (the replace rebuilds Vault):
+
+```bash
+tf apply -replace='module.secured_codespace.aws_instance.this'
+```
+
+---
+
+## 8. Optional worker nodes
+
+Each is a separate EC2 joining the cluster as a Nomad client in its own node pool, so only flavors that
+opt into that pool land there. Rationale and networking detail: [`README.md.bak`](./README.md.bak).
+
+**Agent pool** (`enable_agent_nodes = true`) — standard CPU, node pool `agents`. Where the Portal places
+MCP servers and AI agents (`platform_admin_mcp_node_pool`, default `"agents"`); set that to `""` to run
+them on the all-in-one node instead. Requires the **agent AMI**. Tune with `agent_node_count` /
+`agent_instance_type`.
+
+**GPU** (`enable_gpu_node = true`) — `g4dn.xlarge` NVIDIA T4, node pool `gpu`. Requires the **GPU AMI**.
+Costly. Its `remote-exec` **blocks the apply** until the node bootstraps and `nvidia-smi` works. Private
+IP surfaces as the `gpu_instance_private_ip` output.
+
+**microVM** (`enable_microvm_node = true`) — `c5.metal` with Kata Containers, node pool `microvm`, for
+hardware-isolated workspaces. **Bare metal is mandatory** (Kata needs `/dev/kvm`). Requires the
+**microVM AMI**, itself buildable only on `c5.metal`. Very costly. Its `remote-exec` blocks the apply
+until `kata-runtime check` and a `docker run --runtime=kata` smoke test pass.
+
+> `enable_default_spare = true` is a **test-only** flag that adds a second `default`-pool client purely
+> to exercise a cross-node workspace reschedule. Set it back to `false` and apply when done.
+
+---
+
+## 9. Shared volumes (EFS)
+
+`enable_shared_volume = true` provisions an EFS filesystem, per-subnet mount targets, a dedicated
+security group and the node IAM policy that lets the CSI driver create access points — plus the
+`aws-efs` CSI driver job. The Portal then cuts **one EFS access point per named shared volume** and
+mounts it into workspaces under `/shared`. Volumes themselves are created by a project-admin in the
+Portal, not here.
+
+The filesystem ID is not a Terraform output; query it from AWS:
+
+```bash
+aws efs describe-file-systems --region <your-region> \
+  --query "FileSystems[?Name=='<owner>-boundary-shared'].FileSystemId" --output text
+```
+
+> **Cap:** EFS allows 120 access points per filesystem, i.e. **120 shared volumes platform-wide**.
+
+---
+
+## 10. Next steps
+
+The platform tier is up. Everything above this line is Terraform; **everything from here on is done
+in the Portal UI** — project onboarding, MCP servers, workspace templates, shared volumes and
+workspace creation are all portal-driven, with no further Terraform run.
+
+**→ [`E2E-WALKTHROUGH.md`](./E2E-WALKTHROUGH.md)** walks all three roles end to end against the
+platform you just built:
+
+| Section | Role | What it covers |
+|---|---|---|
+| §1 | **platform-admin** | Onboard an LLM model, review base templates, set the coding-agent allow-list, create a project |
+| §2 | **project-admin** | GitHub App credentials, deploy + test MCP servers, grant project-user, publish a workspace template with MCP add-ons, create shared volumes |
+| §3 | **project-user** | Create a workspace, connect over Boundary, and verify identity/git/LLM/MCP/shared volumes from inside it |
+| §4 | any member | The AI-agents plane (author, deploy, chat) |
+| §5 | platform-admin | Delete a project and confirm full teardown |
+
+For the wider three-tier picture, see [`../README.md`](../README.md).
+
+## 11. Destroy
+
+Tear down in reverse-create order, each with the same clean environment:
+
+```bash
+for tier in workspace project infra; do
+  ( cd terraform/$tier && env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+      -u VAULT_ADDR -u VAULT_TOKEN -u NOMAD_ADDR -u NOMAD_TOKEN terraform destroy -auto-approve )
+done
+```
+
+Vault must be **unsealed** for the project and workspace destroys (they remove Vault mounts and roles).
+`generated/boundary-setup.json` and `generated/nomad-setup.json` are deleted by the infra destroy.
+Known snags — AWS Backup recovery points blocking the backup vault, and the Vault/Nomad/Boundary
+providers falling back to `127.0.0.1` once the node is gone — are covered in
+[`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md).
+
+To roll back only the admin plane without destroying anything:
+
+```bash
+tf apply -var enable_platform_admin=false
+```

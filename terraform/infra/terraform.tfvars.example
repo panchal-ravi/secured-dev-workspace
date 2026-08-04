@@ -1,39 +1,59 @@
 # Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored (*.tfvars).
 #
-# Variables below are grouped to match the operator flow in PLATFORM-ADMIN-RUNBOOK.md:
-# base stack -> identity -> gateways -> developer portal -> platform-admin plane.
-# Anything with a sensible default is shown commented; uncomment only to override.
+# This ONE file covers a full deploy — base stack, identity, gateways, portal,
+# platform-admin plane and shared volumes. (Terraform also auto-loads any
+# *.auto.tfvars file, so an existing portal.auto.tfvars keeps working; you do
+# not need one.)
+#
+# Variables below are grouped to match the operator flow in README.md:
+# base stack -> worker nodes -> identity -> gateways -> portal -> admin plane
+# -> storage. Anything with a sensible default is shown commented; uncomment
+# only to override.
+#
+# FOUR variables have NO default and the plan will not run without them:
+#   ibm_verify_tenant, ibm_verify_api_client_id, ibm_verify_api_client_secret,
+#   deepseek_api_key
 
 # --- Base infrastructure ---
+# `owner` must match the owner used for the Packer AMI builds — Terraform finds
+# each AMI by an "<owner>-*" name filter.
 owner            = "rp"
 region           = "ap-southeast-1"
-instance_type    = "t3.large"
+instance_type    = "t3.xlarge"
 boundary_version = "0.21.3+ent"
 nomad_version    = "1.11.6+ent"
 # vault_version  = "1.20.4+ent"   # informational; must match the baked AMI
 
-# --- Optional worker nodes (all off by default; opt in per flavor) ---
-
-# GPU Nomad client (NVIDIA T4 / g4dn.xlarge). Costly — on only for GPU workspaces.
-# enable_gpu_node      = true
-# gpu_instance_type    = "g4dn.xlarge"
-# gpu_root_volume_size = 60
+# --- Optional worker nodes (opt in per flavor; each needs its own AMI) ---
 
 # Standard-CPU agent worker nodes (Nomad node pool "agents"). REQUIRED for the
-# platform-admin plane's default MCP node pool (platform_admin_mcp_node_pool="agents")
-# and for project-admin blueprint deploys — the runbook applies with
-# `-var enable_agent_nodes=true`. Set false only if you pin MCP servers to the
-# all-in-one node (platform_admin_mcp_node_pool = "").
-# enable_agent_nodes     = true
+# platform-admin plane's default MCP node pool (platform_admin_mcp_node_pool =
+# "agents") and for project-admin blueprint deploys. Needs ami/agent_image/.
+# Set false only if you pin MCP servers to the all-in-one node
+# (platform_admin_mcp_node_pool = "").
+enable_agent_nodes = true
 # agent_node_count       = 1
 # agent_instance_type    = "t3.large"
 # agent_root_volume_size = 40
 
-# Kata microVM Nomad client (bare metal, e.g. c5.metal — needs /dev/kvm). Costly;
-# on only when the project tier offers a "microvm-workspace" template.
-# enable_microvm_node      = true
+# GPU Nomad client (NVIDIA T4 / g4dn.xlarge). Costly — on only for GPU
+# workspaces. Needs ami/gpu_image/. Its remote-exec blocks the apply until
+# nvidia-smi works.
+enable_gpu_node = false
+# gpu_instance_type    = "g4dn.xlarge"
+# gpu_root_volume_size = 60
+
+# Kata microVM Nomad client (bare metal, e.g. c5.metal — needs /dev/kvm).
+# Costly; on only when the project tier offers a "microvm-workspace" template.
+# Needs ami/microvm_image/, which itself must be built on a c5.metal.
+enable_microvm_node = false
 # microvm_instance_type    = "c5.metal"
 # microvm_root_volume_size = 60
+
+# TEST-ONLY: adds a second Nomad client in the "default" pool purely to force a
+# cross-node workspace reschedule and confirm the Boundary host-address sync
+# follows it. Flip back to false and apply once the test is done.
+# enable_default_spare = false
 
 # Initial Boundary admin + scopes (sensible defaults below).
 # NOTE: boundary_admin_password is sensitive — change it and never commit a real one.
@@ -53,13 +73,16 @@ ibm_verify_tenant = "myorg.verify.ibm.com"
 ibm_verify_api_client_id     = "00000000-0000-0000-0000-000000000000"
 ibm_verify_api_client_secret = "" # set locally; never commit
 
-# Optional: override the Verify group names that map to admin / readonly.
+# Optional: override the Verify group names that map to admin / readonly in
+# Boundary and Nomad. These must match REAL group names in your tenant — the
+# claim is lowercased, so a mixed-case value here silently never matches.
 # admin_group_name    = "secured-codespace-admins"
 # readonly_group_name = "secured-codespace-readonly"
 
 # --- ContextForge MCP gateway (see mcp-gateway.tf) ---
-# Optional: pin a concrete release tag rather than :latest.
-# mcp_gateway_image = "ghcr.io/ibm/mcp-context-forge:latest"
+# Pin a concrete release tag rather than :latest — an overnight :latest re-pull
+# once migrated the gateway DB forward and broke the job.
+mcp_gateway_image = "ghcr.io/ibm/mcp-context-forge:v1.0.5"
 
 # --- LiteLLM AI gateway (see llm-gateway.tf) ---
 # The ONE central provider key the gateway uses to reach DeepSeek. It lives only on
@@ -71,16 +94,19 @@ deepseek_api_key = "" # set locally; never commit
 # litellm_postgres_image = "postgres:16-alpine"
 
 # --- Developer Portal (see developer-portal.tf) ---
-# The portal Nomad job. Off by default; the base stack + NLB :8443 listener
-# provision regardless. Turn on to deploy the portal AND create its Verify OIDC
-# app automatically (identity module — no hand-registration). PREREQUISITES:
-#   1. Build + push the image:  PORTAL_IMAGE=panchalravi/developer-portal:poc portal/scripts/build-image.sh
-#   2. Free a Verify app slot (tenant cap = 5): delete any old hand-registered
+# The portal Nomad job. The base stack + NLB :8443 listener provision regardless.
+# Turn on to deploy the portal AND create its Verify OIDC app automatically
+# (identity module — no hand-registration). PREREQUISITES:
+#   1. Build the macOS connect helper FIRST (its output is gitignored, so a fresh
+#      clone fails the Docker build):  portal/helper/macos/build.sh
+#   2. Build + push the image:
+#      PORTAL_IMAGE=<user>/developer-portal:<tag> portal/scripts/build-image.sh
+#   3. Free a Verify app slot (tenant cap = 5): delete any old hand-registered
 #      `secured-codespace-portal` app so Terraform can create the managed one.
-#   3. Ensure the `groups` claim source (sourceId "4") is released in the tenant —
+#   4. Ensure the `groups` claim source (sourceId "4") is released in the tenant —
 #      the app emits `groups` (the group NAME) into the ID token for RBAC.
 enable_developer_portal = true
-# developer_portal_image = "panchalravi/developer-portal:poc"
+developer_portal_image  = "panchalravi/developer-portal:poc"
 
 # Portal OIDC issuer — the full endpoint, e.g.
 # https://<tenant>.verify.ibm.com/oidc/endpoint/default. REQUIRED when
@@ -91,13 +117,20 @@ portal_oidc_issuer = "https://myorg.verify.ibm.com/oidc/endpoint/default"
 # token-exchange client id; override if your tenant uses a different one.
 # portal_oidc_audiences = ["7be9262c-f5c3-4174-a105-038a0892699f"]
 
+# Nomad->Boundary host-sync image. Keeps a rescheduled workspace's Boundary target
+# following it to the new node. No build script exists — the nodes are amd64, so
+# on Apple Silicon build it with buildx:
+#   docker buildx build --platform linux/amd64 \
+#     -t <user>/nomad-boundary-host-sync:<tag> --push nomad-boundary-host-sync/
+nomad_boundary_host_sync_image = "panchalravi/nomad-boundary-host-sync:poc"
+
 # --- Platform Admin onboarding plane (see platform-admin.tf) ---
 # Enables the in-portal MCP-server deploy + LLM-model onboarding plane AND the
 # portal's second (vault-provisioner) workload identity, which it brokers per-project
 # against the namespace-native portal-provisioner role (terraform/project). Gated:
-# requires enable_developer_portal + both gateways. The runbook applies with
-# `-var enable_platform_admin=true -var enable_agent_nodes=true`. Also REQUIRES a
-# Verify group named exactly `platform-admins` whose members get the role.
+# requires enable_developer_portal + both gateways. Also REQUIRES a Verify group
+# named exactly `platform-admins` whose members get the role (singular
+# `platform-admin` does NOT match).
 enable_platform_admin = true
 # Node pool for portal-deployed MCP servers; "agents" needs enable_agent_nodes=true.
 # Set "" to run them on the all-in-one node instead.
@@ -105,3 +138,38 @@ enable_platform_admin = true
 # Postgres backing the portal's onboarding control plane (deployed only when
 # enable_platform_admin = true).
 # portal_postgres_image = "postgres:16-alpine"
+
+# --- Storage: durable workspace volumes + shared volumes ---
+
+# EBS CSI driver — always deployed (no enable flag); each workspace's /home/dev is
+# a durable per-workspace EBS volume. Pin a concrete driver tag if you need to.
+# ebs_csi_driver_image = "public.ecr.aws/ebs-csi-driver/aws-ebs-csi-driver:v1.44.0"
+
+# Shared volumes: provisions AWS EFS + mount targets + SG + node IAM and deploys
+# the EFS CSI driver. The Portal then cuts one EFS access point per named shared
+# volume (package/build caches, datasets) and mounts it at /shared in workspaces.
+# EFS caps access points at 120 per filesystem = 120 shared volumes platform-wide.
+enable_shared_volume = true
+# efs_csi_driver_image = "public.ecr.aws/efs-csi-driver/amazon/aws-efs-csi-driver:v2.1.11"
+
+# --- Vault GitHub secrets plugin (see vault-github-plugin.tf) ---
+# Mints short-lived GitHub App installation tokens for workspace git push. BOTH
+# values must match the binary baked into ami/base_image — a mismatch fails
+# registration with a checksum error.
+# github_plugin_version = "2.3.2"
+# github_plugin_sha256  = "72cb1f2775ee2abf12ffb725e469d0377fe7bbb93cd7aaa6921c141eddecab87"
+
+# --- Agent-platform identity (see agent-identity.tf) ---
+# Static org-context claims stamped into every agent actor JWT.
+# agent_identity_claims = {
+#   org           = "ibm-demo"
+#   bu            = "techsales"
+#   department    = "advanced-sa"
+#   service_group = "agent-platform"
+# }
+
+# --- Demo Postgres (see demo-db.tf) ---
+# Throwaway demo database on the all-in-one node (:15432) for the Class A
+# postgres-mcp blueprint end-to-end demo. Read its connection details with
+# `terraform output demo_db_connection_url` / `-raw demo_db_admin_password`.
+enable_demo_db = false
