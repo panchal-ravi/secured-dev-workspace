@@ -1,66 +1,96 @@
-# Secured dev workspace — three-tier Terraform stack
+# Terraform — the platform tier
 
-A central, secured remote development workspace on an all-in-one **HashiStack** (Boundary + Nomad + single-node Vault Enterprise) on AWS. Developers reach a per-developer workspace container over **VSCode Remote-SSH brokered by Boundary**, authenticated with **JIT Vault-signed SSH certificates** — no static keys, no passwords, no standing access.
+A central, secured remote development workspace on an all-in-one **HashiStack** (Boundary + Nomad +
+single-node Vault Enterprise) on AWS. Developers reach a per-developer workspace container over
+**Remote-SSH brokered by Boundary**, authenticated with **JIT Vault-signed SSH certificates** — no
+static keys, no passwords, no standing access.
 
-The stack is provisioned as **three Terraform tiers**, each its own root, applied in order. This README is the overview and the end-to-end flow; each tier's own README has the detailed steps.
+**Terraform provisions the platform, and stops there.** One root — [`infra/`](infra/) — stands up the
+clusters, the identity layer, the gateways, the storage drivers and the Developer Portal. Everything
+above that line is **Portal-driven**: projects, MCP servers, workspace templates, shared volumes,
+workspaces and AI agents are all created through the Portal UI/API against the running HashiStack,
+with no further Terraform run.
+
+- **Stand the platform up** → [`infra/README.md`](infra/README.md)
+- **Then drive all three roles end to end** → [`infra/E2E-WALKTHROUGH.md`](infra/E2E-WALKTHROUGH.md)
+- **The Portal itself** (Go + Carbon React) → [`../portal/README.md`](../portal/README.md)
 
 ## Layout
 
-The stack is organized into **three tiers**, each its own Terraform root, applied in order — built this way so the **Developer Portal** (`portal/`, a working PoC) and a future CLI can drive the lower two one instance at a time over the HashiStack APIs:
-
-- **Platform tier** *(once)* — the foundation root `terraform/infra/`: the Boundary/Nomad/Vault clusters (plus an optional **GPU worker node** in the `gpu` Nomad pool and an optional bare-metal **microVM worker node** in the `microvm` pool for Kata-isolated workspaces), IBM Verify OIDC apps + SSO wiring, the admin/readonly managed groups, the Boundary **org** scope, the shared Nomad↔Vault WIF auth method, a Vault KV mount for project artifacts, and the centralized **AI gateways** — the ContextForge **MCP gateway** (governs tools/data over MCP) and the LiteLLM **LLM gateway** (governs model access — routes every workspace's Claude Code to the provider; + its Postgres).
-- **Project tier** *(per project)* — the `terraform/project/` root: a Boundary **project** scope, a Nomad namespace, a per-project Vault **namespace** with its SSH CA (`ssh`), the Boundary Vault credential store + SSH credential library, a per-project WIF role, a namespace ACL, and the project's **per-template** Nomad job templates (each pinning its own repo + image + node pool) saved to Vault KV, plus a portal descriptor for the Developer Portal.
-- **Developer tier** *(per workspace)* — the `terraform/workspace/` root: spins up a workspace container in the project namespace from a **selected flavor** (its image, repo, and node pool pinned by the project) and creates the Boundary target/alias/role for transparent VSCode Remote-SSH.
-
 ```
 terraform/
-├── infra/                          # PLATFORM root → secured-codespace + identity + nomad-vault-wif + KV mount
-│   ├── ami/base_image/             # Packer: builds <owner>-boundary-enterprise-* AMI
-│   ├── ami/gpu_image/              # Packer: builds <owner>-gpu-workspace-* AMI (NVIDIA driver + toolkit + nomad-device-nvidia)
-│   ├── ami/microvm_image/          # Packer: builds <owner>-microvm-workspace-* AMI (Kata Containers + pinned Docker 27.5.1; bare-metal KVM gates)
+├── infra/                          # THE Terraform root — one state for the whole platform
+│   ├── main.tf                     #   calls the three modules below
+│   ├── ami/base_image/             # Packer: <owner>-boundary-enterprise-* (all-in-one node)
+│   ├── ami/agent_image/            # Packer: agent-pool worker (MCP servers, AI agents)
+│   ├── ami/gpu_image/              # Packer: NVIDIA driver + toolkit + nomad-device-nvidia
+│   ├── ami/microvm_image/          # Packer: Kata Containers + pinned Docker (bare-metal KVM)
 │   ├── config/                     # Boundary/Nomad/Vault HCL, systemd units, licenses
 │   ├── modules/
-│   │   ├── secured-codespace/      # PLATFORM: VPC, NLB, SGs, TLS, EC2 (+ GPU worker "gpu" + microVM worker "microvm"), bootstrap (Boundary+Nomad+Vault, org scope)
-│   │   ├── identity/               # PLATFORM: IBM Verify OIDC SSO for Boundary + Nomad (admin/readonly groups)
-│   │   └── nomad-vault-wif/        # PLATFORM: the shared jwt-nomad auth method (Nomad↔Vault WIF)
-│   ├── vault-github-plugin.tf      # PLATFORM: register the GitHub secrets plugin into Vault's catalog
-│   ├── mcp-gateway.tf · llm-gateway.tf  # PLATFORM: ContextForge MCP + LiteLLM LLM gateways (Nomad jobs, ns infra)
+│   │   ├── secured-codespace/      #   VPC, NLB, SGs, TLS, EC2 (+ agent/GPU/microVM workers),
+│   │   │                           #   EFS, IAM, bootstrap (Boundary + Nomad + Vault, org scope)
+│   │   ├── identity/               #   IBM Verify OIDC SSO for Boundary + Nomad + the Portal
+│   │   └── nomad-vault-wif/        #   the shared jwt-nomad auth method (Nomad↔Vault WIF)
+│   ├── developer-portal.tf         # Portal Nomad job + its OIDC app + workload identities
+│   ├── portal-postgres.tf          #   its control-plane database
+│   ├── platform-admin.tf           # the onboarding plane (MCP deploys, LLM models)
+│   ├── mcp-gateway.tf              # ContextForge MCP gateway  (governs tools/data)
+│   ├── llm-gateway.tf              # LiteLLM gateway + Postgres (governs model access)
+│   ├── ebs-csi.tf · efs-csi.tf     # durable per-workspace /home/dev · shared /shared volumes
+│   ├── nomad-boundary-host-sync.tf # keeps a rescheduled workspace's Boundary target following it
+│   ├── agent-identity.tf           # Vault identity-OIDC issuer for agent actor JWTs
+│   ├── vault-github-plugin.tf      # registers the GitHub secrets plugin in Vault's catalog
+│   ├── vault-kv.tf · demo-db.tf    # KV mount for project artifacts · optional demo database
 │   └── generated/                  # runtime artifacts (SSH key, init JSON) — gitignored
-├── project/                        # PROJECT root (flat — one Terraform workspace per project)
-│   │                               #   per-project scope, namespace, Vault SSH CA, cred store/library, WIF role, per-template job templates (repo+image+node_pool), portal descriptor
-│   ├── github.tf                   #   per-project GitHub App token broker (github + permission set)
-│   ├── templates/                  #   Nomad job templates (raw HCL, published to Vault KV) — one "flavor" each (dev-workspace, gpu-workspace, microvm-workspace)
-│   └── images/                     #   Dockerfile per flavor: dev-workspace/ + gpu-workspace/ (CUDA) — project-owned, pinned per template (microVM reuses the dev-workspace image)
-└── workspace/                      # DEVELOPER root (flat — one Terraform workspace per workspace)
-                                    #   reads the chosen flavor's template + its pinned image/repo + node pool from project state
+├── project/                        # RETIRED — documentation only, no Terraform config
+└── workspace/                      # SUPERSEDED by the Portal — config kept for legacy state
 ```
 
-The **platform** root (`terraform/infra/`) holds a single Terraform state: the base node (`modules/secured-codespace`, which also runs Vault), the IBM Verify SSO layer (`modules/identity`), the shared Nomad↔Vault WIF auth method (`modules/nomad-vault-wif`) and the KV mount for job templates. Its module calls are in `main.tf`; its provider configs in `providers.tf`. The **project** and **developer** roots are **flat** roots (no child module — each tier was a single-instance wrapper, so the resources live directly in the root) that read the platform root's outputs via `terraform_remote_state`, applied once per project / per workspace (isolated with `terraform workspace`).
+Everything in `infra/` shares **one** Terraform state. It is applied in three ordered stages (the NLB
+must exist before the boundary/nomad/vault providers can connect, and the WIF anchor must exist
+before the jobs that use it) — see [`infra/README.md`](infra/README.md) §5.
 
-## Provisioning order
+## What replaced the old project and workspace tiers
 
-Apply the tiers in sequence; each lower tier reads the one above via `terraform_remote_state`, so there is no token/address copying between them.
+This used to be a three-tier stack: `infra/` → `project/` (per project) → `workspace/` (per
+workspace), each its own root, chained with `terraform_remote_state`. Both lower tiers are gone from
+the provisioning path.
 
-1. **Platform** *(once)* — `terraform/infra/` → see [`infra/README.md`](infra/README.md). Builds the base AMI (and, when enabled, the **GPU** and **microVM** AMIs) and the all-in-one node — plus the optional GPU worker (a Nomad client in the `gpu` pool) and the optional bare-metal microVM worker (a Nomad client in the `microvm` pool) — bootstraps Boundary + Nomad + Vault, wires IBM Verify SSO, and stands up the shared `jwt-nomad` WIF anchor + the KV mount for job templates.
-2. **Project** *(per project)* — `terraform/project/` → see [`project/README.md`](project/README.md). Creates, scoped to the project: a Boundary project scope, a Nomad namespace, a Vault namespace + SSH CA (`ssh`) + signing role, a least-privilege Boundary credential store + SSH credential library, a per-project WIF role + namespace ACL, a GitHub App token broker, and the project's job templates in Vault KV.
-3. **Developer** *(per workspace)* — `terraform/workspace/` → see [`workspace/README.md`](workspace/README.md). Builds + pushes the workspace image, then deploys a persistent workspace container in the project namespace and creates the Boundary target/alias + per-developer OIDC role for transparent VSCode Remote-SSH.
+| Was | Is now |
+|---|---|
+| `terraform apply` in `project/`, one Terraform workspace per project | **Portal → Projects (admin) → New project.** One action provisions the Vault child namespace + WIF roles, the Nomad namespace + ACLs, the Boundary project scope + host catalog, the SSH CA, the `github` mount, the LLM virtual key and the Boundary credential store |
+| `terraform apply` in `workspace/`, one Terraform workspace per developer | **Portal → New workspace.** The developer picks a flavor and shared volumes; name, port and disk are server-generated |
+| Job templates hand-written into Vault KV | Base templates + per-project flavors in the Portal's own Postgres, rendered at launch |
+| MCP servers wired by a provisioning script | **Portal → mcp servers → Deploy MCP server**, with a built-in scoped-access test |
 
-> **Vault must be unsealed** for the project and developer tiers (they create Vault mounts/roles and Boundary signs each session cert through Vault). With Shamir unseal the node comes back **sealed** after a reboot — re-unseal first (see `infra/README.md`).
+`project/` now holds only its README and runbook — there is no `.tf` left to apply. `workspace/`
+still has its configuration, but only so pre-Portal state can be destroyed; do not use it to create
+anything.
 
-## Verify the Boundary-brokered workspace SSH
+## How a developer reaches a workspace
 
-The end-to-end developer demo (run from `terraform/workspace/` after applying). Two connect paths are **live-verified (2026-06-02)**: VSCode Remote-SSH (and plain `ssh <alias>`) via the **Boundary Client Agent + transparent sessions**, and the CLI `boundary connect ssh` as the no-Client-Agent fallback. The CLI path is shown below; the transparent-session / VSCode steps are in `terraform/workspace/README.md` ("VSCode Remote-SSH via transparent sessions").
+Unchanged by the move to the Portal, and the reason the platform exists:
 
-1. **SSO-authenticate to Boundary as the developer** (same IBM Verify login):
-   ```bash
-   eval "$(terraform -chdir=../infra output -raw boundary_oidc_login_command)"   # browser OIDC flow as e.g. alice
-   ```
-2. **Connect with `boundary connect ssh`** (routes via the co-located worker proxy on 9202 — nothing is on the NLB). Boundary signs a fresh Vault cert and injects it — **no local key**:
-   ```bash
-   boundary connect ssh -tls-insecure \
-     -target-id "$(terraform output -json workspace_target_ids | jq -r '."alice/main"')" \
-     -- whoami        # → dev
-   ```
-The cert `key_id` is alice's email (in the workspace `sshd` stderr). For **VSCode Remote-SSH** over these injected targets, use the **Boundary Client Agent + transparent sessions** path documented in `terraform/workspace/README.md` (plain `ssh <alias>` / a normal VSCode `Host` entry — no `ProxyCommand`).
-3. **Negative isolation test (required):** SSO-authenticate as **bob** — IBM Verify forces a fresh login every time (the OIDC method sets `prompts = ["login"]`), so enter bob's credentials rather than reusing alice's session — then `boundary connect ssh` to *alice's* target id is **DENIED** (bob's managed group has no grant on alice's target). **Verified 2026-06-02.**
-4. **Reachability negative:** on the node `ss -tlnp | grep 222` shows the SSH host port bound, but off-box `nc -vz <nlb-dns> 2222` **fails** — Boundary is the only path in.
+1. The developer signs in to the Portal with IBM Verify, opens their workspace, and the local helper
+   (or `boundary connect ssh`) brokers the session. Boundary reuses the Verify SSO session, so no
+   second login.
+2. Boundary signs a short-lived SSH certificate through the **project's** Vault SSH CA and injects
+   it. The developer holds **no SSH key**; the workspace `sshd` trusts only that CA
+   (`TrustedUserCAKeys`, `AuthorizedKeysFile none`). The cert's `key_id` is the developer's email, so
+   every session is attributable.
+3. The workspace's SSH port is bound on the node but is **not** reachable off-box — Boundary is the
+   only path in. `nc -vz <nlb-dns> <ssh-port>` from outside fails by design.
+
+Authorization is per-target: a developer's Boundary role grants `authorize-session` on their own
+workspace only, so another project member cannot connect to it. To exercise that denial you must
+sign in as the other user — the Boundary OIDC method deliberately sets **no `prompts` override** so
+that Portal→Boundary SSO stays silent, which also means Verify will reuse the session already in the
+browser. Sign out of the Portal (RP-initiated logout ends the Verify session) or use a separate
+browser profile.
+
+The full walkthrough, including what to check from inside the workspace, is
+[`infra/E2E-WALKTHROUGH.md`](infra/E2E-WALKTHROUGH.md) §3.
+
+> **Vault must be unsealed** for every plan and apply, and for Boundary to sign session certs. With
+> Shamir unseal the node comes back **sealed** after a reboot — re-unseal first (see
+> [`infra/README.md`](infra/README.md) §7).

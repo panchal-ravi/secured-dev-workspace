@@ -587,20 +587,54 @@ For the wider three-tier picture, see [`../README.md`](../README.md).
 
 ## 11. Destroy
 
-Tear down in reverse-create order, each with the same clean environment:
+This is the **only** Terraform tier, so there is no multi-tier teardown. But projects, workspaces,
+MCP servers and shared volumes are created by the **Portal**, not Terraform — none of them is in this
+state, and some of them block the destroy. Clean them up first.
+
+**Step 1 — delete every project in the Portal** (E2E-WALKTHROUGH [§5](./E2E-WALKTHROUGH.md)). One
+delete per project tears down its workspaces and their EBS volumes, its MCP jobs, its shared volumes
+and their EFS access points, its Nomad and Vault namespaces, and its Boundary scope.
+
+**Step 2 — confirm nothing Portal-created is left.** Both must come back empty. A leftover EFS access
+point **blocks `aws_efs_file_system` deletion**, and orphaned volumes keep costing money after the
+stack is gone:
 
 ```bash
-for tier in workspace project infra; do
-  ( cd terraform/$tier && env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-      -u VAULT_ADDR -u VAULT_TOKEN -u NOMAD_ADDR -u NOMAD_TOKEN terraform destroy -auto-approve )
-done
+# Access points on the shared filesystem (get <fs-id> with the query in §9)
+aws efs describe-access-points --region <your-region> --file-system-id <fs-id> \
+  --query 'AccessPoints[].AccessPointId' --output text
+
+# Detached workspace volumes: home-*, <owner>-*-dynamic-pvc-*
+aws ec2 describe-volumes --region <your-region> --filters Name=status,Values=available \
+  --query 'Volumes[].{Id:VolumeId,Name:Tags[?Key==`Name`]|[0].Value}' --output table
 ```
 
-Vault must be **unsealed** for the project and workspace destroys (they remove Vault mounts and roles).
-`generated/boundary-setup.json` and `generated/nomad-setup.json` are deleted by the infra destroy.
-Known snags — AWS Backup recovery points blocking the backup vault, and the Vault/Nomad/Boundary
-providers falling back to `127.0.0.1` once the node is gone — are covered in
-[`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md).
+Delete any stragglers by hand (`aws efs delete-access-point --access-point-id …`,
+`aws ec2 delete-volume --volume-id …`) before continuing.
+
+**Step 3 — destroy the platform**, with Vault **unsealed** (the destroy removes Vault mounts, roles
+and policies) and the same clean environment as §5:
+
+```bash
+cd terraform/infra
+tf destroy -auto-approve
+```
+
+`generated/boundary-setup.json` and `generated/nomad-setup.json` are deleted by the destroy. Custom
+AMIs and their snapshots are **not** managed here and survive — keep them; a rebuild depends on them.
+
+Known snags, all covered in [`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md):
+
+- The AWS Backup vault refuses to delete while it holds recovery points — delete those first
+  (`aws backup delete-recovery-point`), then the vault.
+- Once the node is gone the `vault` / `nomad` / `boundary` providers fall back to `127.0.0.1`, so a
+  **second** `terraform destroy` cannot configure them. Delete the last resource with the AWS CLI and
+  `terraform state rm` it instead of re-running destroy.
+
+> `terraform/project` holds only documentation now — its Terraform config was retired when project
+> onboarding moved into the Portal, so there is nothing there to destroy. `terraform/workspace` is
+> likewise superseded; run a destroy there only if you still hold workspace state from before the
+> Portal.
 
 To roll back only the admin plane without destroying anything:
 
