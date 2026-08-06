@@ -4,8 +4,8 @@ Minimum steps to build and verify the platform tier. For architecture, module in
 verification recipes, see [`README.md.bak`](./README.md.bak) (the previous, full-detail README).
 Once the platform is up, **[`E2E-WALKTHROUGH.md`](./E2E-WALKTHROUGH.md)** takes over: it drives the
 platform-admin, project-admin and developer roles through the Portal UI (§10). Also related:
-[`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md) (admin-plane operations) and
-[`../README.md`](../README.md) (three-tier overview).
+[`PLATFORM-INTERNALS.md`](./PLATFORM-INTERNALS.md) (how the pieces fit, and the upgrade traps) and
+[`../README.md`](../README.md) (what Terraform owns and what the Portal owns).
 
 ## What this provisions
 
@@ -623,7 +623,7 @@ tf destroy -auto-approve
 `generated/boundary-setup.json` and `generated/nomad-setup.json` are deleted by the destroy. Custom
 AMIs and their snapshots are **not** managed here and survive — keep them; a rebuild depends on them.
 
-Known snags, all covered in [`PLATFORM-ADMIN-RUNBOOK.md`](./PLATFORM-ADMIN-RUNBOOK.md):
+Two known snags:
 
 - The AWS Backup vault refuses to delete while it holds recovery points — delete those first
   (`aws backup delete-recovery-point`), then the vault.

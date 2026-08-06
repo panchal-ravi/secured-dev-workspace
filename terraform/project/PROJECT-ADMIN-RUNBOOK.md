@@ -38,7 +38,7 @@ here first.
   `rotate-root` connects to it at apply/deploy time).
 - **A blueprint-backed server type is published** — a platform-admin authored + published the blueprint
   and bound it onto a published MCP server type. See the platform-admin runbook
-  [`../infra/PLATFORM-ADMIN-RUNBOOK.md` §5](../infra/PLATFORM-ADMIN-RUNBOOK.md).
+  [`../infra/PLATFORM-INTERNALS.md` §5](../infra/PLATFORM-INTERNALS.md).
 - **Your project-admin grant is bootstrapped** — a platform-admin ran
   `POST /api/admin/projects/<project>/roles {subject:"you@org", role:"project-admin"}`, and **you are in
   the `<project>-developers` Verify group** (the grant is inert otherwise).
@@ -192,7 +192,7 @@ CURL -X DELETE "$PORTAL/api/projects/$PROJECT/roles/teammate@your.org" -o /dev/n
 | Symptom | Likely cause / fix |
 |---|---|
 | Deploy **403** | Your token predates the policy attach → ask the operator to restart `developer-portal`; or you lack the grant / aren't in `<project>-developers`. |
-| Deploy **404** (server type) | The type isn't published or isn't blueprint-bound — platform-admin must complete [PLATFORM-ADMIN-RUNBOOK §5](../infra/PLATFORM-ADMIN-RUNBOOK.md) steps 1–2. |
+| Deploy **404** (server type) | Stale — the blueprint/server-type plane was removed; see [`../infra/PLATFORM-INTERNALS.md`](../infra/PLATFORM-INTERNALS.md) → *Retired surfaces*. |
 | Deploy **409** | That server type is already deployed in this project (one instance per type per project) — delete it first. |
 | Deploy succeeds but job unhealthy / Class A error | `demo-db` not reachable from the `agents` node pool, or wrong `db_host`/`db_port` (`15432`)/`bootstrap_*` creds. |
 | Test fails (`passed:false`) | Tools didn't discover (>0 required) or the 200/403 isolation didn't hold — check the ContextForge gateway and the deployed server's health. |
@@ -201,5 +201,5 @@ CURL -X DELETE "$PORTAL/api/projects/$PROJECT/roles/teammate@your.org" -o /dev/n
 ---
 
 See also: [`README.md`](./README.md) (project tier), the platform-admin enablement steps in
-[`../infra/PLATFORM-ADMIN-RUNBOOK.md`](../infra/PLATFORM-ADMIN-RUNBOOK.md), and the package overview in
+[`../infra/PLATFORM-INTERNALS.md`](../infra/PLATFORM-INTERNALS.md), and the package overview in
 `portal/backend/internal/projectadmin/README.md`.

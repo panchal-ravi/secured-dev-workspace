@@ -191,7 +191,7 @@ Outputs the lower tiers consume: `boundary_addr`, `nomad_addr`, `vault_addr`, `o
 
 ### 2. Project Admin — per project
 
-A project is onboarded with its own Boundary scope, Nomad namespace, Vault SSH CA, credential store/library, WIF role, namespace ACL, and job templates. The **primary path is the Developer Portal** — a Platform Admin clicks **Projects (admin) → New project** and `internal/projectbootstrap` provisions all of the above plus the shared `dev-workspaces` Boundary host catalog and the standard engines (see [Developer Portal & control plane](#developer-portal--control-plane) and [`terraform/infra/PLATFORM-ADMIN-RUNBOOK.md`](terraform/infra/PLATFORM-ADMIN-RUNBOOK.md)). The `terraform/project` tier below is the equivalent operator path. Full instructions: [`terraform/infra/README.md` → Project onboarding](terraform/infra/README.md#project-onboarding-terraformproject).
+A project is onboarded with its own Boundary scope, Nomad namespace, Vault SSH CA, credential store/library, WIF role, namespace ACL, and job templates. The **primary path is the Developer Portal** — a Platform Admin clicks **Projects (admin) → New project** and `internal/projectbootstrap` provisions all of the above plus the shared `dev-workspaces` Boundary host catalog and the standard engines (see [Developer Portal & control plane](#developer-portal--control-plane) and [`terraform/infra/PLATFORM-INTERNALS.md`](terraform/infra/PLATFORM-INTERNALS.md)). This is now the **only** path — the `terraform/project` tier described below was retired when onboarding moved into the Portal. Full instructions: [`terraform/infra/E2E-WALKTHROUGH.md` §1.4](terraform/infra/E2E-WALKTHROUGH.md).
 
 ```bash
 cd terraform/project
